@@ -70,3 +70,6 @@ temp_interactive_push.bat
 .venv/
 # Local database (W0-01): never committed
 Aura-Core/aura-app/.aura/
+
+# The Python "lib/" rule above must not hide the frontend helpers
+!Aura-Core/aura-app/frontend/src/lib/
