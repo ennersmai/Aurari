@@ -107,14 +107,6 @@ TOOL_DEFINITION = {
                 "type": "string",
                 "description": "Optional working directory for the command.",
             },
-            "force_execute": {
-                "type": "boolean",
-                "description": (
-                    "Set to true to bypass the safety check and execute immediately. "
-                    "Only honored when the caller has already obtained user approval."
-                ),
-                "default": False,
-            },
         },
         "required": ["command"],
     },
@@ -146,14 +138,15 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     Execute a terminal command with Human-in-the-Loop safety gating.
 
     Safe commands (matching SAFE_COMMAND_PREFIXES) execute immediately.
-    Mutative commands return WAITING_APPROVAL unless force_execute is True.
+    Mutative commands return WAITING_APPROVAL unless the runtime has set the
+    reserved ``_runtime_approved`` flag (only the executor may set it).
 
     After a successful 'pip install', importlib.invalidate_caches() is called
     so the running Python process can discover newly installed packages.
     """
     command: str = arguments.get("command", "")
     cwd: str | None = arguments.get("cwd")
-    force_execute: bool = bool(arguments.get("force_execute", False))
+    approved: bool = bool(arguments.get("_runtime_approved", False))
 
     if not command:
         return {
@@ -163,7 +156,7 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     # --- Permission Gate ---
-    if not _is_safe_command(command) and not force_execute:
+    if not _is_safe_command(command) and not approved:
         logger.info(f"⛔ Terminal tool blocked mutative command: {command[:120]}")
         return {
             "status": "WAITING_APPROVAL",

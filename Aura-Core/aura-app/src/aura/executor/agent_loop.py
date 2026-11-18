@@ -736,14 +736,16 @@ class AgentLoop:
                         accumulated_context.append(deny_context)
                         continue
 
-                    # Re-execute with approval flag
+                    # Re-execute with runtime approval (W1-02, agency S2).
+                    # Approval no longer travels in the model-supplied args; the
+                    # executor sets the reserved ``_runtime_approved`` flag
+                    # itself when ``approved=True``.
                     approved_args = dict(tool_args)
-                    approved_args["force_execute"] = True
                     approved_tc = {"tool": tool_name, "arguments": approved_args}
 
                     t0 = time.time()
                     try:
-                        result = await self.executor.execute_tool_call(approved_tc, requester_role="owner")
+                        result = await self.executor.execute_tool_call(approved_tc, requester_role="owner", approved=True)
                         exec_duration = int((time.time() - t0) * 1000)
                     except Exception as e:
                         exec_duration = int((time.time() - t0) * 1000)

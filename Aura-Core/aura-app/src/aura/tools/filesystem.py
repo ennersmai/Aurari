@@ -429,7 +429,7 @@ async def write_file_run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Write content to a file."""
     path = arguments.get("path")
     content = arguments.get("content")
-    force_execute: bool = bool(arguments.get("force_execute", False))
+    approved: bool = bool(arguments.get("_runtime_approved", False))
 
     if not path:
         return {"status": "ERROR", "success": False, "error": "Missing 'path' argument"}
@@ -439,7 +439,7 @@ async def write_file_run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     if not _is_path_allowed(path):
         return {"status": "ERROR", "success": False, "error": f"Access denied: {path}"}
 
-    if _is_core_path(path) and not force_execute:
+    if _is_core_path(path) and not approved:
         logger.info(f"⛔ Core modification intercepted: {path}")
         return {
             "status": "WAITING_APPROVAL",
@@ -511,7 +511,7 @@ async def edit_file_run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     old_string = arguments.get("old_string")
     new_string = arguments.get("new_string")
     replace_all = arguments.get("replace_all", False)
-    force_execute: bool = bool(arguments.get("force_execute", False))
+    approved: bool = bool(arguments.get("_runtime_approved", False))
 
     if not path:
         return {"status": "ERROR", "success": False, "error": "Missing 'path' argument"}
@@ -523,7 +523,7 @@ async def edit_file_run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     if not _is_path_allowed(path):
         return {"status": "ERROR", "success": False, "error": f"Access denied: {path}"}
 
-    if _is_core_path(path) and not force_execute:
+    if _is_core_path(path) and not approved:
         logger.info(f"⛔ Core modification intercepted: {path}")
         return {
             "status": "WAITING_APPROVAL",

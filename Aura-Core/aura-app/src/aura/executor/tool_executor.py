@@ -140,6 +140,7 @@ class ToolExecutor:
         tool_call: Dict[str, Any],
         *,
         requester_role: Literal["owner", "trusted", "guest"],
+        approved: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute a single tool call.
@@ -148,6 +149,13 @@ class ToolExecutor:
             tool_call: Dictionary with "tool" and "arguments" keys
             requester_role: Role of the caller. Only "owner" may execute tools;
                 other roles are refused before any tool is run.
+            approved: When true, the runtime has already obtained user
+                approval for this call (e.g. a previously-gated terminal or
+                filesystem write). The executor sets the reserved
+                ``_runtime_approved`` flag on the arguments so the tool's
+                safety gate lets it through. The model may never set this
+                flag itself: ``force_execute`` and every underscore-prefixed
+                key are stripped from the model-supplied arguments first.
             
         Returns:
             Dictionary with execution result:
@@ -170,6 +178,23 @@ class ToolExecutor:
 
         tool_name = tool_call.get("tool")
         arguments = tool_call.get("arguments", {})
+        if not isinstance(arguments, dict):
+            # Defensive: don't mutate a non-dict the tool may not expect.
+            arguments = {}
+        else:
+            # Approval travels in a reserved key that only the executor may
+            # set (W1-02, agency S2). Strip the legacy ``force_execute`` key
+            # and every underscore-prefixed key from the model-supplied
+            # arguments before the tool runs, so a model cannot bypass the
+            # safety gate by forging them. Then, only when the runtime has
+            # approved this call, set the reserved flag the tools read.
+            arguments = {
+                k: v for k, v in arguments.items()
+                if k != "force_execute" and not k.startswith("_")
+            }
+            if approved:
+                arguments["_runtime_approved"] = True
+
         
         if not tool_name:
             return {
