@@ -11,7 +11,7 @@ from typing import Any
 
 try:
     from surrealdb import RecordID
-except Exception:
+except Exception:  # pragma: no cover - surrealdb is a hard dependency
     RecordID = None  # type: ignore[assignment,misc]
 
 
@@ -37,10 +37,10 @@ def strip_record_id(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def to_record_id(thing: Any) -> Any:
-    """Convert a ``\"table:id\"`` string to a SurrealDB ``RecordID``.
+    """Convert a ``"table:id"`` string to a SurrealDB ``RecordID``.
 
-    The embedded SurrealDB engine (and strict server modes) treat the whole
-    string ``\"memory:abc\"`` as a *table name* when it is bound to
+    The embedded SurrealDB engine (and strict server modes) treat the
+    whole string ``"memory:abc"`` as a *table name* when it is bound to
     a parameter that the database expects to be a record id, so a string
     record id must be converted to a typed ``RecordID`` before being
     passed to ``UPDATE $mid`` / ``SELECT ... FROM $rid`` and similar
@@ -48,9 +48,9 @@ def to_record_id(thing: Any) -> Any:
     ``api/routes/learning.py`` (the ``skill_ref`` block near
     "Ensure we query with a proper RecordID when possible").
 
-    A ``\"table:id\"`` string with both a non-empty table and a non-empty
+    A ``"table:id"`` string with both a non-empty table and a non-empty
     id becomes ``RecordID(table, id)``.  Anything else — a value that is
-    already a ``RecordID``, a bare table name like ``\"memory\"`` with no
+    already a ``RecordID``, a bare table name like ``"memory"`` with no
     colon, or any non-string value — is returned unchanged.
     """
     if RecordID is not None and isinstance(thing, RecordID):
