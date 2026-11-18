@@ -1049,3 +1049,32 @@
   - Full suite passes (200 passed).
   - `inspect.getsource` on each of the four functions confirms no `datetime.now(timezone.utc)`, `datetime.utcnow()`, or `time.time()` and that `get_clock()` is used.
 - **Unsure about:** Nothing. The change is scoped exactly to the four functions named in the card. The `tick()` method at line 84 still uses `datetime.now(timezone.utc)` but is not one of the four functions listed in the card's "Change" section, so per rule 3 it was left untouched. The card's Depends on BF-05 is satisfied (BF-05 was already implemented for `MemoryManager._compute_decay_factor`).
+
+## BF-07: Find what hides the missing frontend files
+- **Status:** DONE
+- **PRD:** V0 prerequisite (W2-25 stopped twice on a broken frontend build)
+- **Tier:** bulk
+- **Files changed:** `.gitignore` (repository root) only. Nothing under `frontend/` was touched; no missing file was recreated, stubbed or downloaded.
+- **Test result:** 200 passed (full suite, unchanged from BF-06 — the card's Tests line is "run the full Python suite (unchanged)").
+- **Step 1 — `git check-ignore -v` before the change (exact output):**
+  - `git check-ignore -v Aura-Core/aura-app/frontend/src/lib/utils.ts` → exit 1, no output. **Not ignored** — this file exists on disk (restored by W2-25 from Mai's old copy) and is already tracked (committed under the `!Aura-Core/aura-app/frontend/src/lib/` exception that used to follow the `lib/` rule).
+  - The two unresolvable modules, resolved from the import lines W2-25 reported. Imports: `import { loadVRMAnimation } from "../../lib/VRMAnimation/loadVRMAnimation"` (in `frontend/src/components/vrm-engine/features/vrmViewer/viewer.ts:28` and `animationRouter.ts:21`), `import { VRMAnimation } from "../../lib/VRMAnimation/VRMAnimation"` (`model.ts:10`, `animationRouter.ts:22`), `import { VRMLookAtSmootherLoaderPlugin } from "../../lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin"` (`model.ts:11`). `../../lib/` from `src/components/vrm-engine/features/vrmViewer/` resolves to `src/components/vrm-engine/lib/`, so the expected paths are `.../vrm-engine/lib/VRMAnimation/loadVRMAnimation`, `.../vrm-engine/lib/VRMAnimation/VRMAnimation` and `.../vrm-engine/lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin`:
+    ```
+    .gitignore:18:lib/	Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/loadVRMAnimation
+    .gitignore:18:lib/	Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/VRMAnimation
+    .gitignore:18:lib/	Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin
+    ```
+    All three were ignored by the blanket Python `lib/` rule at `.gitignore:18`, which is why they were never committed.
+- **Step 2 — the fix:** the Python `lib/` / `lib64/` rules were anchored to the paths they were meant for: `lib/` → `/lib/` and `Aura-Core/aura-app/lib/`; `lib64/` → `/lib64/` and `Aura-Core/aura-app/lib64/`. The now-redundant exception `!Aura-Core/aura-app/frontend/src/lib/` (and its comment) was removed, since no rule can match anything under `Aura-Core/aura-app/frontend/src/` any more. Sanity checks after the change: `git check-ignore -v lib/foo.py` → `.gitignore:18:/lib/`, `Aura-Core/aura-app/lib/foo.py` → `.gitignore:20:Aura-Core/aura-app/lib/`, `lib64/foo.so` → `.gitignore:19:/lib64/` (the original ignore targets still ignored); `git ls-files` under `lib/`, `lib64/`, `Aura-Core/aura-app/lib/`, `Aura-Core/aura-app/lib64/` prints nothing, so no tracked file was hidden by the new rules.
+- **Step 2 verification — `git check-ignore -v` after the change (all three paths):** exit 1, no output for all three:
+  - `Aura-Core/aura-app/frontend/src/lib/utils.ts` — not ignored
+  - `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/loadVRMAnimation` — not ignored
+  - `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/VRMAnimation` — not ignored
+  - `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin` — not ignored
+  `git check-ignore -q` exits non-zero for all three (card "Done when" met).
+- **Step 3 — missing files for Mai (must come from his old working copy; do not recreate, stub or download):**
+  1. `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/loadVRMAnimation.ts` (extension unverified — the file does not exist anywhere on disk; could be `.js` or a `loadVRMAnimation/index.ts`)
+  2. `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMAnimation/VRMAnimation.ts` (extension unverified, same caveat)
+  3. `Aura-Core/aura-app/frontend/src/components/vrm-engine/lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin.ts` (extension unverified, same caveat)
+  These are the three VRM helper modules the `lib/` ignore rule hid from every commit. They are the last blockers for W2-25 (V0): `frontend/src/lib/utils.ts` is already on disk and tracked, so only these three are missing. Once Mai copies them in, `npm run build` from `frontend/` should be re-run before W2-25 restarts.
+- **Unsure about:** Nothing about the ignore rule itself. Two caveats recorded above: (a) the exact file extensions of the three missing modules are unknown — the imports have no extension and no file exists on disk to check, so Mai should copy whatever his old working copy has (including any neighbouring files in those two folders that the imports do not name directly); (b) I did not run the frontend build, since the card scopes this card to `.gitignore` and forbids touching anything under `frontend/`.

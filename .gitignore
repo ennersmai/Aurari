@@ -15,8 +15,10 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
+Aura-Core/aura-app/lib/
+Aura-Core/aura-app/lib64/
 parts/
 sdist/
 var/
@@ -70,6 +72,3 @@ temp_interactive_push.bat
 .venv/
 # Local database (W0-01): never committed
 Aura-Core/aura-app/.aura/
-
-# The Python "lib/" rule above must not hide the frontend helpers
-!Aura-Core/aura-app/frontend/src/lib/
