@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
+from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
 from aura.models.memory import DreamConsolidationReport
@@ -200,7 +201,7 @@ class DreamingEngine(BaseEngine):
         memories naturally sink out of view without being removed.
         """
         pruned = 0
-        now = datetime.now(timezone.utc)
+        now = get_clock().now()
         cutoff_24h = (now - timedelta(hours=24)).isoformat()
         cutoff_7d = (now - timedelta(days=7)).isoformat()
 
@@ -268,7 +269,7 @@ class DreamingEngine(BaseEngine):
         if isinstance(ts, datetime) and ts.tzinfo is None:
             ts = ts.replace(tzinfo=timezone.utc)
 
-        age_hours = max((datetime.now(timezone.utc) - ts).total_seconds() / 3600, 0)
+        age_hours = max((get_clock().now() - ts).total_seconds() / 3600, 0)
         half_life = _RECENCY_HALF_LIFE_H
 
         emo = float(row.get("emotional_intensity", 0.0))
@@ -424,7 +425,7 @@ Return a JSON object:
             return 0
 
         reprocessed = 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        cutoff = (get_clock().now() - timedelta(hours=48)).isoformat()
 
         # Negative emotions we look for
         negative_emotions = [
@@ -640,7 +641,7 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
             Number of edges created.
         """
         edges_created = 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        cutoff = (get_clock().now() - timedelta(hours=24)).isoformat()
 
         try:
             # Find experiences from the last 24h that have NO outgoing next_experience edge.

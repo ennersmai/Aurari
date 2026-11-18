@@ -1029,3 +1029,23 @@
   - `grep -nE "datetime\.(utcnow|now)\(|time\.time\(" src/aura/models/memory.py` prints nothing.
   - The same grep limited to the body of `_compute_decay_factor` prints nothing (checked via Python snippet using `inspect.getsource`).
 - **Unsure about:** Nothing. The change is scoped exactly to the two places named in the card (the `Memory` model's `timestamp` default and `_compute_decay_factor`). The other two `datetime.utcnow` occurrences in `memory.py` (`Conversation.started_at` and `DreamConsolidationReport.timestamp`) are not mentioned in the card and were left untouched per rule 3.
+
+## BF-06: Dreaming reads time through the clock provider, and a 30-day scenario test
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/dreaming/engine.py`, `tests/scenarios/test_clock_thirty_days.py`
+- **Test result:** 200 passed (full suite)
+- **What I did:**
+  1. Added `from aura.clock import get_clock` import to `src/aura/engines/dreaming/engine.py`.
+  2. In `_tiered_pruning`: replaced `now = datetime.now(timezone.utc)` with `now = get_clock().now()`.
+  3. In `_compute_decay`: replaced `datetime.now(timezone.utc)` with `get_clock().now()`.
+  4. In `_emotional_reprocessing`: replaced `datetime.now(timezone.utc)` with `get_clock().now()`.
+  5. In `_weave_causality`: replaced `datetime.now(timezone.utc)` with `get_clock().now()`.
+  6. Created `tests/scenarios/test_clock_thirty_days.py` with two scenario tests:
+     - `test_dreaming_clock_thirty_days`: stores a memory at day 0, advances FakeClock to day 30, verifies `DreamingEngine._compute_decay` and `MemoryManager._compute_decay_factor` both return the expected 30-day decay value (computed from the formula, not hardcoded), and runs a dream cycle at day 30 confirming the memory is seen as 30 days old (not pruned, as it's non-ephemeral).
+     - `test_memory_manager_clock_thirty_days`: standalone test for `MemoryManager._compute_decay_factor` at day 0 and day 30.
+  7. The expected 30-day decay value (using the formula with half-life=48h, no emotional protection, no recalls, non-ephemeral): ~3.06e-05.
+- **Done when verified:**
+  - New tests pass (2 passed).
+  - Full suite passes (200 passed).
+  - `inspect.getsource` on each of the four functions confirms no `datetime.now(timezone.utc)`, `datetime.utcnow()`, or `time.time()` and that `get_clock()` is used.
+- **Unsure about:** Nothing. The change is scoped exactly to the four functions named in the card. The `tick()` method at line 84 still uses `datetime.now(timezone.utc)` but is not one of the four functions listed in the card's "Change" section, so per rule 3 it was left untouched. The card's Depends on BF-05 is satisfied (BF-05 was already implemented for `MemoryManager._compute_decay_factor`).
