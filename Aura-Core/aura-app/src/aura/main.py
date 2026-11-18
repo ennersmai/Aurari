@@ -18,6 +18,7 @@ from aura.api.routes import emotion as emotion_routes
 from aura.api.routes import goal as goal_routes
 from aura.api.routes import learning as learning_routes
 from aura.api.routes import memory as memory_routes
+from aura.api.routes import recall as recall_routes
 from aura.api.routes import system_state as system_state_routes
 from aura.api.routes import voice as voice_routes
 from aura.api.routes import local_ai as local_ai_routes
@@ -475,6 +476,7 @@ app.include_router(learning_routes.router, prefix="/learning", tags=["learning"]
 app.include_router(goal_routes.router, prefix="/goal", tags=["goal"])
 app.include_router(chat_routes.router, prefix="/chat", tags=["chat"])
 app.include_router(memory_routes.router, prefix="/memory", tags=["memory"])
+app.include_router(recall_routes.router, prefix="/recall", tags=["recall"])
 app.include_router(system_state_routes.router, prefix="/system", tags=["system"])
 app.include_router(conversations_routes.router, prefix="/api/conversations", tags=["conversations"])
 app.include_router(voice_routes.router, tags=["voice"])

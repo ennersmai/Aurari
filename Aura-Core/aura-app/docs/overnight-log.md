@@ -853,3 +853,29 @@
   - `grep -n "async def timeline\|async def evidence" src/aura/engines/recall/engine.py` shows both methods at lines 415 and 434.
 - **Do-not checks:** Did not rename the tools or change their schemas in `L2_INTERNAL_TOOLS`. Did not add the PRD's new tools (`recall`, `what_changed`, `pin`); they are M5.
 - **Unsure about:** Nothing. The change is scoped to the Recall Engine's two new delegation methods and the orchestrator's `execute_l2_internal_tool` routing. The formatting logic is identical to the pre-W2-22 code.
+
+## W2-23: Recall trace endpoint
+- **Status:** DONE
+- **PRD:** memory section 6.6
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files changed:** `src/aura/api/routes/recall.py` (new), `src/aura/main.py` (import and include_router), `tests/unit/test_recall_route.py` (new)
+- **Test result:** 175 passed (full suite: 171 prior + 4 new)
+- **What I did, step by step:**
+  1. Created `src/aura/api/routes/recall.py` with `router = APIRouter()` and two endpoints:
+     - `GET /trace/{turn_id}`: returns `dataclasses.asdict(trace)` with `created_at` as ISO format string, for `get_recall_engine().get_trace(turn_id)`. Raises `HTTPException(404, "trace not found")` when the trace is `None`.
+     - `GET /traces`: returns `{"turn_ids": [...]}` — the stored turn IDs, newest first (reversed from the `OrderedDict` insertion order).
+  2. In `src/aura/main.py`:
+     - Added `from aura.api.routes import recall as recall_routes` alongside the other route imports.
+     - Added `app.include_router(recall_routes.router, prefix="/recall", tags=["recall"])` after the memory router line.
+  3. Created `tests/unit/test_recall_route.py` with four async tests:
+     - `test_get_recall_trace_found`: verifies a known trace is returned with all fields (including `created_at` as ISO string, `items` with `fate` and `duplicate_of`).
+     - `test_get_recall_trace_not_found`: verifies 404 is raised for an unknown turn ID.
+     - `test_list_recall_traces_order`: verifies traces are listed newest first (reverse of `OrderedDict` order).
+     - `test_list_recall_traces_empty`: verifies empty list when no traces exist.
+- **Done when verified:**
+  - The full suite passes (175 passed).
+  - `grep -c "recall_routes" src/aura/main.py` prints `2` (one import, one include_router).
+  - All four new tests pass.
+- **Do-not checks:** Did not add the frontend debug view (later, with M3). Did not persist traces to the database (traces stay in memory as per the RecallEngine design).
+- **Unsure about:** Nothing. The change is scoped to the new route file, the two lines in `main.py`, and the new test file. No existing code was modified beyond the two additions in `main.py`.
