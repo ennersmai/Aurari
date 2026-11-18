@@ -51,6 +51,6 @@
 
 ## W1-05: Parameterise memory queries
 - **Status:** DONE
-- **Files changed:** `src/aura/engines/memory/manager.py`
-- **Test result:** 14 passed (full suite)
-- **Notes:** Changed _compute_formation_score (novelty and surprise queries), _create_related_edges, and _fetch_candidates to use parameterized queries instead of f-string interpolation for user_id, memory_id, importance_min, and id lists.
+- **Files changed:** `src/aura/engines/memory/manager.py`, `tests/unit/test_memory_queries_parameterised.py`
+- **Test result:** 15 passed (full suite)
+- **Notes:** Changed _compute_formation_score (novelty and surprise queries), _create_related_edges, and _fetch_candidates to use parameterized queries instead of f-string interpolation for user_id, memory_id, importance_min, and id lists. The code change was committed in a prior pass; this pass adds the test the card lists (a `user_id` containing a single quote does not raise and returns no rows), verified against `_fetch_candidates`, `_compute_formation_score` and `_create_related_edges` using a MemoryManager built via `__new__` with an AsyncMock db. Confirmed no f-string in those three functions interpolates a value other than an integer limit or a fixed condition string.
