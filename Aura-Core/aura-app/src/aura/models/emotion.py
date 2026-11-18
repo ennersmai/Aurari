@@ -156,14 +156,27 @@ class EmotionState(BaseModel):
 class EmotionPhysicsConfig(BaseModel):
     """Configuration for emotion physics parameters (Emotion FRD FR-EE-002)."""
 
-    # Decay rates per category (per tick)
-    # Increased to allow faster decay from extreme values
+    # --- Half-lives (seconds) per PRD section 4.2 ---
+    # A dimension decays toward its baseline so that the deviation halves every
+    # `half_life` seconds: deviation *= 0.5 ** (dt / half_life).
+    # These are the starting values; relationships replace love/trust later.
+    # love/trust are not decayed by category here; they keep a long half-life
+    # until the relationship layer (PRD section 6.3) lands.
+    half_life_startle: float = Field(default=45.0, gt=0.0)     # surprise
+    half_life_fast: float = Field(default=300.0, gt=0.0)      # confusion, certainty, doubt, boredom, interest, curiosity, fascination (5 min)
+    half_life_core: float = Field(default=900.0, gt=0.0)      # joy, sadness, anger, fear, disgust (15 min)
+    half_life_aesthetic: float = Field(default=1200.0, gt=0.0)  # awe, beauty, wonder, serenity, melancholy, nostalgia (20 min)
+    half_life_social: float = Field(default=1800.0, gt=0.0)   # empathy, gratitude, pride, shame, envy, compassion (30 min)
+    half_life_bond: float = Field(default=43200.0, gt=0.0)    # love, trust (12 hours, until relationships land)
+
+    # --- Legacy decay rates (kept so stored configs still load; no longer used) ---
     decay_rate_primary: float = Field(default=0.05, ge=0.0, le=1.0)  # 5% per tick (was 2%)
     decay_rate_aesthetic: float = Field(default=0.02, ge=0.0, le=1.0)  # 2% per tick (was 0.5%)
     decay_rate_social: float = Field(default=0.03, ge=0.0, le=1.0)  # 3% per tick (was 1%)
     decay_rate_cognitive: float = Field(default=0.04, ge=0.0, le=1.0)  # 4% per tick (was 1.5%)
 
-    # Inertia (resistance to change)
+    # Inertia (resistance to change). Applied as a single smoothing factor on
+    # the total change produced by apply_influence (PRD section 4.4).
     inertia_default: float = Field(default=0.3, ge=0.0, le=1.0)
     inertia_high_arousal: float = Field(default=0.5, ge=0.0, le=1.0)
     inertia_low_arousal: float = Field(default=0.1, ge=0.0, le=1.0)

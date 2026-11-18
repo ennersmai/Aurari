@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from aura.config import settings
+from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
 from aura.engines.emotion.physics import EmotionPhysics
@@ -64,8 +65,8 @@ class EmotionEngine(BaseEngine):
         self.volatility_history: list[float] = []
 
         # Timing
-        self._last_tick_time = datetime.utcnow()
-        self._last_persistence_time = datetime.utcnow()
+        self._last_tick_time = get_clock().now()
+        self._last_persistence_time = get_clock().now()
 
         # Database
         self.db = get_db_client()
@@ -164,15 +165,13 @@ class EmotionEngine(BaseEngine):
 
     async def tick(self) -> None:
         """Execute one emotion engine cycle."""
-        now = datetime.utcnow()
+        now = get_clock().now()
         dt = (now - self._last_tick_time).total_seconds()
-        
-        # Clamp dt to prevent issues with very large or very small values
-        # If dt is too large (e.g., server was down), cap it at 10 seconds
-        # If dt is too small (e.g., processing delay), use the intended tick rate
-        if dt > 10.0:
-            dt = 10.0
-        elif dt < 0.1:
+
+        # Clamp dt: keep the lower bound so a too-small dt uses the tick rate.
+        # The 10 s cap is removed (PRD section 4.2 / E7): a restart applies the
+        # true elapsed time so a day offline decays the state by a day.
+        if dt < 0.1:
             dt = self.tick_rate
 
         # Apply physics

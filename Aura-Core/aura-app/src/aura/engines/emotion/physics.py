@@ -178,19 +178,55 @@ class EmotionPhysics:
     """
     Physics simulation for 27-dimensional emotional space.
 
-    Implements decay, inertia, resonance, and suppression (Emotion FRD FR-EE-002).
+    Implements half-life decay toward a true resting state and impulse-only
+    coupling (Emotion FRD section 4, milestone E1).
+
+    The state is ``baseline + deviation``. ``tick`` only decays the deviation;
+    it does not spread anything through the relationship matrix. ``apply_influence``
+    spreads a single impulse once through ``EMOTION_RELATIONSHIPS`` and smooths
+    the resulting change by inertia.
     """
+
+    # Per-dimension half-life (seconds). Built from EmotionPhysicsConfig at
+    # construction. A dimension's deviation halves every half_life seconds:
+    #   deviation *= 0.5 ** (dt / half_life)
+    _HALF_LIFE_GROUPS: dict[str, str] = {
+        # PRD section 4.2
+        "surprise": "half_life_startle",
+        "confusion": "half_life_fast",
+        "certainty": "half_life_fast",
+        "doubt": "half_life_fast",
+        "boredom": "half_life_fast",
+        "interest": "half_life_fast",
+        "curiosity": "half_life_fast",
+        "fascination": "half_life_fast",
+        "joy": "half_life_core",
+        "sadness": "half_life_core",
+        "anger": "half_life_core",
+        "fear": "half_life_core",
+        "disgust": "half_life_core",
+        "awe": "half_life_aesthetic",
+        "beauty": "half_life_aesthetic",
+        "wonder": "half_life_aesthetic",
+        "serenity": "half_life_aesthetic",
+        "melancholy": "half_life_aesthetic",
+        "nostalgia": "half_life_aesthetic",
+        "empathy": "half_life_social",
+        "gratitude": "half_life_social",
+        "pride": "half_life_social",
+        "shame": "half_life_social",
+        "envy": "half_life_social",
+        "compassion": "half_life_social",
+        "love": "half_life_bond",
+        "trust": "half_life_bond",
+    }
 
     def __init__(self, config: EmotionPhysicsConfig | None = None):
         """Initialize emotion physics with configuration."""
         self.config = config or EmotionPhysicsConfig()
-
-        # Decay rates by category
-        self.decay_rates = {
-            "primary": self.config.decay_rate_primary,
-            "aesthetic": self.config.decay_rate_aesthetic,
-            "social": self.config.decay_rate_social,
-            "cognitive": self.config.decay_rate_cognitive,
+        self.half_lives: dict[str, float] = {
+            dim: float(getattr(self.config, group))
+            for dim, group in self._HALF_LIFE_GROUPS.items()
         }
 
     def tick(
@@ -200,126 +236,88 @@ class EmotionPhysics:
         baseline: EmotionVector | None = None,
     ) -> EmotionVector:
         """
-        Apply physics for one time step.
+        Apply decay for one time step.
 
-        Args:
-            current: Current emotional state
-            dt: Time delta in seconds
-            baseline: Baseline personality (resting state)
+        Each dimension's deviation from the baseline halves every half-life:
+            deviation *= 0.5 ** (dt / half_life)
+        The returned value is ``baseline + deviation`` clamped to [0, 1].
 
-        Returns:
-            Updated emotional state
+        No relationship spreading and no enhanced-decay branches run here
+        (PRD section 4.2/4.3). Coupling is applied once, in ``apply_influence``.
         """
         if baseline is None:
             baseline = self.config.baseline
 
-        # Create mutable dict for calculations
-        emotions = current.model_dump()
-        new_emotions: dict[str, float] = {}
+        if dt <= 0.0:
+            return current.model_copy()
 
-        # Step 1: Apply decay toward baseline
-        for emotion, value in emotions.items():
-            baseline_value = getattr(baseline, emotion, 0.0)
-            
-            # Check if this is a persistent emotion (love, trust, gratitude, etc.)
-            if emotion in PERSISTENT_EMOTIONS:
-                # Use much slower decay rate for persistent emotions
-                decay_rate = PERSISTENT_EMOTIONS[emotion]
-                # Persistent emotions don't get enhanced decay for extreme values
-                # They should stay high if they're high
-            else:
-                # Regular emotions use category-based decay
-                category = EMOTION_CATEGORIES.get(emotion, "primary")
-                decay_rate = self.decay_rates[category]
+        current_dict = current.model_dump()
+        baseline_dict = baseline.model_dump()
 
-                # Enhanced decay for extreme values (above 0.8)
-                # This prevents emotions from staying at 100% for too long
-                if value > 0.8:
-                    # Increase decay rate by 3x for extreme values (was 2x)
-                    decay_rate = decay_rate * 3.0
-                elif value > 0.6:
-                    # Moderate increase for high values
-                    decay_rate = decay_rate * 1.5
-            
-            # Decay toward baseline (not zero)
-            delta = baseline_value - value
-            # Ensure decay always moves toward baseline
-            decay_amount = delta * decay_rate * dt
-            
-            # Clamp the decay amount to prevent overshooting
-            if delta > 0:
-                # Moving up toward baseline
-                decay_amount = min(decay_amount, delta)
-            else:
-                # Moving down toward baseline
-                decay_amount = max(decay_amount, delta)
-
-            new_emotions[emotion] = value + decay_amount
-
-        # Step 2: Apply relationship effects (resonance and suppression)
-        for emotion, value in new_emotions.items():
-            if value < 0.1:  # Skip weak emotions (performance optimization)
+        new_values: dict[str, float] = {}
+        for emotion, value in current_dict.items():
+            baseline_value = baseline_dict.get(emotion, 0.0)
+            deviation = value - baseline_value
+            half_life = self.half_lives.get(emotion)
+            if half_life is None or half_life <= 0.0:
+                # No decay configured: hold the deviation.
+                new_values[emotion] = value
                 continue
+            new_deviation = deviation * (0.5 ** (dt / half_life))
+            new_values[emotion] = max(0.0, min(1.0, baseline_value + new_deviation))
 
-            relationships = EMOTION_RELATIONSHIPS.get(emotion, {})
-
-            # Amplification (resonance) - reduced to prevent feedback loops
-            for target, strength in relationships.get("amplifies", []):
-                if target in new_emotions:
-                    # Reduced scale factor and only amplify if target is below 0.7
-                    # This prevents extreme values from amplifying each other
-                    if new_emotions[target] < 0.7:
-                        amplification = value * strength * dt * 0.2  # Reduced from 0.5
-                        new_emotions[target] = min(1.0, new_emotions[target] + amplification)
-
-            # Suppression - keep as is, helps reduce extreme values
-            for target, strength in relationships.get("suppresses", []):
-                if target in new_emotions:
-                    suppression = value * strength * dt * 0.5  # Scale factor
-                    new_emotions[target] = max(0.0, new_emotions[target] - suppression)
-
-        # Step 3: Apply inertia (smooth changes, prevent whiplash)
-        final_emotions: dict[str, float] = {}
-        inertia = self.config.inertia_default
-
-        for emotion in emotions.keys():
-            old_value = emotions[emotion]
-            new_value = new_emotions[emotion]
-
-            # Inertia creates resistance to change
-            change = new_value - old_value
-            smoothed_change = change * (1.0 - inertia)
-            final_value = old_value + smoothed_change
-
-            # Clamp to [0, 1]
-            final_emotions[emotion] = max(0.0, min(1.0, final_value))
-
-        return EmotionVector(**final_emotions)
+        return EmotionVector(**new_values)
 
     def apply_influence(
         self, current: EmotionVector, influence: dict[str, float], intensity: float = 1.0
     ) -> EmotionVector:
         """
-        Apply external emotional influence.
+        Apply an external emotional impulse.
 
-        Args:
-            current: Current emotional state
-            influence: Emotion deltas {emotion: delta}
-            intensity: Multiplier for influence strength
-
-        Returns:
-            Updated emotional state
+        The direct impulse is added to each named dimension, then spread once
+        through ``EMOTION_RELATIONSHIPS``: an amplifying relation adds
+        ``impulse * strength * 0.5`` to its target, a suppressing relation
+        subtracts the same. The total change for each dimension is then
+        smoothed by inertia before being applied to the current state
+        (PRD section 4.3/4.4).
         """
-        emotions = current.model_dump()
+        current_dict = current.model_dump()
 
-        for emotion, delta in influence.items():
-            if emotion in emotions:
-                current_value = emotions[emotion]
-                # Allow emotions to reach 100% - removed diminishing returns
-                new_value = current_value + (delta * intensity)
-                emotions[emotion] = max(0.0, min(1.0, new_value))
+        # Total change per dimension from this impulse (direct + spread).
+        delta: dict[str, float] = {name: 0.0 for name in current_dict}
 
-        return EmotionVector(**emotions)
+        # Direct impulse.
+        for emotion, raw in influence.items():
+            if emotion in delta:
+                delta[emotion] += raw * intensity
+
+        # Spread the direct impulse once through the relationship matrix.
+        # We spread only the directly-supplied impulse (not the spread results),
+        # so amplification/suppression does not chain.
+        spread: dict[str, float] = {name: 0.0 for name in current_dict}
+        for emotion, raw in influence.items():
+            if emotion not in current_dict:
+                continue
+            impulse = raw * intensity
+            relationships = EMOTION_RELATIONSHIPS.get(emotion, {})
+            for target, strength in relationships.get("amplifies", []):
+                if target in spread:
+                    spread[target] += impulse * strength * 0.5
+            for target, strength in relationships.get("suppresses", []):
+                if target in spread:
+                    spread[target] -= impulse * strength * 0.5
+        for name, value in spread.items():
+            delta[name] += value
+
+        # Smooth the total change by inertia (resistance to change).
+        inertia = self.config.inertia_default
+        smoothing = 1.0 - inertia
+        new_values: dict[str, float] = {}
+        for name, value in current_dict.items():
+            change = delta.get(name, 0.0) * smoothing
+            new_values[name] = max(0.0, min(1.0, value + change))
+
+        return EmotionVector(**new_values)
 
     def calculate_volatility(
         self, current: EmotionVector, previous: EmotionVector
