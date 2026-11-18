@@ -12,7 +12,9 @@
 - **Night 3 bug fixes, all done:** BF-01 (fifth FETCH-before-LIMIT query), BF-02 (pin/unpin return 500 when the write fails), BF-03 (baselines written only with RECORD_BASELINE=1; first attempt rejected, second passed), BF-04 (valid IdentityContext in both stream fallbacks), BF-05 and BF-06 (memory and dreaming read time through the clock; a memory stored on day 0 is 30 days old on day 30), BF-07 (the Python lib/ ignore rule no longer matches frontend source). Suite: 200 passed.
 - **For Mai:** the two vrm-engine modules that broke the frontend build are in the old working copy at Desktop\Aura\Aura-Core\aura-app\frontend\src\components\vrm-engine\lib\ (VRMAnimation/ with 5 files and utils/ with 3, VRMLookAtSmootherLoaderPlugin/ with 2). V0 deletes that folder anyway; copying them in only unblocks W2-25 baseline build. W2-25 stays skipped (failed twice) until then.
 - **Follow-up noted:** other direct time reads remain (for example DreamingEngine.tick and parts of manager.py); to be carded with the next clock pass.
-- **Now:** G1 (W2-28..W2-38), then wave 3 in section 5 order.
+- **G1 progress:** W2-28 (registry), W2-29 (executor stats, fourth attempt), W2-30 (tool selection), W2-31 (single tool loop) done. W2-32 (blocking path onto the loop) not done: three attempts lost to provider failures (Cohere invalid tool generation, an empty Gemini answer), one attempt left. Suite: 243 passed.
+- **Stopped for the night (Mai, 2026-11-19):** most free providers exhausted. Resume with W2-32, then W2-33..W2-38, then wave 3.
+- **Sluice changes tonight (Sluice repo):** billing safety (SL-01..SL-16a); fail over on content-shape 400s and on streams that open with an error event; Cohere removed from the coder pool (kept in chat).
 - **Supervisor fixes:** baselines restored twice (bccf884, 6668d2f) until BF-03 lands; the overnight log was restored once after a session rewrote it (3db9728).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
 - **Night 3 (2026-11-19):** Sluice billing safety (Part 1) verified first; see the Sluice repo, docs/night3-log.md. Mistral is credit-capped and ineligible until 2026-12-18.
@@ -1190,3 +1192,8 @@
 
 ## W2-32: supervisor note (attempt 1)
 - **Discarded:** the session ended mid-edit (coordinator.py left with a syntax error) when cohere/command-a-plus returned an "invalid tool generation" error that Sluice did not recognise as a stream error. Second time Cohere broke a session on OpenCode tool sets. Cohere removed from the coder pool (kept in chat). Rerun.
+
+## W2-32: supervisor note (attempts 2 and 3)
+- **Attempt 2:** ended after 15 s with no changes when gemini/gemini-3.6-flash returned an empty 200 (0 output tokens), which OpenCode took as the end of the turn.
+- **Attempt 3:** stopped by the supervisor on Mai's instruction; partial changes discarded. Most free providers were exhausted for the night (Gemini Hydrogen daily quota until 08:00 UTC, LLM7 daily tokens, Mistral credit until 2026-12-18, OpenRouter and Kilo rate-limited).
+- **Next:** W2-32 has one attempt left under the four-attempt rule; rerun when quotas reset.
