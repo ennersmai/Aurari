@@ -515,6 +515,68 @@ class Settings(BaseSettings):
                     "Does not affect what is stored.",
     )
 
+    # =========================================================================
+    # RECALL ENGINE Configuration (M2)
+    # The Recall Engine assembles the prompt context from today's channels
+    # behind one entry point, with deduplication and a token budget. These
+    # fields are the budget, the per-block shares, the token estimate, the
+    # ablation switches (PRD rule 7) and the trace cap.
+    # =========================================================================
+    recall_token_budget: int = Field(
+        default=3000,
+        validation_alias="AURA_RECALL_TOKEN_BUDGET",
+        description="Total token budget the Recall Engine assembles into the context "
+                    "packet. Per-block shares are taken from this.",
+    )
+    recall_chars_per_token: int = Field(
+        default=4,
+        validation_alias="AURA_RECALL_CHARS_PER_TOKEN",
+        description="Characters per token used by the Recall Engine's token estimate "
+                    "(estimate_tokens = ceil(len(text) / this)).",
+    )
+    recall_share_insights: float = Field(
+        default=0.15,
+        validation_alias="AURA_RECALL_SHARE_INSIGHTS",
+        description="Share of the Recall Engine token budget allocated to the insights "
+                    "block.",
+    )
+    recall_share_latent: float = Field(
+        default=0.10,
+        validation_alias="AURA_RECALL_SHARE_LATENT",
+        description="Share of the Recall Engine token budget allocated to the latent "
+                    "intuition block.",
+    )
+    recall_share_cold_start: float = Field(
+        default=0.30,
+        validation_alias="AURA_RECALL_SHARE_COLD_START",
+        description="Share of the Recall Engine token budget allocated to the cold-start "
+                    "block (core memories, recent context, key insights).",
+    )
+    recall_share_memories: float = Field(
+        default=0.45,
+        validation_alias="AURA_RECALL_SHARE_MEMORIES",
+        description="Share of the Recall Engine token budget allocated to the retrieved "
+                    "memories block.",
+    )
+    recall_dedup_enabled: bool = Field(
+        default=True,
+        validation_alias="AURA_RECALL_DEDUP_ENABLED",
+        description="Ablation switch: when false, the Recall Engine skips deduplication "
+                    "and keeps every candidate (PRD rule 7).",
+    )
+    recall_budget_enabled: bool = Field(
+        default=True,
+        validation_alias="AURA_RECALL_BUDGET_ENABLED",
+        description="Ablation switch: when false, the Recall Engine skips the token "
+                    "budget and keeps every surviving candidate (PRD rule 7).",
+    )
+    recall_trace_keep: int = Field(
+        default=200,
+        validation_alias="AURA_RECALL_TRACE_KEEP",
+        description="Number of Recall Engine traces to keep in memory for the "
+                    "GET /recall/trace/{turn_id} endpoint (PRD 6.6).",
+    )
+
     # CORS Configuration
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001",
