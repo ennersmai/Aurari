@@ -147,12 +147,18 @@ def _fuzzy_match_score(query: str, content: str) -> float:
 
 
 def _compute_emotional_intensity(signature: dict[str, float]) -> float:
-    """Compute the L2 magnitude of an emotional signature vector, normalized to [0,1]."""
+    """Compute the RMS of active (>0.1) emotion dimensions, clamped to [0,1].
+
+    Unlike the old L2-magnitude-over-27-dims formula, this lets an emotionally
+    intense event reach 1.0 instead of being capped well below it.
+    """
     if not signature:
         return 0.0
-    raw = math.sqrt(sum(v * v for v in signature.values()))
-    # Normalize: 27 dims, max value 1.0 each → max magnitude = sqrt(27) ≈ 5.2
-    return min(1.0, raw / 5.2)
+    active = [v for v in signature.values() if v >= 0.1]
+    if not active:
+        return 0.0
+    rms = math.sqrt(sum(v * v for v in active) / len(active))
+    return max(0.0, min(1.0, rms))
 
 
 class MemoryManager:
