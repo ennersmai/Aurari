@@ -7,6 +7,7 @@ section 6. Card W2-14 adds the package skeleton: the pure dataclasses in
 """
 
 from .assembly import assemble, estimate_tokens, normalise_text
+from .engine import RecallEngine, get_recall_engine
 from .models import (
     BLOCK_ORDER,
     Block,
@@ -24,10 +25,12 @@ __all__ = [
     "BlockKind",
     "Candidate",
     "ContextPacket",
+    "RecallEngine",
     "RecallRequest",
     "RecallTrace",
     "TraceItem",
     "assemble",
     "estimate_tokens",
+    "get_recall_engine",
     "normalise_text",
 ]
