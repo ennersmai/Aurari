@@ -10,7 +10,7 @@ import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from aura.clock import get_clock
@@ -50,6 +50,19 @@ class TurnContext:
     cold_start_xml: str | None
     latent_intuition_xml: str | None
     synthesis_context: SynthesisContext
+
+
+@dataclass
+class TurnEvent:
+    """One event in the ``_turn_pipeline`` stream (W2-10).
+
+    ``delta`` events carry a text chunk (one character for an early reply,
+    one streamed chunk during generation, including the ``"\\n\\n"`` round
+    separators). ``done`` carries the full accumulated response.
+    """
+
+    kind: Literal["delta", "done"]
+    text: str
 
 
 class SystemState(str, Enum):
@@ -1490,6 +1503,128 @@ Original user query: {user_input}"""
                 tool_history_blocks.append(f"[Round {round_idx}]\n{tool_results}")
                 yield "\n\n", False
 
+    async def _turn_pipeline(
+        self,
+        user_input: str,
+        user_id: str,
+        conversation_history: list[dict[str, str]] | None,
+        *,
+        stream: bool,
+        context_limit: int | None,
+        enable_l2: bool,
+        conversation_id: str | None,
+        reasoning_enabled: bool,
+        l2_reasoning_enabled: bool,
+        session_id: str | None,
+        context_mode: str,
+        requester_role: str,
+    ):
+        """Run one turn end-to-end and yield :class:`TurnEvent` items (W2-10).
+
+        This is the single pipeline that both ``process_query`` (``stream=False``)
+        and ``stream_query`` (``stream=True``) drive. It runs the stages in
+        order: context-mode set, session resolution, pre-intent reply, intent
+        classification, forced-tool resolution, context gathering, system-prompt
+        caching, generation, and post-response scheduling; then it yields a
+        final ``done`` event carrying the accumulated response.
+
+        Early replies (stage 3 pre-intent, or the teaching reply from stage 4)
+        are returned without scheduling the post-response chain, as today:
+        when ``stream`` is true one ``delta`` is yielded per character then a
+        ``done`` with the full reply; when ``stream`` is false only the ``done``
+        event is yielded.
+
+        During streaming generation every chunk is yielded as a ``delta``
+        (separators included); the post-response chain is scheduled before the
+        ``done`` event so it still runs only after the last delta has been
+        consumed, as today.
+        """
+        # Stage 1: set the LLM router context mode.
+        self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
+
+        # Stage 2: resolve the session namespace and identity overlay.
+        await self._resolve_session(session_id)
+
+        # Stage 3: sleep gating + system commands (bypass intent classification).
+        reply = await self._pre_intent_reply(user_input, user_id)
+        if reply is not None:
+            if stream:
+                for char in reply:
+                    yield TurnEvent("delta", char)
+                yield TurnEvent("done", reply)
+            else:
+                yield TurnEvent("done", reply)
+            return
+
+        # Stage 4: L1 intent classification, telemetry, keyword fallback, teaching lane.
+        intent_data, intent, teaching_reply = await self._classify_intent(
+            user_input, user_id, stream=stream
+        )
+        if teaching_reply is not None:
+            if stream:
+                for char in teaching_reply:
+                    yield TurnEvent("delta", char)
+                yield TurnEvent("done", teaching_reply)
+            else:
+                yield TurnEvent("done", teaching_reply)
+            return
+
+        # Stage 5: forced-tool resolution (tool reflex fast lane).
+        use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
+
+        # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
+        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=stream)
+
+        # Stage 7: cache the system prompt for debugging (before synthesis).
+        await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)
+
+        # Stage 8: generation (streaming or blocking).
+        if stream:
+            full_response = ""
+            async for chunk, counts in self._generate_streaming(
+                user_input,
+                conversation_history,
+                ctx,
+                reasoning_enabled,
+                use_forced_tool_mode,
+                tool_schema_str,
+                requester_role,
+            ):
+                # Yield every chunk as a delta (separators included); accumulate
+                # only the counted chunks so ``full_response`` matches today.
+                yield TurnEvent("delta", chunk)
+                if counts:
+                    full_response += chunk
+            response = full_response
+        else:
+            response = await self._generate_blocking(
+                user_input,
+                conversation_history,
+                ctx,
+                context_limit,
+                reasoning_enabled,
+                use_forced_tool_mode,
+                tool_schema_str,
+                requester_role,
+            )
+
+        # Stage 9: schedule the post-response chain (L4/L2/etc.) in the background.
+        self._schedule_post_response(
+            user_input=user_input,
+            response=response,
+            emotional_before=ctx.emotional_state,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            goal_context=ctx.goal_context,
+            learning_context=ctx.learning_context,
+            enable_l2=enable_l2,
+            l2_reasoning_enabled=l2_reasoning_enabled,
+            resonance_score=ctx.resonance_score,
+        )
+
+        # Stage 10: yield the final done event with the accumulated response.
+        yield TurnEvent("done", response)
+
     async def process_query(
         self,
         user_input: str,
@@ -1508,14 +1643,9 @@ Original user query: {user_input}"""
         """
         Full orchestrated query processing.
 
-        Steps (Cognitive PRD Section 3.3 OR-008):
-        1. L1 Intent Gatekeeper
-        2. Parallel engine queries
-        3. Detect conflicts
-        4. Resolve conflicts
-        5. Synthesize L3 context
-        6. Generate response
-        7. Trigger L2 async
+        This is the non-streaming entry point over :meth:`_turn_pipeline`
+        (W2-10). It drives the pipeline with ``stream=False`` and returns the
+        ``done`` text.
 
         Args:
             user_input: User's message
@@ -1527,63 +1657,27 @@ Original user query: {user_input}"""
         """
         self.logger.info(f"Processing query from user {user_id} (session={session_id or 'main'})")
 
-        # Set context mode on the LLM router (sovereign dispatch)
-        self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
-
-        # Resolve session → memory namespace + identity overlay (V1PRD §4).
-        await self._resolve_session(session_id)
-
-        # Sleep gating + system commands (bypass intent classification).
-        reply = await self._pre_intent_reply(user_input, user_id)
-        if reply is not None:
-            return reply
-
-        # L1 intent classification, telemetry, keyword fallback, teaching lane.
-        intent_data, intent, teaching_reply = await self._classify_intent(
-            user_input, user_id, stream=False
-        )
-        if teaching_reply is not None:
-            return teaching_reply
-
-        # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
-        # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
-        use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
-
-        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=False)
-
-        # Cache the system prompt for debugging (before calling synthesis)
-        await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)
-
-        # Step 5: Generate response (L3) with a bounded tool-execution loop.
-        response = await self._generate_blocking(
-            user_input,
-            conversation_history,
-            ctx,
-            context_limit,
-            reasoning_enabled,
-            use_forced_tool_mode,
-            tool_schema_str,
-            requester_role,
-        )
-
-        # Step 6 & 7: Post-response processing (Chained)
-        # We chain these to ensure L2 sees the emotional state AFTER L4 updates it
-        # This resolves the race condition between emotion update and analysis
-        # Use deep_analysis_enabled if provided, otherwise fall back to enable_l2_analysis for backward compatibility
+        # Use deep_analysis_enabled if provided, otherwise fall back to
+        # enable_l2_analysis for backward compatibility.
         final_l2_enabled = deep_analysis_enabled if enable_l2_analysis is None else enable_l2_analysis
-        self._schedule_post_response(
-            user_input=user_input,
-            response=response,
-            emotional_before=ctx.emotional_state,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            goal_context=ctx.goal_context,
-            learning_context=ctx.learning_context,
-            enable_l2=final_l2_enabled,
-            l2_reasoning_enabled=l2_reasoning_enabled,
-            resonance_score=ctx.resonance_score,
-        )
 
+        response = ""
+        async for ev in self._turn_pipeline(
+            user_input,
+            user_id,
+            conversation_history,
+            stream=False,
+            context_limit=context_limit,
+            enable_l2=final_l2_enabled,
+            conversation_id=conversation_id,
+            reasoning_enabled=reasoning_enabled,
+            l2_reasoning_enabled=l2_reasoning_enabled,
+            session_id=session_id,
+            context_mode=context_mode,
+            requester_role=requester_role,
+        ):
+            if ev.kind == "done":
+                response = ev.text
         return response
 
     def _compute_resonance_score(self, emotional_state: EmotionState) -> float:
@@ -2168,72 +2262,28 @@ Original user query: {user_input}"""
         """
         Stream orchestrated response generation.
 
+        This is the streaming entry point over :meth:`_turn_pipeline` (W2-10).
+        It drives the pipeline with ``stream=True`` and yields the text of each
+        ``delta`` event as it is produced; the final ``done`` event is ignored.
+
         Yields text chunks as they're generated.
         """
-        # Set context mode on the LLM router (sovereign dispatch)
-        self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
-
-        # Resolve session → memory namespace + identity overlay (V1PRD §4).
-        await self._resolve_session(session_id)
-
-        # Sleep gating + system commands (bypass intent classification).
-        reply = await self._pre_intent_reply(user_input, user_id)
-        if reply is not None:
-            for char in reply:
-                yield char
-            return
-
-        # --- L1 GATEKEEPER: Check intent first ---
-        intent_data, intent, teaching_reply = await self._classify_intent(
-            user_input, user_id, stream=True
-        )
-        if teaching_reply is not None:
-            # Yield the response message
-            for char in teaching_reply:
-                yield char
-            return
-
-        # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
-        # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
-        use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
-
-        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=True)
-
-        # Cache the system prompt for debugging (before calling synthesis)
-        await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)
-
-        # Stream L3 generation - WITH FORCED TOOL MODE SUPPORT
-        full_response = ""
-        async for chunk, counts in self._generate_streaming(
+        async for ev in self._turn_pipeline(
             user_input,
+            user_id,
             conversation_history,
-            ctx,
-            reasoning_enabled,
-            use_forced_tool_mode,
-            tool_schema_str,
-            requester_role,
-        ):
-            # ``counts`` is False only for the "\n\n" separators, which today
-            # are not added to ``full_response``. Real response chunks are
-            # accumulated into ``full_response`` exactly as the old code did.
-            if counts:
-                full_response += chunk
-            yield chunk
-
-        # Post-streaming updates (Async/Background)
-        # We chain these to ensure L2 sees the emotional state AFTER L4 updates it
-        self._schedule_post_response(
-            user_input=user_input,
-            response=full_response,
-            emotional_before=ctx.emotional_state,
-            user_id=user_id,
-            conversation_id=conversation_id,
-            goal_context=ctx.goal_context,
-            learning_context=ctx.learning_context,
+            stream=True,
+            context_limit=None,
             enable_l2=deep_analysis_enabled,
+            conversation_id=conversation_id,
+            reasoning_enabled=reasoning_enabled,
             l2_reasoning_enabled=l2_reasoning_enabled,
-            resonance_score=ctx.resonance_score,
-        )
+            session_id=session_id,
+            context_mode=context_mode,
+            requester_role=requester_role,
+        ):
+            if ev.kind == "delta":
+                yield ev.text
 
     async def _apply_l4_emotion_analysis(
         self,
