@@ -958,6 +958,65 @@ Constraints:
 
         return use_forced_tool_mode, tool_schema_str
 
+    async def _cache_system_prompt(
+        self,
+        synthesis_context: SynthesisContext,
+        user_input: str,
+        user_id: str,
+    ) -> None:
+        """Build and cache the L3 system prompt for debugging (before calling synthesis)."""
+        try:
+            # Retrieve relevant memories for context (same as L3 does)
+            relevant_memories = []
+            try:
+                from aura.engines.memory.manager import get_memory_manager
+                memory_manager = get_memory_manager()
+                relevant_memories = await memory_manager.retrieve_memories(
+                    query=user_input,
+                    limit=3,
+                    importance_min=0.5,
+                    namespace=getattr(self, "_current_session_namespace", None),
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to retrieve memories for prompt cache: {e}")
+            
+            # Build and cache the system prompt
+            system_prompt = self.llm_layers.build_l3_system_prompt(
+                synthesis_context,
+                relevant_memories=relevant_memories
+            )
+            self._last_system_prompt[user_id] = system_prompt
+        except Exception as e:
+            self.logger.warning(f"Failed to cache system prompt: {e}")
+
+    def _schedule_post_response(
+        self,
+        *,
+        user_input: str,
+        response: str,
+        emotional_before: EmotionState,
+        user_id: str,
+        conversation_id: str | None,
+        goal_context: Any,
+        learning_context: Any,
+        enable_l2: bool,
+        l2_reasoning_enabled: bool,
+        resonance_score: float,
+    ) -> None:
+        """Schedule the post-response chain in the background (never awaited here)."""
+        asyncio.create_task(self._post_response_chain(
+            user_input=user_input,
+            response=response,
+            emotional_before=emotional_before,
+            user_id=user_id,
+            conversation_id=conversation_id,
+            goal_context=goal_context,
+            learning_context=learning_context,
+            enable_l2=enable_l2,
+            l2_reasoning_enabled=l2_reasoning_enabled,
+            resonance_score=resonance_score,
+        ))
+
     async def process_query(
         self,
         user_input: str,
@@ -1123,29 +1182,7 @@ Constraints:
         self.logger.info(f"[TARGET] Using context window size: {context_window_size} messages")
         
         # Cache the system prompt for debugging (before calling synthesis)
-        try:
-            # Retrieve relevant memories for context (same as L3 does)
-            relevant_memories = []
-            try:
-                from aura.engines.memory.manager import get_memory_manager
-                memory_manager = get_memory_manager()
-                relevant_memories = await memory_manager.retrieve_memories(
-                    query=user_input,
-                    limit=3,
-                    importance_min=0.5,
-                    namespace=getattr(self, "_current_session_namespace", None),
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to retrieve memories for prompt cache: {e}")
-            
-            # Build and cache the system prompt
-            system_prompt = self.llm_layers.build_l3_system_prompt(
-                synthesis_context,
-                relevant_memories=relevant_memories
-            )
-            self._last_system_prompt[user_id] = system_prompt
-        except Exception as e:
-            self.logger.warning(f"Failed to cache system prompt: {e}")
+        await self._cache_system_prompt(synthesis_context, user_input, user_id)
         
         # Step 5: Generate response (L3) with a bounded tool-execution loop.
         # This enables multi-step tool plans (read -> write -> verify) safely.
@@ -1220,10 +1257,9 @@ Constraints:
         # Step 6 & 7: Post-response processing (Chained)
         # We chain these to ensure L2 sees the emotional state AFTER L4 updates it
         # This resolves the race condition between emotion update and analysis
-        import asyncio
         # Use deep_analysis_enabled if provided, otherwise fall back to enable_l2_analysis for backward compatibility
         final_l2_enabled = deep_analysis_enabled if enable_l2_analysis is None else enable_l2_analysis
-        asyncio.create_task(self._post_response_chain(
+        self._schedule_post_response(
             user_input=user_input,
             response=response,
             emotional_before=emotional_state,
@@ -1234,7 +1270,7 @@ Constraints:
             enable_l2=final_l2_enabled,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=resonance_score,
-        ))
+        )
 
         return response
 
@@ -1939,29 +1975,7 @@ Constraints:
         )
 
         # Cache the system prompt for debugging (before calling synthesis)
-        try:
-            # Retrieve relevant memories for context (same as L3 does)
-            relevant_memories = []
-            try:
-                from aura.engines.memory.manager import get_memory_manager
-                memory_manager = get_memory_manager()
-                relevant_memories = await memory_manager.retrieve_memories(
-                    query=user_input,
-                    limit=3,
-                    importance_min=0.5,
-                    namespace=getattr(self, "_current_session_namespace", None),
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to retrieve memories for prompt cache: {e}")
-            
-            # Build and cache the system prompt
-            system_prompt = self.llm_layers.build_l3_system_prompt(
-                synthesis_context,
-                relevant_memories=relevant_memories
-            )
-            self._last_system_prompt[user_id] = system_prompt
-        except Exception as e:
-            self.logger.warning(f"Failed to cache system prompt: {e}")
+        await self._cache_system_prompt(synthesis_context, user_input, user_id)
 
         # Stream L3 generation - WITH FORCED TOOL MODE SUPPORT
         full_response = ""
@@ -2081,19 +2095,18 @@ Original user query: {user_input}"""
 
         # Post-streaming updates (Async/Background)
         # We chain these to ensure L2 sees the emotional state AFTER L4 updates it
-        import asyncio
-        asyncio.create_task(self._post_response_chain(
+        self._schedule_post_response(
             user_input=user_input,
             response=full_response,
             emotional_before=emotional_state,
             user_id=user_id,
-            conversation_id=conversation_id,  # Pass actual conversation_id, not None!
+            conversation_id=conversation_id,
             goal_context=goal_context,
             learning_context=learning_context,
             enable_l2=deep_analysis_enabled,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=resonance_score,
-        ))
+        )
 
     async def _apply_l4_emotion_analysis(
         self,
