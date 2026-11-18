@@ -541,49 +541,17 @@ Constraints:
         greeting_text = (greeting or "").strip()
         return greeting_text or "System online. Ready for the next phase."
 
-    async def process_query(
-        self,
-        user_input: str,
-        user_id: str = "default",
-        conversation_history: list[dict[str, str]] | None = None,
-        context_limit: int | None = None,
-        enable_l2_analysis: bool | None = None,
-        conversation_id: str | None = None,
-        reasoning_enabled: bool = False,
-        l2_reasoning_enabled: bool = False,
-        deep_analysis_enabled: bool = True,
-        session_id: str | None = None,
-        context_mode: str = "deep_work",
-        requester_role: str = "owner",
-    ) -> str:
+    # =========================================================================
+    # Internals: turn preamble (session resolution + pre-intent commands)
+    # =========================================================================
+
+    async def _resolve_session(self, session_id: str | None) -> None:
         """
-        Full orchestrated query processing.
+        Resolve session → memory namespace + identity overlay (V1PRD §4).
 
-        Steps (Cognitive PRD Section 3.3 OR-008):
-        1. L1 Intent Gatekeeper
-        2. Parallel engine queries
-        3. Detect conflicts
-        4. Resolve conflicts
-        5. Synthesize L3 context
-        6. Generate response
-        7. Trigger L2 async
-
-        Args:
-            user_input: User's message
-            user_id: User identifier
-            conversation_history: Previous messages
-
-        Returns:
-            Generated response
+        Caller may pass session_id=None for backward compatibility; that
+        routes to MAIN, and namespace stays None → retrieval reads everything.
         """
-        self.logger.info(f"Processing query from user {user_id} (session={session_id or 'main'})")
-
-        # Set context mode on the LLM router (sovereign dispatch)
-        self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
-
-        # Resolve session → memory namespace + identity overlay (V1PRD §4).
-        # Caller may pass session_id=None for backward compatibility; that
-        # routes to MAIN, and namespace stays None → retrieval reads everything.
         session_namespace: str | None = None
         session_overlay = None
         if session_id and session_id != "main":
@@ -599,6 +567,13 @@ Constraints:
         self._current_session_namespace = session_namespace
         self._current_identity_overlay = session_overlay
 
+    async def _pre_intent_reply(self, user_input: str, user_id: str) -> str | None:
+        """
+        Handle sleep gating and system commands that bypass intent classification.
+
+        Returns the reply string when the turn should end here, or None when the
+        turn should continue to intent classification.
+        """
         # Enforce system sleep/dreaming gating before any LLM work.
         allowed, blocked_msg = await self._sleep_gate(user_input=user_input, user_id=user_id)
         if not allowed:
@@ -712,6 +687,56 @@ Constraints:
                     f"Failed to execute direct learning: {e}", exc_info=True
                 )
                 return f"❌ Memory write failed: {str(e)}"
+
+        return None
+
+    async def process_query(
+        self,
+        user_input: str,
+        user_id: str = "default",
+        conversation_history: list[dict[str, str]] | None = None,
+        context_limit: int | None = None,
+        enable_l2_analysis: bool | None = None,
+        conversation_id: str | None = None,
+        reasoning_enabled: bool = False,
+        l2_reasoning_enabled: bool = False,
+        deep_analysis_enabled: bool = True,
+        session_id: str | None = None,
+        context_mode: str = "deep_work",
+        requester_role: str = "owner",
+    ) -> str:
+        """
+        Full orchestrated query processing.
+
+        Steps (Cognitive PRD Section 3.3 OR-008):
+        1. L1 Intent Gatekeeper
+        2. Parallel engine queries
+        3. Detect conflicts
+        4. Resolve conflicts
+        5. Synthesize L3 context
+        6. Generate response
+        7. Trigger L2 async
+
+        Args:
+            user_input: User's message
+            user_id: User identifier
+            conversation_history: Previous messages
+
+        Returns:
+            Generated response
+        """
+        self.logger.info(f"Processing query from user {user_id} (session={session_id or 'main'})")
+
+        # Set context mode on the LLM router (sovereign dispatch)
+        self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
+
+        # Resolve session → memory namespace + identity overlay (V1PRD §4).
+        await self._resolve_session(session_id)
+
+        # Sleep gating + system commands (bypass intent classification).
+        reply = await self._pre_intent_reply(user_input, user_id)
+        if reply is not None:
+            return reply
 
         # --- CHANGE 1: THE GATEKEEPER ---
         # Call the new L1 classifier
@@ -1763,158 +1788,15 @@ Constraints:
         self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
 
         # Resolve session → memory namespace + identity overlay (V1PRD §4).
-        if session_id and session_id != "main":
-            try:
-                from aura.orchestrator.session_runtime import get_session_runtime
-                ctx = await get_session_runtime().context_for(session_id)
-                self._current_session_namespace = (
-                    ctx.memory_namespace if ctx.memory_namespace != "global" else None
-                )
-                self._current_identity_overlay = ctx.identity_overlay
-            except Exception as e:  # noqa: BLE001
-                self.logger.warning(f"stream_query: could not resolve session {session_id!r}: {e}")
-                self._current_session_namespace = None
-                self._current_identity_overlay = None
-        else:
-            self._current_session_namespace = None
-            self._current_identity_overlay = None
+        await self._resolve_session(session_id)
 
-        # Enforce system sleep/dreaming gating before any LLM work.
-        allowed, blocked_msg = await self._sleep_gate(user_input=user_input, user_id=user_id)
-        if not allowed:
-            response_message = blocked_msg or "System unavailable."
-            for char in response_message:
+        # Sleep gating + system commands (bypass intent classification).
+        reply = await self._pre_intent_reply(user_input, user_id)
+        if reply is not None:
+            for char in reply:
                 yield char
             return
 
-        # Record interaction (updates last_user_interaction and exits IDLE if needed).
-        await self._record_user_interaction(user_id)
-
-        # --- PRIORITY 0: System Commands (bypass intent classification) ---
-        # Check for system command: "System: Connect MCP <server_name> <url|command...>"
-        # This must happen BEFORE intent classification to ensure it's always detected
-        import re
-        connect_match = re.search(
-            r"system:\s*connect\s+mcp\s+(\w+)\s+(.+)",
-            user_input,
-            re.IGNORECASE,
-        )
-        if connect_match:
-            server_name = connect_match.group(1)
-            target = (connect_match.group(2) or "").strip()
-            if not target:
-                response_message = "❌ Usage: `System: Connect MCP <server_name> <url|command...>`"
-                for char in response_message:
-                    yield char
-                return
-
-            connection_config: dict[str, Any]
-            if target.lower().startswith(("http://", "https://")):
-                transport = "sse" if "/sse" in target.lower() else "streamable_http"
-                connection_config = {"transport": transport, "url": target, "timeout_s": 15, "server": server_name}
-            else:
-                import os
-                import shlex
-
-                posix_default = os.name != "nt"
-                try:
-                    parts = shlex.split(target, posix=posix_default)
-                except Exception:
-                    parts = shlex.split(target, posix=(not posix_default))
-
-                if not parts:
-                    response_message = "❌ Could not parse command. Try quoting paths with spaces."
-                    for char in response_message:
-                        yield char
-                    return
-
-                connection_config = {
-                    "transport": "stdio",
-                    "command": parts[0],
-                    "args": parts[1:],
-                    "timeout_s": 15,
-                    "server": server_name,
-                }
-
-            self.logger.info(f"[PLUG] System command detected: Connect MCP '{server_name}' (streaming)")
-            try:
-                result = await self.learning_engine.ingest_mcp_server(server_name, connection_config)
-                response_message = f"✅ {result}"
-            except Exception as e:
-                self.logger.error(f"Failed to connect MCP server '{server_name}' (streaming): {e}", exc_info=True)
-                response_message = f"❌ Failed to connect MCP server '{server_name}': {str(e)}"
-
-            for char in response_message:
-                yield char
-            return
-
-        # Check for system command: "System: Ingest tool <name>"
-        # This must happen BEFORE intent classification to ensure it's always detected
-        ingest_match = re.search(r'system:\s*ingest\s+tool\s+(\w+)', user_input, re.IGNORECASE)
-        if ingest_match:
-            tool_name = ingest_match.group(1)
-            self.logger.info(f"[WRENCH] System command detected: Ingest tool '{tool_name}'")
-            try:
-                result = await self.learning_engine.ingest_local_tool_module(tool_name)
-                response_message = f"✅ {result} The tool is now registered and available for use (semantic triggers will be ready shortly)."
-            except Exception as e:
-                self.logger.error(f"Failed to ingest tool '{tool_name}': {e}", exc_info=True)
-                response_message = f"❌ Failed to ingest tool '{tool_name}': {str(e)}"
-            
-            for char in response_message:
-                yield char
-            return
-
-        # --- PRIORITY 0.5: Direct Learning Command (God Mode) ---
-        # Intercept "Aura learn: ..." / "learn this: ..." to force Fact ingestion instead of Skill compilation.
-        # This must happen BEFORE intent classification to ensure it's always detected.
-        learn_match = re.search(
-            r'(?:aura\s+)?learn(?:\s+this)?\s*:\s*(.+)',
-            user_input,
-            re.IGNORECASE,
-        )
-        if learn_match:
-            content_to_learn = (learn_match.group(1) or "").strip()
-            if not content_to_learn:
-                response_message = "❌ I didn’t find any content after `learn:`. Try: `Aura learn: <fact>`."
-                for char in response_message:
-                    yield char
-                return
-
-            self.logger.info(
-                "[BRAIN] Direct learning command detected: forcing direct_instruction (content_len=%s) (streaming)",
-                len(content_to_learn),
-            )
-            try:
-                await self.learning_engine.log_experience(
-                    {
-                        "user_id": user_id,
-                        "task_type": "direct_instruction",  # CRITICAL: triggers Route A in Learning Engine
-                        "domain": "user_defined",
-                        "context": {"user_query": user_input, "source": content_to_learn},
-                        "metadata": {
-                            "forced_insight": {
-                                "content": content_to_learn,
-                                "type": "FACT",
-                                "confidence": 1.0,
-                            }
-                        },
-                    }
-                )
-
-                response_message = (
-                    f"✅ Understood. I have committed this to memory as a Fact: '{content_to_learn}'."
-                )
-            except Exception as e:
-                self.logger.error(
-                    f"Failed to execute direct learning (streaming): {e}", exc_info=True
-                )
-                response_message = f"❌ Memory write failed: {str(e)}"
-
-            for char in response_message:
-                yield char
-            return
-        
         # --- L1 GATEKEEPER: Check intent first ---
         intent_data = await self.llm_layers.l1_classify_intent(user_input)
         intent = intent_data.get("intent", "CHAT")
