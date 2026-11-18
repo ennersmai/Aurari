@@ -1,13 +1,33 @@
 """Test configuration and fixtures for Aura test suite."""
 
 import asyncio
+import json
 import logging
-
+import os
 import pytest
 from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+
+
+def write_baseline(path: Path, data: dict) -> bool:
+    """
+    Write baseline data to file only when RECORD_BASELINE environment variable equals "1".
+    
+    Args:
+        path: Path to the baseline file
+        data: Data to write as JSON
+        
+    Returns:
+        True if the file was written, False if it was skipped
+    """
+    if os.environ.get("RECORD_BASELINE") == "1":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+        return True
+    return False
 
 
 class FakeDatabaseClient:

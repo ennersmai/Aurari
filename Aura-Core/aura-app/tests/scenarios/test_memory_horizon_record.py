@@ -15,6 +15,7 @@ import pytest
 
 from aura.engines.memory.manager import MemoryManager, _compute_emotional_intensity
 from aura.engines.dreaming.engine import DreamingEngine
+from tests.conftest import write_baseline
 
 
 class TestMemoryHorizonRecord:
@@ -85,11 +86,14 @@ class TestMemoryHorizonRecord:
         }
         
         output_path = Path("docs/metrics/memory_before.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(output, indent=2))
+        written = write_baseline(output_path, output)
         
-        # Verify file was created
-        assert output_path.exists()
+        # Verify file was created only when RECORD_BASELINE=1
+        if written:
+            assert output_path.exists()
+        else:
+            # When RECORD_BASELINE is not set, the file should not be modified
+            pass
         
         # Print summary
         print(f"\nMemory horizon recorded to {output_path}")

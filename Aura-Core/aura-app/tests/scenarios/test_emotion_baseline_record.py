@@ -14,6 +14,7 @@ import pytest
 
 from aura.engines.emotion.physics import EmotionPhysics
 from aura.models.emotion import EmotionPhysicsConfig, EmotionVector
+from tests.conftest import write_baseline
 
 
 class TestEmotionBaselineRecord:
@@ -81,11 +82,15 @@ class TestEmotionBaselineRecord:
         }
         
         output_path = Path("docs/metrics/emotion_before.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(output, indent=2))
+        written = write_baseline(output_path, output)
         
-        # Verify file was created
-        assert output_path.exists()
+        # Verify file was created only when RECORD_BASELINE=1
+        if written:
+            assert output_path.exists()
+        else:
+            # When RECORD_BASELINE is not set, the file should not be modified
+            # (we don't assert it doesn't exist since it may exist from a previous run)
+            pass
         
         # Print summary for visibility
         print(f"\nBaseline recorded to {output_path}")

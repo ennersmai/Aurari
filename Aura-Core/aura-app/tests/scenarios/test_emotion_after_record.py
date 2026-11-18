@@ -12,6 +12,7 @@ import pytest
 
 from aura.engines.emotion.physics import EmotionPhysics
 from aura.models.emotion import EmotionPhysicsConfig, EmotionVector
+from tests.conftest import write_baseline
 
 
 class TestEmotionAfterRecord:
@@ -78,10 +79,13 @@ class TestEmotionAfterRecord:
         }
 
         output_path = Path("docs/metrics/emotion_after.json")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(output, indent=2))
+        written = write_baseline(output_path, output)
 
-        assert output_path.exists()
+        if written:
+            assert output_path.exists()
+        else:
+            # When RECORD_BASELINE is not set, the file should not be modified
+            pass
 
         print(f"\nPost-W1-15 baseline recorded to {output_path}")
         print(f"Final vector after 600 ticks: {final_vector}")

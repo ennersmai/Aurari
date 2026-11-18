@@ -971,3 +971,24 @@
   4. All 4 original W1-10 success tests still pass; 3 new failure-case tests pass.
   5. Full suite passes (184 tests). Frozen baselines `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` were restored with `git checkout --` before committing.
 - **Unsure about:** Nothing. The change is scoped exactly to the card's three files; the success path behaviour is unchanged, and the error responses now follow the file's existing pattern (dict in `detail`).
+
+## BF-03: Baseline files are written only on request
+- **Status:** DONE
+- **PRD:** build plan W0-04 and W0-05 (follow-up).
+- **Tier:** bulk
+- **Files changed:** `tests/conftest.py`, `tests/scenarios/test_emotion_baseline_record.py`, `tests/scenarios/test_memory_horizon_record.py`, `tests/scenarios/test_emotion_after_record.py`, `tests/unit/test_write_baseline.py` (new)
+- **Test result:** 192 passed (full suite: 184 prior + 8 new in `test_write_baseline.py`; 114 warnings, 50.66s)
+- **What I did, step by step:**
+  1. Added `write_baseline(path, data)` helper function to `tests/conftest.py` that writes the JSON file only when the environment variable `RECORD_BASELINE` equals `"1"`. Otherwise it returns `False` and leaves the file untouched.
+  2. Modified `tests/scenarios/test_emotion_baseline_record.py` to import and use `write_baseline` instead of directly writing `docs/metrics/emotion_before.json`.
+  3. Modified `tests/scenarios/test_memory_horizon_record.py` to import and use `write_baseline` instead of directly writing `docs/metrics/memory_before.json`.
+  4. Modified `tests/scenarios/test_emotion_after_record.py` to import and use `write_baseline` instead of directly writing `docs/metrics/emotion_after.json`.
+  5. Created `tests/unit/test_write_baseline.py` with 8 unit tests covering:
+     - File is not written when `RECORD_BASELINE` is unset, empty, or not "1"
+     - File is written with correct content when `RECORD_BASELINE=1`
+     - Parent directories are created when needed
+     - Existing file content and mtime are unchanged when `RECORD_BASELINE` is unset
+     - The two original recording tests (emotion and memory) don't write their baseline files when the env var is unset
+  6. Verified the fix: ran each recording test individually with `RECORD_BASELINE` unset, and the full suite — `git status --short docs/metrics/` showed no changes in all cases.
+  7. Verified that when `RECORD_BASELINE=1` is set, the tests write the files correctly (files appeared with updated content, confirmed by `git status` showing modifications, then restored with `git checkout --`).
+- **Unsure about:** Nothing. The change is scoped to the four test files and the new test file. The frozen baselines `docs/metrics/emotion_before.json`, `docs/metrics/memory_before.json`, and `docs/metrics/emotion_after.json` are not modified in this commit (they were restored with `git checkout --` after verifying the RECORD_BASELINE=1 behavior). The helper function is in `conftest.py` so it's available to all tests.
