@@ -918,3 +918,18 @@
   - The frozen baselines `emotion_before.json` / `memory_before.json` were restored before committing.
 - **Do-not checks:** No `src/` files changed. The legacy path's retrieval arguments are unchanged. No assertion that the gold was found.
 - **Unsure about:** Nothing. The change is scoped to `runner.py` and the new test file. The token counts logged (legacy=103, recall=86) show the Recall Engine's deduplication/budget reduces tokens while preserving the same gold-found outcome for this scenario. The `trace_turn_id` is captured for traceability.
+
+## W2-25: Remove the VRM avatar (second attempt)
+- **Status:** STOPPED (pre-existing build failure)
+- **Files changed:** none (log only)
+- **Test result:** no tests written; no code changed. Full suite not re-run.
+- **What I found:** Per the card's setup step, ran `npm ci` (succeeded) then `npm run build` from `frontend/` before any changes. The build fails with:
+  ```
+  ./src/components/vrm-engine/features/vrmViewer/animationRouter.ts
+  Module not found: Can't resolve '../../lib/VRMAnimation/loadVRMAnimation'
+  ./src/components/vrm-engine/features/vrmViewer/model.ts
+  Module not found: Can't resolve '../../lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin'
+  ./src/components/vrm-engine/features/vrmViewer/viewer.ts
+  Module not found: Can't resolve '../../lib/VRMAnimation/loadVRMAnimation'
+  ```
+  These are missing modules in the `vrm-engine` directory that is slated for deletion in this card. The modules (`VRMAnimation/loadVRMAnimation`, `VRMLookAtSmootherLoaderPlugin`) do not exist anywhere in the frontend source tree. This is a pre-existing build error in the code that will be removed. Per the card's instruction: "If it fails before the change, stop and report the errors. Do not fix unrelated build errors." No frontend files were deleted, no npm packages uninstalled, no Python files modified.
