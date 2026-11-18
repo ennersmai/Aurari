@@ -1141,6 +1141,389 @@ W2-20 changes the first two points on purpose. See that card.
 
 ---
 
+### Wave 2: cards for G1 (tool registry and the single tool loop)
+
+Written against `overnight-wave-0-1` after B0 (W2-02 to W2-10), M2 (W2-14 to W2-24) and W1-01/W1-02 landed.
+
+**G1 scope (agency PRD sections 5.1, 5.2, 5.3, milestone G1, test T10, rules 3 and 4 of section 10).**
+- One tool registry: every capability is one record with `name`, `description`, `input_schema`, `transport`, `risk`, `health`, `stats` (5.1).
+- One loop used by both the blocking and the streaming turn. Native function calling when the L3 model supports it, today's text extraction (`ToolExecutor.extract_tool_calls`) as the fallback, so no model tier loses tool use (5.2).
+- When more than about 15 tools exist, offer only the top few by embedding similarity plus recent success (5.2, T10).
+- The keyword intent rule is removed. The fast lane stays for learned trigger phrases (5.2, finding G4).
+- The role is enforced in the loop, through the one function every call passes through (5.3, rule 4). No tool schema may carry an approval field (rule 3).
+
+**Out of scope for G1, on purpose:**
+- `executor/agent_loop.py` and `engines/goal/engine.py`. The PRD removes the agent loop in G4 ("remove the agent loop ... leaving no parallel old and new paths", rule 6), so G1 does not port it. `engines/goal/engine.py` does not call the tool executor today. No G1 card touches either file.
+- Approval prompts and the policy table (G3). In the chat loop, approval stays exactly as W1-02 left it: the loop never passes `approved=True`, so gated writes and commands come back as "needs approval" results.
+- Argument repair (finding G2) stays inside `ToolExecutor._auto_repair_arguments` as it is.
+
+**Facts about today's code that these cards rely on (read before W2-31):**
+- Tools are found in three places, and nothing joins them:
+  1. local modules in `src/aura/tools/` exposing `TOOL_DEFINITION` + `run` (`chartjs` as `generate_chart`, `terminal`, `web_search`) or a `TOOLS` dict (`filesystem`: 9 tools, `code_executor`: `execute_code`, `workspace_info`);
+  2. `skill` rows with `skill_type = 'local_function'` (written by `LearningEngine.ingest_local_tool_module`);
+  3. `skill` rows with `skill_type = 'mcp_tool'` (written by `ingest_mcp_server` and `_compile_skill`), with server, connection and `status` in `execution_config`, and `description_embedding` on the row.
+- `ToolExecutor.execute_tool_call` looks the tool up in the `skill` table only. Its first statement refuses every `requester_role` other than `"owner"` (W1-01). It strips `force_execute` and every `_`-prefixed key from the model's arguments and sets `_runtime_approved` only when `approved=True` (W1-02).
+- No tool schema is shown to the L3 model today, except the one schema the forced mode passes to `l3_tool_call_mode`. The L3 prompt shows tool names (`<capabilities>`) and the `<AGENT_ACTION_RULE>` examples.
+- `LLMClient.complete` / `stream_complete` (and the router and unified provider) return text only. Nothing reads `tool_calls` from a response.
+- `_generate_blocking` and `_generate_streaming` differ in these ways (all pinned by the characterisation tests):
+
+| | blocking | streaming |
+|---|---|---|
+| tool JSON removed from the response | yes, `_remove_tool_calls_from_text` on the last round | no |
+| suffix after 5 rounds of tool calls | `"\n\n(Stopped after max tool rounds; ask me to continue if needed.)"` (test_turn_process_query (j)) | none (test_turn_stream_query (f)) |
+| `"\n\n"` between rounds | none | yielded after every tool round, not counted in `full_response` (stream (e)) |
+| forced mode, call found | seeds the loop with `[Seed]\n<results>` (process (l)) | one stream with the `"I executed a tool for you. ..."` prompt, no loop (stream (g)) |
+| forced mode, no call found | normal loop | one plain stream, then at most one follow-up stream with `"\n\n"` (stream (h)) |
+| response kept for post-response chain | last round, stripped, plus suffix | every round's text concatenated |
+| per-round telemetry `L3 synthesis_complete` | yes | no |
+| `recent_critique` in loop context | `ctx.recent_critique` | not set (it is always `None` on the stream path, so no difference) |
+| history passed | `max_history_messages=context_limit or 20` | `layers` uses the last 10 |
+
+**What G1 chooses where the two differ.** The PRD says only "a single loop". Where it is silent, the cards choose the behaviour that is correct for both venues and say so. Mai should read this list before W2-32 merges:
+- (a) Tool-call JSON is removed from the response that is stored and passed to the post-response chain, on both paths. On the stream path, chunks already sent cannot be taken back, so the user still sees them; the stored response does not keep them.
+- (b) The max-rounds suffix is added on both paths. On the stream path it arrives as one last delta.
+- (c) `"\n\n"` is yielded between rounds on both event streams, but only before a following round (not after the last one). The blocking path ignores separators, as today.
+- (d) The response is the final round's text (stripped, plus suffix if any) on both paths. The stream path no longer stores the earlier rounds' text.
+- (e) Forced mode seeds the single loop on both paths, as the blocking path does today. The streaming-only `"I executed a tool for you"` prompt and the streaming-only fallback follow-up are removed.
+- (f) Telemetry: `L3 synthesis_complete` with the round number is published on both paths.
+- (g) The per-path history limits stay as they are (they live in `layers`, not in the loop).
+
+---
+
+**W2-28 Tool registry: records, loaders and the schema sanitiser**
+- **PRD:** agency 5.1 ("One registry"), section 10 rule 3
+- **Tier:** bulk
+- **Files:** new `src/aura/executor/tool_registry.py`, new `tests/unit/test_tool_registry.py`. Read `src/aura/tools/*.py` (the definitions), `src/aura/engines/learning/engine.py` (`ingest_local_tool_module`, `ingest_mcp_server`, the `mcp_tool` merge in `_compile_skill`) and `src/aura/executor/tool_executor.py` (`_mark_mcp_skill_offline`).
+- **Change:**
+  1. In the new module define:
+     ```python
+     Transport = Literal["builtin", "mcp", "opencode", "http"]
+     Risk = Literal["read", "write", "execute", "send"]
+
+     @dataclass
+     class ToolHealth:
+         status: Literal["online", "offline", "unknown"] = "unknown"
+         last_check: datetime | None = None
+         error: str | None = None
+
+     @dataclass
+     class ToolStats:
+         calls: int = 0
+         successes: int = 0
+         latencies_ms: deque[float] = field(default_factory=lambda: deque(maxlen=50))
+         @property
+         def median_latency_ms(self) -> float | None: ...   # statistics.median, None when empty
+         @property
+         def success_rate(self) -> float | None: ...        # successes / calls, None when calls == 0
+
+     @dataclass
+     class ToolRecord:
+         name: str
+         description: str
+         input_schema: dict
+         transport: Transport
+         risk: Risk
+         health: ToolHealth = field(default_factory=ToolHealth)
+         stats: ToolStats = field(default_factory=ToolStats)
+         source: str = ""                      # module name, or the skill record id
+         description_embedding: list[float] | None = None
+     ```
+  2. `sanitize_schema(schema: dict) -> dict`: return a deep copy where, under `properties`, the key `force_execute` and every key starting with `_` are removed, and the same names are removed from `required`. Recurse into nested `properties` of object-typed properties. A non-dict input returns `{"type": "object", "properties": {}}`.
+  3. `BUILTIN_RISK: dict[str, Risk]`, exactly:
+     `read_file, list_directory, directory_tree, search_files, get_file_info, workspace_info, web_search, generate_chart` -> `"read"`;
+     `write_file, edit_file, create_directory, delete_file` -> `"write"`;
+     `terminal, execute_code` -> `"execute"`.
+     `BUILTIN_MODULES = ("chartjs", "code_executor", "filesystem", "terminal", "web_search")`.
+  4. `load_builtin_tools() -> list[ToolRecord]`: for each name in `BUILTIN_MODULES`, `importlib.import_module(f"aura.tools.{name}")`. If the module has `TOOLS`, make one record per entry from `entry["definition"]`; otherwise use `TOOL_DEFINITION`. Each record: `name=definition["name"]`, `description=definition.get("description", "")`, `input_schema=sanitize_schema(definition.get("parameters", {}))`, `transport="builtin"`, `risk=BUILTIN_RISK.get(name, "execute")`, `source=<module name>`, health `online`. A module that fails to import is logged at warning and skipped.
+  5. `records_from_skill_rows(rows: list[dict]) -> list[ToolRecord]`: for each row with `skill_type` in (`mcp_tool`, `local_function`) and a dict `definition`:
+     - name: `row.get("tool_name") or definition.get("name") or row.get("name")`
+     - schema: the first dict among `definition.get("parameters")`, `definition.get("inputSchema")`, `definition.get("input_schema")`, passed through `sanitize_schema`
+     - `mcp_tool`: `transport="mcp"`, `risk="execute"` (see Do not), health from `execution_config.get("status")` (`online`/`offline`, else `unknown`) and `execution_config.get("last_error")`
+     - `local_function`: `transport="builtin"`, `risk=BUILTIN_RISK.get(name, "execute")`
+     - `source=str(row.get("id"))`, `description_embedding=row.get("description_embedding")`
+  6. `class ToolRegistry` with: `register(record)` (replaces a record of the same name, but keeps its `stats`), `get(name) -> ToolRecord | None`, `all() -> list[ToolRecord]` (sorted by name), `record_call(name, success: bool, latency_ms: float)` (no-op for unknown names), `set_health(name, status, error=None)` (sets `last_check` from the clock provider, rule 7), and `async refresh(db)`:
+     - registers `load_builtin_tools()` first,
+     - then runs `SELECT id, name, tool_name, skill_type, definition, execution_config, description_embedding FROM skill WHERE skill_type IN $types` with `{"types": ["mcp_tool", "local_function"]}`, and registers `records_from_skill_rows(...)`, except that a `local_function` row whose name is already registered as a builtin only copies its `description_embedding` onto the builtin record,
+     - a database error is logged at warning; the builtins stay.
+  7. `get_tool_registry() -> ToolRegistry` (module singleton) and `reset_tool_registry()` (for tests).
+- **Tests:** `test_tool_registry.py`, offline:
+  - `load_builtin_tools()` returns exactly 14 records whose names are the keys of `BUILTIN_RISK`, all `transport == "builtin"`.
+  - No record from `load_builtin_tools()` has `force_execute` or a `_`-prefixed key anywhere in `input_schema` (walk the dict).
+  - `sanitize_schema` removes `force_execute` and `_x` from `properties` and `required`, including one nested level, and does not mutate its input.
+  - `records_from_skill_rows` on one `mcp_tool` row with `inputSchema` and `execution_config={"status": "offline", "last_error": "boom"}` gives `transport "mcp"`, `risk "execute"`, health `offline` with error `"boom"`.
+  - `refresh` with a fake db returning one `mcp_tool` row and one `local_function` row named `web_search` with an embedding: 15 records, and `get("web_search").description_embedding` is that embedding.
+  - `refresh` with a db whose `query` raises: 14 records.
+  - `record_call` three times (two successes, latencies 10, 30, 20): `calls == 3`, `success_rate == 2/3`, `median_latency_ms == 20`. `register` of a new record with the same name keeps those stats.
+  Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, and `grep -n "f\"SELECT\|f'SELECT" src/aura/executor/tool_registry.py` prints nothing.
+- **Do not:** put the module in `src/aura/tools/` (that directory is scanned for tool modules by `ingest_local_tool_module` and the forced-mode file fallback). Do not change `ToolExecutor` or any tool module. Do not guess MCP risk from `risk_level`; MCP tools are `execute` until G3's policy table says otherwise (listed for Mai in the final report).
+
+---
+
+**W2-29 The executor reports calls and MCP health to the registry**
+- **PRD:** agency 5.1 (`health`, `stats`)
+- **Tier:** bulk
+- **Depends on:** W2-28
+- **Files:** `src/aura/executor/tool_executor.py` (`execute_tool_call`, `_mark_mcp_skill_offline`, `_mark_mcp_skill_online`), `tests/unit/test_tool_registry.py`, `tests/unit/test_requester_role.py` (read for the fake executor pattern)
+- **Change:**
+  1. In `execute_tool_call`, after the role gate and the argument stripping (both unchanged), take `start = time.perf_counter()` immediately before `# 1. Fetch skill from database`. After `result` is final (just before it is returned, on both the success and the exception path), call `get_tool_registry().record_call(tool_name, bool(result.get("success")), (time.perf_counter() - start) * 1000)` inside `try/except Exception: pass`.
+     - A role-refused call is not recorded (it returns before `start`).
+     - A "not found in skill database" result is recorded only if the name is in the registry (`record_call` ignores unknown names).
+  2. At the end of the `try` in `_mark_mcp_skill_offline`, call `get_tool_registry().set_health(tool name, "offline", error)`. In `_mark_mcp_skill_online`, `set_health(tool name, "online")`. Both functions take a `skill_id`, not a name, so add a keyword argument `tool_name: str | None = None` to each, pass `tool_name=tool_name` at every call site in `_execute_mcp_tool`, and only call `set_health` when it is given.
+- **Tests:** in `test_tool_registry.py`, using the `ToolExecutor.__new__` + fake db pattern from `test_requester_role.py`:
+  - owner call to a fake `local_function` tool registered in the registry: `stats.calls == 1`, `successes == 1`, one latency recorded.
+  - guest call: `stats.calls == 0`.
+  - `_mark_mcp_skill_offline(skill_id="skill:x", execution_config={}, error="e", tool_name="t")` with `t` registered: health `offline`, error `"e"`, `last_check` set.
+  Call `reset_tool_registry()` in a fixture. Run the full suite.
+- **Done when:** the new tests pass, the full suite (including `test_requester_role.py` and `test_tool_approval_runtime.py`, unchanged) passes, and `grep -c "record_call" src/aura/executor/tool_executor.py` prints at least `1`.
+- **Do not:** move the role gate or the argument stripping, or record before them. Do not make registry errors fail a tool call.
+
+---
+
+**W2-30 Tool selection: the top few by similarity and recent success**
+- **PRD:** agency 5.2 ("When more than about 15 tools are available, select the top few by embedding similarity to the request plus recent success"), T10
+- **Tier:** bulk
+- **Depends on:** W2-28
+- **Files:** `src/aura/executor/tool_registry.py`, `src/aura/config.py`, `tests/unit/test_tool_registry.py`. Read `src/aura/llm/embeddings.py` (`get_embeddings_client().embed`).
+- **Change:**
+  1. Config, next to the other `AURA_` fields:
+     - `tool_selection_threshold: int = 15` (`AURA_TOOL_SELECTION_THRESHOLD`): selection runs only when more tools than this are available.
+     - `tool_selection_top_k: int = 8` (`AURA_TOOL_SELECTION_TOP_K`)
+     - `tool_selection_success_weight: float = 0.2` (`AURA_TOOL_SELECTION_SUCCESS_WEIGHT`)
+  2. In the registry, `async def select_tools(self, request_text: str, *, requester_role: str, embed=None) -> list[ToolRecord]`:
+     - If `requester_role != "owner"`, return `[]`. (Today the executor refuses every non-owner call, so offering tools to them would be a lie. The `trusted` and `guest` allowlists of 5.3 come with G3.)
+     - `candidates = [r for r in self.all() if r.health.status != "offline"]`.
+     - If `len(candidates) <= settings.tool_selection_threshold`, return `candidates`.
+     - Otherwise embed `request_text` once (`embed` defaults to `get_embeddings_client().embed`). For each candidate with no `description_embedding`, embed `f"{r.name}: {r.description}"` once and cache it on the record.
+     - Score = cosine similarity + `settings.tool_selection_success_weight * (r.stats.success_rate if r.stats.calls >= 3 else 0.5)`.
+     - Return the top `settings.tool_selection_top_k` by score, ties broken by name. If the request embedding is `None` or raises, return the first `top_k` candidates by name and log a warning.
+- **Tests:** T10 in `test_tool_registry.py` with a fake `embed` (deterministic vectors, no model download):
+  - 20 registered tools, request similar to tool `t07`: 8 tools returned and `t07` is first.
+  - Two tools with equal similarity, one with 4 calls and 4 successes, one with 4 calls and 0 successes: the successful one ranks higher.
+  - 10 tools: all 10 returned, `embed` never called.
+  - `requester_role="guest"` with 20 tools: `[]`.
+  - An `offline` tool is never returned.
+  Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, and `grep -n "tool_selection_" src/aura/config.py` prints the three fields.
+- **Do not:** store anything in the database. Do not call `select_tools` from the coordinator yet (W2-35).
+
+---
+
+**W2-31 The single tool loop, as a new function with its own tests**
+- **PRD:** agency 5.2 ("The coordinator's two parsing loops are replaced by a single loop"), 5.3 ("enforced in the tool loop"), rules 3 and 4
+- **Tier:** frontier. This fixes the loop's contract that W2-32, W2-33 and W2-37 build on.
+- **Files:** new `src/aura/orchestrator/tool_loop.py`, new `tests/unit/test_tool_loop.py`, `src/aura/config.py`. Read `_generate_blocking`, `_generate_streaming` and `_remove_tool_calls_from_text` in `src/aura/orchestrator/coordinator.py`, and `src/aura/executor/tool_executor.py`.
+- **Change:**
+  1. Config: `tool_loop_max_rounds: int = 5` (`AURA_TOOL_LOOP_MAX_ROUNDS`).
+  2. In the new module:
+     ```python
+     MAX_ROUNDS_SUFFIX = "\n\n(Stopped after max tool rounds; ask me to continue if needed.)"
+     ROUND_SEPARATOR = "\n\n"
+
+     @dataclass
+     class LoopEvent:
+         kind: Literal["delta", "separator", "done"]
+         text: str
+
+     RoundFn = Callable[[str, int], AsyncIterator[str]]  # (loop_input, round_idx) -> text chunks of one L3 round
+
+     def strip_tool_calls(text: str) -> str: ...  # body copied verbatim from Orchestrator._remove_tool_calls_from_text
+
+     def build_loop_input(user_input: str, blocks: list[str]) -> str:
+         return user_input if not blocks else f"{user_input}\n\n[Tool Execution Results]\n" + "\n\n".join(blocks)
+
+     async def run_tool_loop(
+         *,
+         user_input: str,
+         generate_round: RoundFn,
+         tool_executor: Any,
+         requester_role: str,
+         max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
+         seed_results: str | None = None,
+     ) -> AsyncIterator[LoopEvent]: ...
+     ```
+  3. `run_tool_loop` behaviour, exactly:
+     - `blocks = ["[Seed]\n" + seed_results] if seed_results else []`.
+     - For `round_idx` in `1..max_rounds`:
+       - if `round_idx > 1`, yield `LoopEvent("separator", ROUND_SEPARATOR)`;
+       - stream `generate_round(build_loop_input(user_input, blocks), round_idx)`, yield each chunk as `LoopEvent("delta", chunk)` and accumulate `round_text`;
+       - `calls = tool_executor.extract_tool_calls(round_text)`. If empty: `final = strip_tool_calls(round_text)`, stop;
+       - `results = await tool_executor.execute_and_feedback(calls, requester_role=requester_role)`. If empty: `final = strip_tool_calls(round_text)`, stop;
+       - `blocks.append(f"[Round {round_idx}]\n{results}")`.
+     - If every round had tool calls: yield `LoopEvent("delta", MAX_ROUNDS_SUFFIX)` and `final = strip_tool_calls(round_text) + MAX_ROUNDS_SUFFIX`.
+     - Yield `LoopEvent("done", final)` last, once.
+  4. Every tool call goes through `tool_executor.execute_and_feedback(..., requester_role=requester_role)`. The loop does not check the role itself, does not call `execute_tool_call`, and never passes `approved`. The role and approval checks stay in the executor's single gate (rule 4).
+- **Tests:** `test_tool_loop.py`, offline, with a fake `generate_round` that pops chunk lists from a queue and records `(loop_input, round_idx)`:
+  - no tool calls: events are the deltas then `done`; `done.text` is the stripped text.
+  - one tool round then none: events `delta..., separator, delta..., done`; second loop input is `"hello\n\n[Tool Execution Results]\n[Round 1]\nR1"`; `execute_and_feedback` awaited once with `requester_role` (parametrise `owner`/`guest`).
+  - tool calls every round with `max_rounds=5`: 5 rounds, 4 separators, the last delta is `MAX_ROUNDS_SUFFIX`, `done.text` ends with it.
+  - `seed_results="SEED"`: first loop input is `"hello\n\n[Tool Execution Results]\n[Seed]\nSEED"`.
+  - `execute_and_feedback` returns `""`: loop stops after round 1, no separator.
+  - a round text `'ok {"tool": "x", "arguments": {}}'` with no further calls: `done.text == "ok"`.
+  - T1/T2 through the real executor: build a `ToolExecutor` with `__new__` and the fake db from `test_requester_role.py`; a round emits `{"tool": "t", "arguments": {"_runtime_approved": true, "force_execute": true, "x": 1}}`. With `requester_role="guest"` the fake tool is never called and the results contain `"Tool use is not available to this user."`. With `"owner"` the tool receives exactly `{"x": 1}`.
+  Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, `grep -n "approved" src/aura/orchestrator/tool_loop.py` prints nothing, and `grep -n "execute_tool_call" src/aura/orchestrator/tool_loop.py` prints nothing.
+- **Do not:** touch `coordinator.py` in this card. Do not add native function calling here (W2-37). Do not import the registry here.
+
+---
+
+**W2-32 `_generate_blocking` runs on the single loop**
+- **PRD:** agency 5.2, G1
+- **Tier:** frontier. Changes pinned behaviour on purpose; Mai reads (a) to (g) above before it merges.
+- **Depends on:** W2-31
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_generate_blocking`, new `_forced_seed`), `tests/unit/test_turn_process_query.py`
+- **Change:**
+  1. Add `async def _forced_seed(self, user_input, tool_schema_str, requester_role) -> str | None` holding today's blocking seed block verbatim: call `l3_tool_call_mode(query=user_input, tool_schema=tool_schema_str)`, `extract_tool_calls`, and if calls exist, `execute_and_feedback(..., requester_role=requester_role)`. Return the results string, or `None` (with today's warning log) when there are no calls or no results.
+  2. Rewrite the body of `_generate_blocking` (signature unchanged):
+     - keep the `context_window_size` line and both log lines;
+     - `seed = await self._forced_seed(...) if use_forced_tool_mode and tool_schema_str else None`;
+     - define `async def _round(loop_input, round_idx)` that builds the same `SynthesisContext` as today (all fields, including `recent_critique=ctx.recent_critique` and `packet=ctx.packet`), awaits `l3_synthesis(loop_context, max_history_messages=context_window_size, reasoning_enabled=reasoning_enabled)`, publishes today's `L3 synthesis_complete` trace with `round=round_idx`, and yields the response once;
+     - `async for event in run_tool_loop(user_input=user_input, generate_round=_round, tool_executor=self.tool_executor, requester_role=requester_role, seed_results=seed)`: keep only the `done` event's text and return it.
+  3. Behaviour changes in this card: none on the blocking path, except that the round limit now comes from `settings.tool_loop_max_rounds` (default 5, same value). The response, suffix, stripping, seed block and telemetry are the same as today.
+  4. Update the docstring to say it runs `run_tool_loop`.
+- **Tests:** every test in `test_turn_process_query.py` must pass unchanged. If any of (i), (j), (l), W2-06 or the packet test fails, stop and report: this card must not change blocking behaviour. Run the full suite.
+- **Done when:** the full suite passes with `test_turn_process_query.py` unchanged (`git diff --stat` does not list it), `grep -c "run_tool_loop" src/aura/orchestrator/coordinator.py` prints at least `1`, and `grep -n "max_tool_rounds" src/aura/orchestrator/coordinator.py` prints only lines inside `_generate_streaming`.
+- **Do not:** touch `_generate_streaming`, `_turn_pipeline` or the `(chunk, counts)` contract yet. Do not delete `_remove_tool_calls_from_text` yet (W2-34).
+
+---
+
+**W2-33 `_generate_streaming` runs on the single loop**
+- **PRD:** agency 5.2, G1
+- **Tier:** frontier. This is the behaviour change of the milestone.
+- **Depends on:** W2-32
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_generate_streaming`, `_turn_pipeline` stage 8), `tests/unit/test_turn_stream_query.py`, `tests/unit/test_turn_pipeline.py`
+- **Change:**
+  1. Rewrite `_generate_streaming` (same parameters) as an async generator of `LoopEvent`:
+     - `seed = await self._forced_seed(...) if use_forced_tool_mode and tool_schema_str else None`;
+     - `_round(loop_input, round_idx)` builds the loop `SynthesisContext` exactly as the blocking `_round` does (same fields, `recent_critique=ctx.recent_critique`, `packet=ctx.packet`), streams `stream_l3_synthesis(loop_context, reasoning_enabled=reasoning_enabled)` chunk by chunk, then publishes `L3 synthesis_complete` with `round=round_idx` and `"mode": "stream"`;
+     - re-yield every event of `run_tool_loop(...)` unchanged.
+  2. In `_turn_pipeline` stage 8, streaming branch: for `delta` and `separator` events yield `TurnEvent("delta", event.text)`; on `done`, set `response = event.text`. Remove the `full_response` / `counts` accumulation.
+  3. **The behaviour changes this card makes on purpose.** List each one in the log:
+     - (a) the stored response has tool-call JSON removed;
+     - (b) the max-rounds suffix is yielded and stored on the stream path;
+     - (c) no `"\n\n"` after the last round;
+     - (d) the stored response is the final round only;
+     - (e) forced mode seeds the loop; the `"I executed a tool for you"` prompt and the separate fallback follow-up are gone, and `ctx.synthesis_context.user_input` is no longer overwritten;
+     - (f) per-round `L3 synthesis_complete` telemetry on the stream path.
+  4. Update the characterisation tests deliberately. Change only these, and add the docstring line "changed on purpose by W2-33 (G1 single loop)" to each:
+     - stream (e): chunks stay `["rou", "nd1", "\n\n", "rou", "nd2"]`; add that `_post_response_chain` receives `response == "round2"`.
+     - stream (f): rename to `test_f_five_rounds_all_tool_calls_max_rounds_suffix`; assert 5 stream calls, exactly 4 `"\n\n"` chunks, and that the last chunk is `MAX_ROUNDS_SUFFIX`.
+     - stream (g): rename to `test_g_forced_mode_seeds_loop`; assert `l3_tool_call_mode` awaited once, one stream call whose context `user_input == "hello\n\n[Tool Execution Results]\n[Seed]\nOUT"`, and `chunks == ["per", "sona"]`. Set `extract_tool_calls` to `side_effect=[["call"], []]`.
+     - stream (h): rename to `test_h_forced_mode_no_raw_tool_calls_runs_plain_loop`; with `side_effect=[[], ["call2"], []]`, assert chunks `["re", "g", "\n\n", "fo", "llow"]` and the second context `user_input == "hello\n\n[Tool Execution Results]\n[Round 1]\nRES"`.
+     - stream W2-06 forced-by-name: replace the `"I executed a tool for you."` assertions with the `[Seed]` input assertion as in (g).
+     - pipeline (b): the `done` event now carries the final round's text; update that one expectation only.
+     - Every other assertion stays as it is. `test_turn_process_query.py` is not touched.
+- **Tests:** the updated files, plus in `test_turn_pipeline.py`: one test that the streaming and blocking pipelines, given the same fakes (one tool round, then a final answer `'done {"tool":"x"}'`), produce the same `done` text `"done"`. Run the full suite.
+- **Done when:** the suite passes; `grep -n "I executed a tool for you\|max_tool_rounds\|counts" src/aura/orchestrator/coordinator.py` prints nothing; `grep -c "extract_tool_calls\|execute_and_feedback" src/aura/orchestrator/coordinator.py` prints `2` (both in `_forced_seed`).
+- **Do not:** change `l3_tool_call_mode`, `_resolve_forced_tool` or `_classify_intent` (W2-38). Do not add `user_id` to the loop contexts. Do not change any test outside the list in step 4.
+
+---
+
+**W2-34 Remove what the old loops left behind**
+- **PRD:** agency 5.2, section 10 rule 6 ("leaving no parallel old and new paths")
+- **Tier:** bulk
+- **Depends on:** W2-33
+- **Files:** `src/aura/orchestrator/coordinator.py`, `tests/unit/test_turn_pipeline.py` (read)
+- **Change:**
+  1. Delete `Orchestrator._remove_tool_calls_from_text`. First confirm `grep -rn "_remove_tool_calls_from_text" src tests` lists only its `def`; if anything else calls it, stop and report.
+  2. Update the docstrings of `_generate_blocking`, `_generate_streaming`, `TurnEvent` and `_turn_pipeline` that still mention "moved verbatim", the `(chunk, counts)` tuples or "separators excluded from full_response", so they describe `run_tool_loop` and `LoopEvent`.
+  3. Remove imports that became unused in `coordinator.py` because of W2-32 and W2-33, and only those.
+- **Tests:** run the full suite.
+- **Done when:** the suite passes, `grep -rn "_remove_tool_calls_from_text" src tests` prints nothing, and `grep -n "counts" src/aura/orchestrator/coordinator.py` prints nothing.
+- **Do not:** touch `agent_loop.py` (removed in G4). Do not merge `_generate_blocking` and `_generate_streaming` into one method; each is now a thin adapter over the one loop.
+
+---
+
+**W2-35 Offer the selected tools to the model**
+- **PRD:** agency 5.2 (selection), T10, 5.3
+- **Tier:** bulk
+- **Depends on:** W2-30, W2-33
+- **Files:** `src/aura/llm/layers.py` (`SynthesisContext.__init__`, `_build_l3_system_prompt`), `src/aura/orchestrator/coordinator.py` (`TurnContext`, `_turn_pipeline`, the `_round` helpers), `src/aura/main.py` (startup), `tests/conftest.py` (`turn_orchestrator`), new `tests/unit/test_offered_tools.py`
+- **Change:**
+  1. `SynthesisContext`: add a keyword argument `offered_tools: list | None = None` as the last parameter, stored as `self.offered_tools`.
+  2. `_build_l3_system_prompt`: immediately before `<AGENT_ACTION_RULE>`, when `context.offered_tools` is non-empty, add:
+     ```
+     <available_tools>
+       <tool name="{name}" risk="{risk}">{description}
+         <input_schema>{json.dumps(input_schema, separators=(",", ":"))}</input_schema>
+       </tool>
+     </available_tools>
+     ```
+     one `<tool>` per record, in the order given. Nothing else in the prompt changes.
+  3. `TurnContext`: add `offered_tools: list = field(default_factory=list)` as the last field.
+  4. In `_turn_pipeline`, after stage 6, set `ctx.offered_tools = await get_tool_registry().select_tools(user_input, requester_role=requester_role)` inside `try/except` (on failure, log a warning and use `[]`). Pass `offered_tools=ctx.offered_tools` into both `_round` loop contexts.
+  5. At startup in `main.py`, after the database is connected, `await get_tool_registry().refresh(db)` inside `try/except` with a warning. If there is no single obvious startup hook, stop and report.
+  6. Fixture: in `turn_orchestrator`, monkeypatch `get_tool_registry` (as imported in `coordinator.py`) to return a fake whose `select_tools` is an `AsyncMock(return_value=[])`. Expose it as `orch._fake_tool_registry`.
+- **Tests:** `test_offered_tools.py`:
+  - T10 end to end: the fake registry returns 8 records; the first loop context has `offered_tools` equal to them, and `_build_l3_system_prompt` on that context contains 8 `<tool name=` entries and no `force_execute`.
+  - `requester_role="guest"`: `select_tools` is awaited with `requester_role="guest"`.
+  - `select_tools` raises: the turn completes, `offered_tools == []`, and the prompt has no `<available_tools>`.
+  Run the full suite. Existing characterisation tests must pass unchanged.
+- **Done when:** the new tests pass, the full suite passes, and `grep -c "offered_tools=ctx.offered_tools" src/aura/orchestrator/coordinator.py` prints `2`.
+- **Do not:** change `<AGENT_ACTION_RULE>` or `<capabilities>` here (W2-38 handles the keyword wording). Do not call `select_tools` more than once per turn.
+
+---
+
+**W2-36 Native function calling in the model clients**
+- **PRD:** agency 5.2 ("tool schemas go through the model API's tools parameter and structured calls come back")
+- **Tier:** frontier. Touches every provider's request and response handling.
+- **Files:** `src/aura/llm/provider.py`, `src/aura/llm/router.py`, `src/aura/llm/unified_provider.py`, `src/aura/llm/ollama_provider.py` (read; change only if `unified_provider` routes L3 to it), new `tests/unit/test_native_tool_calls.py`
+- **Change:**
+  1. In a new small module `src/aura/llm/tool_calls.py`: `@dataclass class ModelTurn: text: str; tool_calls: list[dict]` where each call is `{"tool": name, "arguments": dict, "id": str}` (the same `tool`/`arguments` shape `extract_tool_calls` returns, so the executor needs no change). `def to_openai_tools(records) -> list[dict]` maps `ToolRecord`s to `{"type": "function", "function": {"name", "description", "parameters": input_schema}}`. `def parse_openai_tool_calls(raw) -> list[dict]` parses `message.tool_calls`; arguments that are not valid JSON become `{}` with a warning, and the call is kept so the executor's repair can run.
+  2. Each client gets `async def complete_with_tools(messages, model, tools, temperature, max_tokens, **kwargs) -> ModelTurn` that sends `tools` and `tool_choice: "auto"` in the OpenAI-format payload and reads `choices[0].message.content` and `.tool_calls`. Reuse each client's existing retry and fallback code; do not copy it.
+  3. Each client gets `async def stream_with_tools(...)` that yields `("text", chunk)` for content deltas and, at the end, one `("tool_calls", list[dict])` built by joining `delta.tool_calls[i].function.arguments` fragments by index.
+  4. `unified_provider` routes both methods like `complete` / `stream_complete`, including the local-to-cloud fallback.
+  5. Config: `l3_native_tools: bool = False` (`AURA_L3_NATIVE_TOOLS`). Off by default, so nothing changes until Mai turns it on for a model known to support tools.
+- **Tests:** with `httpx.MockTransport` (no network): a blocking response with one `tool_calls` entry becomes `ModelTurn(text="", tool_calls=[{"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}])`; a streamed response whose arguments arrive in three fragments gives one call with the joined arguments; malformed argument JSON gives `arguments == {}`; the request payload carries `tools` and `tool_choice`. Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, and `complete` / `stream_complete` are unchanged (`git diff` shows no edits inside them).
+- **Do not:** change `complete` or `stream_complete`. Do not wire this into `layers` or the loop (W2-37). Do not add a dependency.
+
+---
+
+**W2-37 The single loop uses native calls when the model supports them**
+- **PRD:** agency 5.2 (native first, text extraction as the fallback "so no model tier loses tool use")
+- **Tier:** frontier
+- **Depends on:** W2-35, W2-36
+- **Files:** `src/aura/orchestrator/tool_loop.py`, `src/aura/llm/layers.py` (`l3_synthesis`, `stream_l3_synthesis`), `src/aura/orchestrator/coordinator.py` (the two `_round` helpers), `tests/unit/test_tool_loop.py`, `tests/unit/test_native_tool_calls.py`
+- **Change:**
+  1. `RoundFn` may now yield either `str` chunks or one final `NativeCalls(calls: list[dict])` marker (new dataclass in `tool_loop.py`). In `run_tool_loop`, if a round yields a `NativeCalls`, use its calls; otherwise use `tool_executor.extract_tool_calls(round_text)` as today. Everything after that (execution through `execute_and_feedback` with `requester_role`, blocks, separators, suffix, `done`) is unchanged.
+  2. `l3_synthesis` and `stream_l3_synthesis` take `tools: list | None = None`. When `tools` and `settings.l3_native_tools` are both truthy, call `complete_with_tools` / `stream_with_tools` with `to_openai_tools(tools)`. The blocking method then returns the `ModelTurn`; the streaming method yields text chunks and finally the `NativeCalls` marker. Otherwise, behaviour is exactly as today.
+  3. The `_round` helpers pass `tools=ctx.offered_tools`. When the flag is on, the blocking `_round` yields `turn.text`, then `NativeCalls(turn.tool_calls)` if any.
+  4. When the flag is on, `<available_tools>` is not added to the prompt (the schemas travel in the API parameter).
+  5. If a native call raises a provider error (for example 400 "tools not supported"), log a warning and fall back to today's text call for that round.
+- **Tests:** in `test_tool_loop.py`: a round yielding `NativeCalls([...])` executes them without calling `extract_tool_calls`; a guest role still reaches `execute_and_feedback` with `requester_role="guest"` and is refused by the real executor. In `test_native_tool_calls.py`: with the flag off, `l3_synthesis(..., tools=[...])` calls `complete`, not `complete_with_tools`; with it on, the reverse; a `complete_with_tools` error falls back to `complete`. Run the full suite; the characterisation tests pass unchanged (the flag is off by default).
+- **Done when:** the new tests pass, the full suite passes, and `grep -n "l3_native_tools" src/aura/llm/layers.py` prints at least two lines.
+- **Do not:** turn the flag on by default. Do not remove the text extraction path.
+
+---
+
+**W2-38 Remove the keyword intent rule; forced mode only from the trigger fast lane**
+- **PRD:** agency 5.2 ("The keyword intent rule (G4) is removed. The model decides whether to call a tool. The fast lane stays for exact matches on learned trigger phrases."), finding G4
+- **Tier:** frontier. Changes routing on purpose.
+- **Depends on:** W2-33, W2-35 (the model must see tools before the keyword crutch goes)
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_classify_intent`, `_resolve_forced_tool`), `src/aura/llm/layers.py` (`l1_classify_intent` prompt, `<AGENT_ACTION_RULE>` in `_build_l3_system_prompt`), `tests/unit/test_turn_process_query.py`, `tests/unit/test_turn_stream_query.py`
+- **Change:**
+  1. In `_classify_intent`, delete the `# FALLBACK: ... keyword-based detection` block (the `tool_keywords` list and everything under it). Keep the L1 call, its telemetry and the teaching lane.
+  2. In the `l1_classify_intent` prompt, delete the line starting `IMPORTANT: If the user mentions "search", "stock", ...`. Keep the vector-search fast lane (`semantic_trigger`, `routing_method: "vector_search"`) unchanged.
+  3. In `_resolve_forced_tool`, return `(False, None)` at the start unless `intent_data.get("routing_method") == "vector_search"`. This keeps the forced seed only for learned trigger phrases; for every other turn the model decides with the offered tools.
+  4. In `<AGENT_ACTION_RULE>`, replace the sentence `If the user query contains keywords like 'search', 'current price', 'read file', 'source code', 'inspect', or requests information that requires tool access, you MUST NOT use internal knowledge.` with `If answering needs information or an action that one of the available tools provides, you MUST NOT use internal knowledge.` Keep the rest of the block.
+  5. **Behaviour changes this card makes on purpose:** (i) "weather", "search", "price" and the other keywords no longer turn a CHAT intent into TOOL_USE; (ii) an L1 LLM classification of TOOL_USE no longer forces a tool call; only a trigger-phrase match does; (iii) the L1 and L3 prompts no longer push tool use on keywords.
+  6. Update the characterisation tests deliberately, each with the docstring line "changed on purpose by W2-38 (G1, keyword rule removed)":
+     - process (k): rename to `test_k_weather_stays_chat`; assert `l3_tool_call_mode` not awaited and the `[MAG]` intent path is not taken (`learning_engine.get_skill` and `db.query` for `skill` not awaited).
+     - process (l), process W2-06, stream (g), stream (h), stream W2-06: add `"routing_method": "vector_search"` to the L1 return value so they still exercise the forced seed. Change nothing else in them.
+     - add `test_llm_tool_use_without_trigger_does_not_force` in `test_turn_process_query.py`: L1 returns `{"intent": "TOOL_USE", "target_action": "skill:x"}` without `routing_method`; `l3_tool_call_mode` is not awaited and one L3 synthesis runs.
+- **Tests:** the updated files. Run the full suite.
+- **Done when:** the suite passes; `grep -n "tool_keywords\|Keyword-based TOOL_USE" src/aura/orchestrator/coordinator.py` prints nothing; `grep -n "If the user mentions \"search\"\|keywords like 'search'" src/aura/llm/layers.py` prints nothing.
+- **Do not:** remove `semantic_trigger` or the vector fast lane. Do not delete `_resolve_forced_tool`'s lookup code or `l3_tool_call_mode`. Do not touch the TEACHING lane.
+
+---
+
+**Order and dependencies:** W2-28 -> W2-29 and W2-30 (either order). W2-31 can run alongside W2-28. Then W2-32 -> W2-33 -> W2-34. W2-35 needs W2-30 and W2-33. W2-36 can run any time. W2-37 needs W2-35 and W2-36. W2-38 needs W2-33 and W2-35. The suite is green after every card.
+
+**G1 gate:** T10 passes (W2-30 unit, W2-35 end to end); T1 and T2 pass through the single loop (W2-31); `grep -rn "extract_tool_calls\|execute_and_feedback" src/aura/orchestrator/coordinator.py` lists only `_forced_seed`; the remaining caller of `extract_tool_calls` outside the loop is `agent_loop.py`, which G4 deletes.
+
+---
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
