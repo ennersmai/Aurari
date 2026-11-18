@@ -39,6 +39,7 @@ from uuid import uuid4
 
 from aura.clock import get_clock
 from aura.db.client import get_db_client
+from aura.db.query_utils import to_record_id
 from aura.config import settings
 from aura.llm.embeddings import get_embeddings_client
 from aura.models.memory import (
@@ -1205,7 +1206,7 @@ class MemoryManager:
                 "importance = math::min([1.0, importance + $boost]), "
                 "recall_count += 1, "
                 "last_recalled_at = $now",
-                {"mid": memory_id, "boost": boost, "now": get_clock().now()},
+                {"mid": to_record_id(memory_id), "boost": boost, "now": get_clock().now()},
             )
         except Exception as e:
             logger.error(f"boost_on_recall failed: {e}")

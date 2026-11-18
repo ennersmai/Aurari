@@ -25,6 +25,7 @@ import asyncio
 import re
 
 import pytest
+from surrealdb import RecordID
 
 from aura.engines.memory.manager import MemoryManager
 
@@ -32,6 +33,16 @@ from aura.engines.memory.manager import MemoryManager
 # The boost query the manager now sends. Used to recognise the call and to pull
 # the ``$mid`` and ``$boost`` parameters out of the params dict.
 _BOOST_SQL_RE = re.compile(r"^\s*UPDATE \$mid SET", re.IGNORECASE)
+
+
+def _row_key(mid: object) -> str:
+    """Normalise a ``$mid`` parameter to the string key the fake rows dict
+    uses.  W2-12 wraps the caller's string id in a ``RecordID`` before
+    binding it, so ``$mid`` arrives as ``RecordID("memory", "abc")``; the
+    fake stores rows keyed by the plain string ``"memory:abc"``."""
+    if isinstance(mid, RecordID):
+        return str(mid)
+    return str(mid)
 
 
 class _AtomicBoostFakeDB:
@@ -54,7 +65,7 @@ class _AtomicBoostFakeDB:
     async def query(self, sql: str, vars: dict | None = None) -> list[dict]:
         self.queries.append((sql, dict(vars or {})))
         if _BOOST_SQL_RE.match(sql):
-            mid = vars["mid"]
+            mid = _row_key(vars["mid"])
             boost = float(vars["boost"])
             async with self._lock:
                 row = self._rows[mid]
@@ -131,7 +142,10 @@ async def test_boost_is_a_single_update_with_no_preceding_read():
     assert "MATH::MIN([1.0, IMPORTANCE + $BOOST])" in sql.upper()
     assert "RECALL_COUNT += 1" in sql.upper()
     assert "LAST_RECALLED_AT = $NOW" in sql.upper()
-    assert params["mid"] == "memory:abc"
+    # W2-12: the caller's string id is bound as a typed RecordID so the
+    # embedded engine treats it as a record id, not a table name.
+    assert isinstance(params["mid"], RecordID)
+    assert str(params["mid"]) == "memory:abc"
     assert params["boost"] == 0.05
     assert "now" in params
     # No SELECT of the memory and no MERGE are issued.
