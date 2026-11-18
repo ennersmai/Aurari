@@ -1,9 +1,13 @@
 """Test configuration and fixtures for Aura test suite."""
 
+import asyncio
+import logging
+
 import pytest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 
 class FakeDatabaseClient:
@@ -216,3 +220,165 @@ def reset_singletons():
     aura.db.client._db_client = None
     aura.engines.memory.manager._memory_manager = None
     aura.engines.emotion.engine._emotion_engine = None
+
+
+# ===========================================================================
+# W2-02: turn_orchestrator fixture
+# ===========================================================================
+
+# Fixed timestamp used by the emotion state the fixture returns, so tests are
+# deterministic and do not depend on the wall clock.
+_TURN_FIXED_DATETIME = datetime(2026, 1, 1, 12, 0, 0)
+
+
+@pytest.fixture
+def turn_orchestrator(monkeypatch):
+    """Build an :class:`Orchestrator` without running ``__init__``.
+
+    ``Orchestrator.__init__`` calls ``get_db_client()``, builds a
+    ``ToolExecutor`` and starts the idle state-machine loop, none of which is
+    safe or useful in a unit test. This fixture constructs the instance with
+    ``Orchestrator.__new__(Orchestrator)`` and wires every attribute
+    ``process_query`` touches onto fakes, so the real ``process_query`` can run
+    end-to-end against mocks with no database, LLM or network.
+
+    The fixture follows card W2-02 exactly, with one documented deviation:
+    ``IdentityContext`` has no ``core_identity`` / ``tone_and_style`` fields
+    (see ``src/aura/models/identity.py`` — the required fields are ``narrative``
+    and ``core_values``), so the card's prescribed
+    ``IdentityContext(core_identity="Aura", tone_and_style="Helpful")`` is not
+    constructible. The fixture returns a minimal valid
+    ``IdentityContext(narrative="Aura", core_values={})`` instead. This mirrors
+    a latent bug in ``stream_query`` (lines ~2189 and ~2216 of
+    ``coordinator.py``), whose fallback constructs the same invalid object and
+    would crash if ever reached. The difference is reported in the W2-02 log
+    entry; ``src/`` is not changed.
+    """
+    from aura.orchestrator.coordinator import Orchestrator
+    from aura.models.emotion import EmotionState, EmotionVector
+    from aura.models.learning import LearningContext
+    from aura.models.identity import IdentityContext
+    from aura.models.goal import GoalContext
+
+    orch = Orchestrator.__new__(Orchestrator)
+
+    # --- bare instance attributes ------------------------------------------
+    orch.logger = logging.getLogger("aura.orchestrator.test")
+    orch.critique_buffer = {}
+    orch._last_system_prompt = {}
+    orch._state_lock = asyncio.Lock()
+
+    # --- emotion engine ----------------------------------------------------
+    emotion_state = EmotionState(
+        timestamp=_TURN_FIXED_DATETIME,
+        vector=EmotionVector(),
+        dominant=("neutral", 0.0),
+        description="Neutral",
+    )
+    emotion_engine = MagicMock()
+    emotion_engine.get_current_state = AsyncMock(return_value=emotion_state)
+    # _compute_resonance_score reads self.emotion_engine.config.baseline
+    emotion_engine.config = MagicMock()
+    emotion_engine.config.baseline = EmotionVector()
+    orch.emotion_engine = emotion_engine
+
+    # --- learning engine --------------------------------------------------
+    # Card: "AsyncMock. get_learning_context returns LearningContext().
+    # log_experience, ingest_mcp_server, ingest_local_tool_module and
+    # get_skill are AsyncMocks. db.select and db.query are AsyncMocks that
+    # return []."
+    learning_engine = AsyncMock()
+    learning_engine.get_learning_context = AsyncMock(return_value=LearningContext())
+    learning_engine.log_experience = AsyncMock()
+    learning_engine.ingest_mcp_server = AsyncMock()
+    learning_engine.ingest_local_tool_module = AsyncMock()
+    learning_engine.get_skill = AsyncMock()
+    learning_engine.db = MagicMock()
+    learning_engine.db.select = AsyncMock(return_value=[])
+    learning_engine.db.query = AsyncMock(return_value=[])
+    orch.learning_engine = learning_engine
+
+    # --- identity engine ---------------------------------------------------
+    identity_engine = MagicMock()
+    # Card asks for IdentityContext(core_identity="Aura", tone_and_style=
+    # "Helpful"), but IdentityContext has no such fields (see module docstring
+    # note above). Use a minimal valid IdentityContext instead.
+    identity_engine.get_identity_context = AsyncMock(
+        return_value=IdentityContext(narrative="Aura", core_values={})
+    )
+    orch.identity_engine = identity_engine
+
+    # --- goal engine -------------------------------------------------------
+    goal_engine = MagicMock()
+    goal_engine.get_goal_context = AsyncMock(return_value=GoalContext())
+    goal_engine.check_goals_needing_autonomous_pursuit = AsyncMock(return_value=[])
+    orch.goal_engine = goal_engine
+
+    # --- llm layers -------------------------------------------------------
+    llm_layers = MagicMock()
+    llm_layers.l1_classify_intent = AsyncMock()
+    llm_layers.l3_synthesis = AsyncMock()
+    llm_layers.l3_tool_call_mode = AsyncMock()
+    llm_layers.build_l3_system_prompt = MagicMock(return_value="PROMPT")
+
+    # stream_l3_synthesis: a plain function that records (context, kwargs)
+    # and returns an async generator over the next scripted list of chunks.
+    # Used by stream_query (W2-03); process_query never calls it.
+    stream_calls: list[tuple[Any, dict[str, Any]]] = []
+    stream_chunks_queue: list[list[str]] = []
+
+    def _stream_l3_synthesis(context, **kwargs):
+        stream_calls.append((context, kwargs))
+
+        async def _gen():
+            chunks = stream_chunks_queue.pop(0) if stream_chunks_queue else []
+            for c in chunks:
+                yield c
+
+        return _gen()
+
+    llm_layers.stream_l3_synthesis = _stream_l3_synthesis
+    # Expose the queues/records for tests that script or inspect streaming.
+    llm_layers._stream_calls = stream_calls
+    llm_layers._stream_chunks_queue = stream_chunks_queue
+    orch.llm_layers = llm_layers
+
+    # --- tool executor -----------------------------------------------------
+    tool_executor = MagicMock()
+    tool_executor.extract_tool_calls = MagicMock()
+    tool_executor.execute_and_feedback = AsyncMock()
+    orch.tool_executor = tool_executor
+
+    # --- methods replaced on the instance ----------------------------------
+    orch._sleep_gate = AsyncMock(return_value=(True, None))
+    orch._record_user_interaction = AsyncMock()
+    orch._publish_trace = MagicMock()
+    orch._post_response_chain = AsyncMock()
+
+    # --- module-level singletons imported inside process_query -------------
+    fake_memory_manager = MagicMock()
+    fake_memory_manager.retrieve_memories = AsyncMock(return_value=[])
+    fake_memory_manager.get_cold_start_context = AsyncMock(
+        return_value=SimpleNamespace(
+            xml_block=None, core_memories=[], recent_memories=[]
+        )
+    )
+    monkeypatch.setattr(
+        "aura.engines.memory.manager.get_memory_manager",
+        lambda: fake_memory_manager,
+    )
+
+    fake_latent_engine = MagicMock()
+    fake_latent_engine.get_intuition_context = MagicMock(return_value=None)
+    monkeypatch.setattr(
+        "aura.engines.latent.engine.get_latent_engine",
+        lambda: fake_latent_engine,
+    )
+
+    # Stash the fakes on the instance so tests can configure return values
+    # (e.g. learning_engine.db.select for the forced-tool path) without
+    # reaching back into the monkeypatch closures.
+    orch._fake_memory_manager = fake_memory_manager
+    orch._fake_latent_engine = fake_latent_engine
+
+    return orch
