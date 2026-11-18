@@ -122,7 +122,7 @@ class HashedBagOfWordsEmbeddings:
         vec = [0.0] * _EMBED_DIM
         for token in re.findall(r"\w+", text.lower()):
             h = hashlib.blake2b(token.encode("utf-8"), digest_size=8).digest()
-            bucket = int.from_bytes(h[:4,], "little") % _EMBED_DIM
+            bucket = int.from_bytes(h[:4], "little") % _EMBED_DIM
             # Weight longer tokens slightly more so "biscuit" isn't identical
             # to "biscuits" but still dominates short stopwords.
             weight = 1.0 + math.log(max(len(token), 1))

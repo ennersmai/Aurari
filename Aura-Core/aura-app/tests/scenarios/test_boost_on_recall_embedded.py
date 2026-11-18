@@ -41,12 +41,11 @@ async def test_boost_on_recall_advances_recall_count_by_two():
         manager = _build_manager(db)
 
         # Store one memory.  ``store_memory`` returns the string record id
-        # it created (``"memory:<hex>"``).  Empty content is a valid string
-        # under the schema and lets the deterministic embedding stub
-        # short-circuit (it returns ``None`` for blank text), so the store
-        # succeeds offline without needing the real embedding model.
+        # it created (``"memory:<hex>"``).  W2-27 fixed the embedding stub's
+        # hash slice, so real (non-empty) text embeds and stores offline
+        # without needing the real embedding model.
         memory_id = await manager.store_memory(
-            content="",
+            content="I like hiking in the mountains",
             user_id="alice",
             conversation_id="conv-1",
             emotional_signature={},
