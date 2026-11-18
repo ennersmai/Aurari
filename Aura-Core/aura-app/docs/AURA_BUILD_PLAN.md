@@ -664,6 +664,457 @@ Written after the wave 0-1 review, against the code as it stands on overnight-wa
 ---
 
 
+### Wave 2: cards for M2 (Recall Engine skeleton) and V0 (remove the VRM avatar)
+
+Written against `overnight-wave-0-1` after B0 (W2-02 to W2-10) landed. W2-11 to W2-13 may land before or after these cards. None of these cards depends on them, except that W2-24 uses the runner as it is after W2-12.
+
+**M2 scope (memory PRD section 10).** One entry point that wraps today's stores, with a budget, deduplication and a trace. All five injectors go through it. No new retrieval logic. "The five injectors" means:
+
+1. the memory block: `retrieve_for_l3`, called from `llm/layers.py` once per L3 call
+2. the insights block: `learning_context.insights`, rendered in `_build_l3_system_prompt`
+3. the cold start block: `get_cold_start_context`, called in `_gather_turn_context`
+4. the latent intuition block: `get_intuition_context`, called in `_gather_turn_context`
+5. the recall tools: `traverse_timeline` and `fetch_supporting_evidence` in `execute_l2_internal_tool`
+
+The debug prompt cache's separate `retrieve_memories(limit=3, importance_min=0.5)` call in `_cache_system_prompt` is also replaced.
+
+**Facts about today's code that these cards rely on (read before W2-20):**
+- The loop contexts in `_generate_blocking` and `_generate_streaming` (and the streaming follow-up context) build a new `SynthesisContext` without `user_id`, `cold_start_xml`, `latent_intuition_xml` or `resonance_score`. So:
+  - `layers.retrieve_for_l3` runs with `user_id="default"` on both paths, which undoes W1-04 in practice.
+  - The cold start and latent blocks that `_gather_turn_context` computes never reach the prompt, except on the forced streaming path, which uses `ctx.synthesis_context` directly.
+- `retrieve_for_l3` runs once per L3 call. The query is the loop input, so from round 2 onwards it includes the tool results.
+- `get_cold_start_context` always returns a non-empty `xml_block` (the wrapper is there even when every list is empty), so whenever it runs, the block counts as present.
+- `retrieve_for_l3` schedules `_batch_boost_on_recall` for every memory it returns.
+
+W2-20 changes the first two points on purpose. See that card.
+
+---
+
+**W2-14 Recall Engine package: models, config and the pure assembly step**
+- **PRD:** memory section 6.1 (interface), 6.3 step 6 (budgeted assembly, without abstention), 6.6 (trace), M2
+- **Tier:** frontier
+- **Files:** new `src/aura/engines/recall/__init__.py`, new `src/aura/engines/recall/models.py`, new `src/aura/engines/recall/assembly.py`, `src/aura/config.py`, new `tests/unit/test_recall_assembly.py`. Read `src/aura/config.py` (the `memory_inject_max_chars` field, to copy its style), `src/aura/clock.py`, and `src/aura/engines/memory/manager.py` (`_format_memories_xml`, `get_cold_start_context`).
+- **Change:**
+  1. `models.py`: only standard-library dataclasses. Import nothing from `aura.llm` or `aura.orchestrator`.
+     - `BlockKind = Literal["insights", "latent", "cold_start", "memories"]`, and `BLOCK_ORDER: tuple[BlockKind, ...] = ("insights", "latent", "cold_start", "memories")`. This is the order the blocks appear in today's L3 prompt, and the order in which deduplication and budget run.
+     - `RecallRequest`. Fields from PRD 6.1: `user_id: str`, `user_input: str`, `session_id: str | None = None`, `recent_turns: list[dict[str, str]] = field(default_factory=list)`, `emotional_state: Any = None`, `mode: Literal["chat", "task", "agent"] = "chat"`, `token_budget: int | None = None` (`None` means use config), `latency_budget_ms: int | None = None`. M2-only fields, each with a comment saying "M2: wraps today's channel":
+       - `learning_context: Any = None`
+       - `depth: int = 1`
+       - `limit: int = 5`
+       - `namespace: str | None = None`
+       - `include_cold_start: bool = False`
+       - `include_latent: bool = True`
+     - `Candidate(block: BlockKind, key: str, dedup_keys: tuple[str, ...], payload: Any, rank: int, source: str)`. `source` names the store, for example `"memory.retrieve_for_l3"`.
+     - `TraceItem(block, key, source, rank, tokens: int, fate: Literal["kept", "duplicate", "over_budget"], duplicate_of: str | None = None)`
+     - `RecallTrace(turn_id: str, user_id: str, query: str, created_at: datetime, budget_tokens: int, tokens_before: int, tokens_after: int, items: list[TraceItem], channel_errors: dict[str, str])`
+     - `Block(kind: BlockKind, text: str, tokens: int, stable: bool)`. `cold_start` is stable. The other three are dynamic.
+     - `ContextPacket(stable_blocks: list[Block], dynamic_blocks: list[Block], abstain: bool, trace: RecallTrace)`. Add `def block_text(self, kind) -> str | None`, which returns the text of the block of that kind, or `None` if there is no such block or its text is empty. Also add `def all_text(self) -> str`, which joins the non-empty block texts in `BLOCK_ORDER` with `"\n"`. `abstain` is always `False` in M2 (M3 adds abstention).
+  2. `config.py`: add these fields in the same style as `memory_inject_max_chars`:
+
+     | Field | Default | Env var |
+     |---|---|---|
+     | `recall_token_budget: int` | 3000 | `AURA_RECALL_TOKEN_BUDGET` |
+     | `recall_chars_per_token: int` | 4 | `AURA_RECALL_CHARS_PER_TOKEN` |
+     | `recall_share_insights: float` | 0.15 | `AURA_RECALL_SHARE_INSIGHTS` |
+     | `recall_share_latent: float` | 0.10 | `AURA_RECALL_SHARE_LATENT` |
+     | `recall_share_cold_start: float` | 0.30 | `AURA_RECALL_SHARE_COLD_START` |
+     | `recall_share_memories: float` | 0.45 | `AURA_RECALL_SHARE_MEMORIES` |
+     | `recall_dedup_enabled: bool` | True | `AURA_RECALL_DEDUP_ENABLED` |
+     | `recall_budget_enabled: bool` | True | `AURA_RECALL_BUDGET_ENABLED` |
+     | `recall_trace_keep: int` | 200 | `AURA_RECALL_TRACE_KEEP` |
+
+     The two `*_enabled` flags are the ablation switches (PRD rule 7). Check that the defaults are generous: 10 core memories and 3 recent ones at the 600-character inject cap come to about 1950 tokens in the cold-start block. If you change a default, say why in the log.
+  3. `assembly.py`:
+     - `estimate_tokens(text: str) -> int`: `math.ceil(len(text) / settings.recall_chars_per_token)`, and 0 for an empty string.
+     - `normalise_text(text: str) -> str`: casefold, strip, and collapse runs of whitespace to one space. It is used to build dedup keys.
+     - `assemble(candidates: list[Candidate], renderers: dict[BlockKind, Callable[[list[Any]], str]], budget_tokens: int, shares: dict[BlockKind, float], dedup: bool, budget: bool) -> tuple[list[Block], list[TraceItem], int, int]`, returning `(blocks, trace_items, tokens_before, tokens_after)`:
+       1. Group the candidates by block, in `BLOCK_ORDER`. Within a block, sort by `rank` ascending.
+       2. Deduplication (only if `dedup`): walk the blocks in `BLOCK_ORDER` and the candidates in rank order. Keep a map from dedup key to `"<block>:<key>"`. If any of a candidate's `dedup_keys` is already in the map, its fate is `duplicate`, and `duplicate_of` is the first holder. Otherwise, register all of its keys. The first occurrence in block order wins.
+       3. Budget (only if `budget`): `carry = 0`. For each block in `BLOCK_ORDER`:
+          - `allowance = int(budget_tokens * shares[block]) + carry`
+          - `kept` = the surviving candidates
+          - while `kept` is non-empty and `estimate_tokens(renderer(payloads))` is more than `allowance`, pop the last candidate and mark it `over_budget`
+          - `carry = max(0, allowance - estimate_tokens(text))`
+       4. Render each block from its kept payloads. A block with no renderer is skipped. Keep a block only if its text is non-empty.
+       5. Mark the remaining candidates `kept`. `TraceItem.tokens` is `estimate_tokens(renderer([payload]))`.
+       6. `tokens_before` is the token sum of the blocks rendered from all candidates, with no dedup and no budget. `tokens_after` is the token sum of the returned blocks.
+     - A renderer decides for itself what an empty list renders to. That is how the cold-start wrapper stays present, as today (see W2-17).
+  4. `__init__.py` exports the models, `assemble` and `estimate_tokens`.
+- **Tests:** `test_recall_assembly.py`, with string payloads and a `"\n".join` renderer:
+  - (a) Two candidates in different blocks that share a dedup key: the later block's candidate is `duplicate`, and `duplicate_of` names the earlier one.
+  - (b) With `dedup=False`, both are kept.
+  - (c) A block over its allowance drops candidates from the end until it fits, and the dropped ones are `over_budget`.
+  - (d) The unused allowance of an earlier block carries into the next one. Build a case where the second block fits only because of the carry.
+  - (e) With `budget=False`, nothing is `over_budget`.
+  - (f) `tokens_before >= tokens_after`, and both are exact for a hand-computed case.
+  - (g) `ContextPacket.block_text` returns `None` for a missing kind and for empty text.
+  - Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, `grep -rn "aura.llm\|aura.orchestrator" src/aura/engines/recall/` prints nothing, and `git diff --stat` shows only the five files above.
+- **Do not:** call any store, the database or a model from `assembly.py`. Do not add abstention, gating or ranking. Do not put the shares inline in `assembly.py`.
+
+---
+
+**W2-15 Split the formatting out of `retrieve_for_l3` and `get_cold_start_context`**
+- **PRD:** memory M2 (the Recall Engine must deduplicate and trim items before they are formatted)
+- **Tier:** bulk
+- **Files:** `src/aura/engines/memory/manager.py` (`retrieve_for_l3`, `get_cold_start_context`), new `tests/unit/test_manager_parts.py`. Read `tests/unit/test_inject_max_chars.py`.
+- **Change:**
+  1. Add `async def retrieve_for_l3_parts(self, query, current_emotions=None, user_id=None, limit=5, namespace=None, depth=1) -> tuple[list[Memory], dict[str, dict]]`. Move into it, verbatim, everything in `retrieve_for_l3` from the `if depth >= 2:` branch through the thought-cluster `try/except`. That includes the namespace merge and the `asyncio.create_task(self._batch_boost_on_recall(boost_ids))` call. It returns `(memories, cluster_data)`, and `([], {})` where `retrieve_for_l3` returns `[], ""` today.
+  2. `retrieve_for_l3` keeps its signature and docstring. Its body becomes:
+     ```python
+     memories, cluster_data = await self.retrieve_for_l3_parts(...)
+     if not memories:
+         return [], ""
+     return memories, self._format_memories_xml(memories, cluster_data)
+     ```
+  3. Add `def _format_cold_start_xml(self, core_memories: list[Memory], recent_memories: list[Memory], top_insights: list[dict[str, Any]], active_cultural_node: str | None) -> str`. Move into it, verbatim, the `# Build XML block` code from `get_cold_start_context` (from `xml = "<cold_start_context>\n"` through `xml += "</cold_start_context>"`). `get_cold_start_context` calls it, and is otherwise unchanged.
+- **Tests:** `test_manager_parts.py`, using a `MemoryManager.__new__` with an `AsyncMock` db, as in `test_inject_max_chars.py`:
+  - (a) `retrieve_for_l3` returns exactly `_format_memories_xml(*parts)` for a patched `retrieve_memories` that returns two memories, and `[], ""` when it returns none.
+  - (b) `_batch_boost_on_recall` is scheduled exactly once per `retrieve_for_l3` call.
+  - (c) `_format_cold_start_xml([], [], [], None) == "<cold_start_context>\n</cold_start_context>"`.
+  - Run the full suite. `test_inject_max_chars.py` must pass unchanged.
+- **Done when:** the suite passes. `grep -c "_format_memories_xml(" src/aura/engines/memory/manager.py` prints `2` (the definition and the one call in `retrieve_for_l3`). `grep -c "<cold_start_context>" src/aura/engines/memory/manager.py` prints `1`.
+- **Do not:** change any query, limit, the boost behaviour or the XML text. Do not change any caller.
+
+---
+
+**W2-16 Move the insights rendering into the Recall Engine**
+- **PRD:** memory M2 (insights are one of the five injectors)
+- **Tier:** bulk
+- **Files:** new `src/aura/engines/recall/render.py`, `src/aura/llm/layers.py` (`_build_l3_system_prompt`, the `# 1.1 Knowledge / Insights` block only), new `tests/unit/test_recall_render.py`
+- **Change:**
+  1. In `render.py`, add `def render_insights(insights: list, mastery_level: float) -> str`. It returns exactly the string today's block appends:
+     - `"<relevant_knowledge>\n"`
+     - the PRIORITY instruction line
+     - one `<insight ...>` line per item. **Note:** the caller passes the list already cut to `[:8]`. The renderer does not cut it again.
+     - the `<mastery .../>` line when `mastery_level > 0.7`
+     - `"</relevant_knowledge>\n\n"`
+
+     Return `""` when `insights` is empty.
+  2. In `_build_l3_system_prompt`, replace the body of `if context.learning_context and context.learning_context.insights:` with `prompt += render_insights(context.learning_context.insights[:8], context.learning_context.mastery_level)`.
+- **Tests:** `test_recall_render.py`:
+  - Before editing `layers.py`, capture `_build_l3_system_prompt(ctx, "T", None)` for a context with three insights and mastery 0.8, and for one with mastery 0.5. Hard-code both outputs in the test as golden strings.
+  - After the edit, assert that both are byte-identical.
+  - Assert that `render_insights([], 0.9) == ""`.
+  - Run the full suite.
+- **Done when:** the suite passes, and `grep -c "<relevant_knowledge>" src/aura/llm/layers.py` prints `0`.
+- **Do not:** change the text, the attribute order or the number formatting. Do not touch any other part of the prompt.
+
+---
+
+**W2-17 `RecallEngine.recall`: one entry point over today's channels**
+- **PRD:** memory section 6.1 and M2 ("one entry point wrapping today's stores ... no new retrieval logic")
+- **Tier:** frontier
+- **Depends on:** W2-14, W2-15, W2-16
+- **Files:** new `src/aura/engines/recall/engine.py`, `src/aura/engines/recall/__init__.py`, new `tests/unit/test_recall_engine.py`. Read `manager.py` (`retrieve_for_l3_parts`, `get_cold_start_context`, `_format_cold_start_xml`, `_format_memories_xml`), `src/aura/engines/latent/engine.py` (`get_intuition_context`), `src/aura/models/memory.py` (`Memory`, `ColdStartContext`), `src/aura/models/learning.py` (`Insight`, `LearningContext`), `src/aura/clock.py`.
+- **Change:**
+  1. Define `class RecallEngine` with `__init__(self, memory_manager=None, latent_engine=None)`. Store both. When one is `None`, resolve it lazily on first use, through `aura.engines.memory.manager.get_memory_manager()` and `aura.engines.latent.engine.get_latent_engine()`, looked up as module attributes at call time so that tests can monkeypatch them. Also add `self._traces: collections.OrderedDict[str, RecallTrace]`, capped at `settings.recall_trace_keep` (evict the oldest).
+  2. Define `async def recall(self, request: RecallRequest) -> ContextPacket`. Build candidates from today's channels, each in its own `try/except`. A failure records `channel_errors[<channel>] = str(e)` and the turn goes on, as the non-critical handlers do today.
+     - **insights**, if `request.learning_context` has insights:
+       - one candidate per item of `learning_context.insights[:8]`
+       - `key = insight_id`
+       - `dedup_keys = ("text:" + normalise_text(content),)`
+       - `source = "learning.get_learning_context"`
+       - renderer: `render_insights(payloads, learning_context.mastery_level)`
+     - **latent**, if `request.include_latent`:
+       - `xml = latent_engine.get_intuition_context(request.user_id)`
+       - if `xml` is truthy, one candidate with `key = "latent"` and no dedup keys
+       - renderer: the single payload, or `""`
+     - **cold_start**, if `request.include_cold_start`:
+       - `cold = await memory_manager.get_cold_start_context(request.user_id)`
+       - candidates, in this order:
+         - each core memory, with `key = memory_id` and `dedup_keys = ("mem:" + memory_id, "text:" + normalise_text(content))`
+         - each recent memory, keyed the same way
+         - each top insight dict, with `key = "cold_insight:<i>"` and `dedup_keys = ("text:" + normalise_text(content),)`
+       - Payloads are tagged tuples `("core", m)`, `("recent", m)` and `("insight", d)`.
+       - renderer: split the payloads back into the three lists, then call `memory_manager._format_cold_start_xml(core, recent, insights, cold.active_cultural_node)`. It renders the wrapper even when the lists are empty. This keeps today's "block present whenever the channel ran".
+     - **memories**:
+       - `memories, cluster_data = await memory_manager.retrieve_for_l3_parts(query=request.user_input, current_emotions=<request.emotional_state.vector.model_dump() if it has a vector, else None>, user_id=request.user_id, limit=request.limit, namespace=request.namespace, depth=request.depth)`
+       - one candidate per memory, in order, with `key = memory_id` and `dedup_keys = ("mem:" + memory_id, "text:" + normalise_text(content))`
+       - renderer: `memory_manager._format_memories_xml(payloads, cluster_data)` if `payloads`, else `""`
+  3. Call `assemble(...)`:
+     - budget: `request.token_budget or settings.recall_token_budget`
+     - shares: from the four `recall_share_*` settings
+     - `dedup=settings.recall_dedup_enabled`, `budget=settings.recall_budget_enabled`
+
+     Split the returned blocks into `stable_blocks` (`cold_start`) and `dynamic_blocks` (the rest).
+  4. The trace has:
+     - `turn_id = uuid.uuid4().hex`
+     - `query = request.user_input`
+     - `created_at = get_clock().now()` (rule 7)
+     - the items and token counts from `assemble`
+     - `channel_errors`
+
+     Store it in `_traces`. Return `ContextPacket(stable_blocks, dynamic_blocks, abstain=False, trace=trace)`.
+  5. Add `def get_trace(self, turn_id: str) -> RecallTrace | None`.
+  6. Add a module-level singleton `get_recall_engine() -> RecallEngine`, matching the pattern of `get_memory_manager`, and export `RecallEngine` and `get_recall_engine` from `__init__.py`.
+- **Tests:** `test_recall_engine.py`. Use a fake manager whose `retrieve_for_l3_parts`, `get_cold_start_context`, `_format_cold_start_xml` and `_format_memories_xml` are mocks, with the latter two wrapping the real `MemoryManager` methods called on a `MemoryManager.__new__` instance, plus a fake latent engine.
+  - (a) With dedup and budget disabled, `packet.block_text("memories")` equals `_format_memories_xml(memories, cluster_data)`, and `block_text("cold_start")` equals the cold context's `xml_block`. These are the byte-identical pass-through cases.
+  - (b) A memory that is in both cold-start recent and the retrieved memories appears once, in `cold_start`. The trace has the second copy as `duplicate`, and `tokens_after < tokens_before`.
+  - (c) An insight whose text equals a cold-start top insight (after case and whitespace normalisation) is kept in `insights` and dropped from `cold_start`.
+  - (d) A tiny `token_budget` drops memories from the end. The fates are `over_budget`, and the first memory survives when it fits.
+  - (e) `retrieve_for_l3_parts` raising leaves `channel_errors["memories"]` set and still returns the other blocks.
+  - (f) `include_cold_start=False` means `get_cold_start_context` is not awaited. `include_latent=False` means `get_intuition_context` is not called.
+  - (g) With `recall_trace_keep` monkeypatched to 2, three recalls leave only the last two traces, and `get_trace` returns `None` for the first.
+  - (h) `created_at` equals a `FakeClock`'s time.
+  - Run the full suite.
+- **Done when:** the new tests pass, the full suite passes, and `grep -rn "db.query\|self.db" src/aura/engines/recall/` prints nothing (the engine reads only through the stores).
+- **Do not:** add new queries, scoring, gating or abstention. Do not change what `retrieve_for_l3_parts` boosts. Boosting covers every retrieved memory, including deduplicated ones, until M5's feedback loop. Do not wire the engine into the pipeline in this card.
+
+---
+
+**W2-18 Let `SynthesisContext` carry a packet and render from it**
+- **PRD:** memory section 6.1 ("`llm/layers.py` ... renders a `ContextPacket`")
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files:** `src/aura/llm/layers.py` (`SynthesisContext`, `_build_l3_system_prompt`, `l3_synthesis`, `stream_l3_synthesis`), new `tests/unit/test_layers_packet.py`
+- **Change:**
+  1. Add the keyword argument `packet: "ContextPacket | None" = None` as the last parameter of `SynthesisContext.__init__`, and store it as `self.packet`. Import `ContextPacket` from `aura.engines.recall.models`.
+  2. In `_build_l3_system_prompt`, when `getattr(context, "packet", None) is not None`:
+     - Insights: `text = packet.block_text("insights")`. If `text` is set, `prompt += text`. The `learning_context.insights` branch is skipped.
+     - Latent: use `packet.block_text("latent")` in place of `context.latent_intuition_xml`, at the same position, followed by `"\n"`.
+     - Cold start: use `packet.block_text("cold_start")` in place of `context.cold_start_xml`, at the same position, followed by `"\n"`.
+
+     When `packet` is `None`, every branch behaves exactly as today.
+  3. In `l3_synthesis` and `stream_l3_synthesis`, if `context.packet is not None`, set `memory_xml = context.packet.block_text("memories") or ""` and do not call the memory manager. Otherwise keep today's `retrieve_for_l3` call unchanged.
+- **Tests:** `test_layers_packet.py`:
+  - (a) Build a `ContextPacket` by hand with all four blocks. `_build_l3_system_prompt(ctx_with_packet, "T", packet.block_text("memories"))` contains each block text once, in the order insights, latent, cold_start, memories.
+  - (b) With a packet and `learning_context.insights` that are not in the packet, the learning insights do not appear.
+  - (c) `l3_synthesis` with a packet does not call `get_memory_manager` (monkeypatch it to raise). Stub the LLM client the way existing layer tests do, or patch the client call on the instance.
+  - (d) With `packet=None`, the W2-16 golden strings still match.
+  - Run the full suite.
+- **Done when:** the suite passes. `grep -c "context.packet" src/aura/llm/layers.py` is at least `2`, and `retrieve_for_l3` is still called twice (`grep -c "retrieve_for_l3(" src/aura/llm/layers.py` prints `2`).
+- **Do not:** change the coordinator in this card. Do not remove the fallback path. Do not move any other prompt section.
+
+---
+
+**W2-19 Characterise what the loop contexts drop today (tests only)**
+- **PRD:** memory M2. A safety net before W2-20 changes the injection on purpose.
+- **Tier:** bulk
+- **Files:** `tests/unit/test_turn_process_query.py`, `tests/unit/test_turn_stream_query.py`. Read `_generate_blocking` and `_generate_streaming` in `src/aura/orchestrator/coordinator.py`.
+- **Change:** add these tests, using the existing `turn_orchestrator` fixture:
+  - (a) Blocking, no history. `get_cold_start_context` returns `xml_block="<cold_start_context>X</cold_start_context>"`, and the latent fake returns `"<latent>L</latent>"`. The context passed to `l3_synthesis` has `cold_start_xml is None`, `latent_intuition_xml is None` and `user_id == "default"`.
+  - (b) The same for the regular streaming loop's context passed to `stream_l3_synthesis`.
+  - Name both tests `test_loop_context_drops_*`. Their docstrings say: "pins pre-M2 behaviour; W2-20 changes this on purpose".
+- **Tests:** the two files, then the full suite.
+- **Done when:** the new tests pass and `git diff --stat src/` is empty.
+- **Do not:** change `src/`.
+
+---
+
+**W2-20 Route the turn through the Recall Engine**
+- **PRD:** memory section 6.1 and M2 ("all five injectors routed through it"). Closes F6 in practice.
+- **Tier:** frontier. This is the behaviour change of the milestone, and Mai should read the list in step 5 before it merges.
+- **Depends on:** W2-18, W2-19
+- **Files:** `src/aura/orchestrator/coordinator.py` (`TurnContext`, `_gather_turn_context`, `_cache_system_prompt`, `_generate_blocking`, `_generate_streaming`), `tests/conftest.py` (the `turn_orchestrator` fixture), `tests/unit/test_turn_process_query.py`, `tests/unit/test_turn_stream_query.py`, `tests/unit/test_turn_pipeline.py`
+- **Change:**
+  1. Add the field `packet: ContextPacket | None = None` as the last field of `TurnContext`.
+  2. In `_gather_turn_context`, replace the cold-start block and the latent-intuition block on both branches with one call:
+     ```python
+     from aura.engines.recall.engine import get_recall_engine
+     packet = await get_recall_engine().recall(RecallRequest(
+         user_id=user_id,
+         user_input=user_input,
+         recent_turns=(conversation_history or [])[-6:],
+         emotional_state=emotional_state,
+         learning_context=learning_context,
+         depth=2 if not stream else 1,
+         limit=5,
+         namespace=None,
+         include_cold_start=(not stream) and not conversation_history,
+         include_latent=True,
+     ))
+     ```
+     - Wrap the call in `try/except`. On failure, log a warning and set `packet = None`. With no packet, the layers fall back as in W2-18.
+     - Then set `cold_start_xml = packet.block_text("cold_start") if packet else None` and `latent_intuition_xml = packet.block_text("latent") if packet else None`, and pass both into `SynthesisContext` and `TurnContext` as today.
+     - Pass `packet=packet` to the `SynthesisContext` and the `TurnContext`.
+     - `namespace=None` and `limit=5` match today's `layers` call. `depth` matches today's 2 (blocking) and 1 (streaming).
+     - Keep the `[ICE]` and `[BRAIN]` log lines, rewritten to use the packet's trace counts.
+     - Then call `self._publish_trace("RECALL", "packet_built", {...})` with `turn_id`, `tokens_before`, `tokens_after`, the number of `duplicate` items and the number of `over_budget` items.
+  3. Pass `packet=ctx.packet` to every `SynthesisContext(...)` built in `_generate_blocking` and `_generate_streaming`: the blocking loop context, the streaming loop context and the streaming follow-up context. Change nothing else in those helpers.
+  4. In `_cache_system_prompt`, delete the inner `retrieve_memories` `try/except`, and call `self.llm_layers.build_l3_system_prompt(synthesis_context, relevant_memories=(synthesis_context.packet.block_text("memories") if getattr(synthesis_context, "packet", None) else None))`. Keep the outer `try` and its "Failed to cache system prompt" warning.
+  5. **The behaviour changes this card makes on purpose.** List each one in the log.
+     - (i) Memory retrieval runs once per turn, with the user's input, not once per L3 round with the tool results appended.
+     - (ii) Retrieval is scoped to the real `user_id` on both paths. Today the loop contexts fall back to `"default"`.
+     - (iii) On the blocking path with no history, the cold-start block and the latent block now reach the prompt. Today they are computed and then dropped by the loop context.
+     - (iv) On the streaming loop path, the latent block now reaches the prompt.
+     - (v) The cached debug prompt now shows the packet's memories, not a separate `retrieve_memories(limit=3, importance_min=0.5)` list.
+     - (vi) Deduplication and the budget apply to all four blocks.
+
+     If a reviewer rejects any of these, it can be undone by setting the matching request field or config flag. Do not add flags beyond those from W2-14.
+  6. Fixture: in `turn_orchestrator`, monkeypatch `aura.engines.recall.engine.get_recall_engine` to return a fake whose `recall` is an `AsyncMock`. Its default return is a `ContextPacket` with no blocks and a trace with `turn_id="t"` and zero tokens. Expose it as `orch._fake_recall_engine`. Keep the memory and latent fakes.
+  7. Update the characterisation tests. Change only these assertions:
+     - W2-02 (f): `retrieve_memories` and `get_cold_start_context` are no longer called from the coordinator. Assert instead that `recall` is awaited once with a request where `user_input == "hello"`, `user_id == "default"`, `depth == 2`, `include_cold_start is True` and `learning_context is` the fixture's `LearningContext`.
+     - W2-03 (c): the same, with `depth == 1` and `include_cold_start is False`.
+     - W2-19 (a) and (b): rename them to `test_loop_context_carries_packet_*` and assert that the loop contexts' `packet is` the packet the fake returned.
+     - Every other W2-02, W2-03 and W2-10 assertion stays as it is.
+- **Tests:** the updated files, plus one new test in `test_turn_pipeline.py`. When the fake recall raises, the turn still completes and the loop context has `packet is None`. Run the full suite.
+- **Done when:**
+  - The suite passes.
+  - `grep -n "get_cold_start_context\|get_intuition_context\|retrieve_memories" src/aura/orchestrator/coordinator.py` prints nothing.
+  - `grep -c "packet=ctx.packet" src/aura/orchestrator/coordinator.py` prints `3`.
+  - `grep -c "get_recall_engine()" src/aura/orchestrator/coordinator.py` prints at least `1`.
+- **Do not:** change the 10 s gather, the critique handling, `SynthesisContext.user_id` or the tool loops. Do not call the memory manager from the coordinator for prompt context. Do not remove the `cold_start_xml` and `latent_intuition_xml` fields.
+
+---
+
+**W2-21 The layers' fallback path goes through the Recall Engine too**
+- **PRD:** memory section 6.1 ("`llm/layers.py` stops calling `retrieve_for_l3` ...") and PRD rule 4
+- **Tier:** bulk
+- **Depends on:** W2-20
+- **Files:** `src/aura/llm/layers.py` (`l3_synthesis`, `stream_l3_synthesis`), `tests/unit/test_layers_packet.py`. Read `src/aura/engines/goal/engine.py` around the `l3_synthesis` call. It builds a `SynthesisContext` with no packet, and it is the remaining packet-less caller.
+- **Change:** in both methods, replace the `else` branch (today's `get_memory_manager().retrieve_for_l3(...)`) with:
+  ```python
+  packet = await get_recall_engine().recall(RecallRequest(
+      user_id=context.user_id,
+      user_input=context.user_input,
+      emotional_state=context.emotional_state,
+      learning_context=None,
+      depth=<2 in l3_synthesis, 1 in stream_l3_synthesis>,
+      limit=5,
+      include_cold_start=False,
+      include_latent=False,
+  ))
+  memory_xml = packet.block_text("memories") or ""
+  ```
+  - Keep the surrounding `try/except` and its warning text.
+  - `learning_context=None` and `include_latent=False` mean the fallback only replaces the memory block. The insights, latent and cold-start sections keep rendering from the context fields when there is no packet, so the goal engine's prompt is unchanged apart from the budget on memories.
+- **Tests:** add to `test_layers_packet.py`:
+  - (e) With `packet=None`, `l3_synthesis` awaits the monkeypatched `get_recall_engine().recall` once with `depth=2`, and `stream_l3_synthesis` with `depth=1`.
+  - Run the full suite.
+- **Done when:** the suite passes. `grep -c "get_memory_manager\|retrieve_for_l3(" src/aura/llm/layers.py` prints `0`. `grep -rn "retrieve_for_l3(" src --include=*.py` shows only `manager.py`.
+- **Do not:** change the goal engine. Do not pass the goal engine's `learning_context` into the request (its insights render through the unchanged no-packet branch).
+
+---
+
+**W2-22 Route the recall tools through the Recall Engine**
+- **PRD:** memory section 6.4 (the deep-path tools live in the Recall Engine) and M2 (the fifth injector)
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files:** `src/aura/engines/recall/engine.py`, `src/aura/orchestrator/coordinator.py` (`execute_l2_internal_tool` only), new `tests/unit/test_recall_tools.py`
+- **Change:**
+  1. Add two methods to `RecallEngine` that delegate unchanged to the memory manager and return its result as is:
+     - `async def timeline(self, experience_id: str, steps: int = 3, direction: str = "forward") -> list[dict]`, which calls `traverse_timeline(experience_id=..., steps=..., direction=...)`
+     - `async def evidence(self, insight_id: str) -> list[dict]`, which calls `fetch_supporting_evidence(insight_id=...)`
+
+     Use the return annotations the manager methods have.
+  2. In `execute_l2_internal_tool`, replace `from aura.engines.memory.manager import get_memory_manager` and `mm = get_memory_manager()` with `from aura.engines.recall.engine import get_recall_engine` and `recall = get_recall_engine()`. Call `recall.timeline(...)` and `recall.evidence(...)` with the same arguments. The formatting of the returned strings is unchanged.
+- **Tests:** `test_recall_tools.py`:
+  - Build the orchestrator with the `turn_orchestrator` fixture and a fake recall engine.
+  - For each tool, the result string is the same as today's for a scripted return value. Hard-code the expected strings.
+  - An empty result gives the "No ... found" string.
+  - Run the full suite.
+- **Done when:** the suite passes, and the line range of `execute_l2_internal_tool` contains no `get_memory_manager` (check with `grep -n`).
+- **Do not:** rename the tools or change their schemas in `L2_INTERNAL_TOOLS`. Do not add the PRD's new tools (`recall`, `what_changed`, `pin`); they are M5.
+
+---
+
+**W2-23 Recall trace endpoint**
+- **PRD:** memory section 6.6
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files:** new `src/aura/api/routes/recall.py`, `src/aura/main.py` (imports and `include_router` lines only), new `tests/unit/test_recall_route.py`. Read `src/aura/api/routes/memory.py` for the router style.
+- **Change:**
+  1. In `recall.py`, add `router = APIRouter()` and `@router.get("/trace/{turn_id}")`. It returns `dataclasses.asdict(trace)`, with `created_at` as ISO text, for `get_recall_engine().get_trace(turn_id)`, and raises `HTTPException(404, "trace not found")` when the trace is `None`.
+  2. Add `@router.get("/traces")`, which returns `{"turn_ids": [...]}`: the stored ids, newest first.
+  3. In `main.py`, add `from aura.api.routes import recall as recall_routes` next to the other route imports, and `app.include_router(recall_routes.router, prefix="/recall", tags=["recall"])` after the memory router line.
+- **Tests:** `test_recall_route.py` calls the handler coroutines directly, with a `RecallEngine` that holds one trace (monkeypatch `get_recall_engine`). Cover a known id, an unknown id (404) and the list order. Run the full suite.
+- **Done when:** the suite passes, and `grep -c "recall_routes" src/aura/main.py` prints `2`.
+- **Do not:** add the frontend debug view (later, with M3). Do not persist traces to the database.
+
+---
+
+**W2-24 Scenario runner through the Recall Engine, end to end**
+- **PRD:** memory M2 gate ("same accuracy as M1, fewer tokens per turn") and section 8.1
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files:** `tests/scenarios/runner.py`, new `tests/scenarios/test_recall_engine_embedded.py`. Read `tests/scenarios/test_runner_smoke.py`.
+- **Change:**
+  1. `ProbeResult` gets new fields:
+     - `packet_tokens: int = 0`
+     - `tokens_before: int = 0`
+     - `trace_turn_id: str | None = None`
+  2. `run(scenario, via: Literal["legacy", "recall"] = "legacy")`.
+     - `"legacy"` is today's path, unchanged, except that it also sets `packet_tokens = estimate_tokens(packet_xml)`.
+     - `"recall"` builds `RecallEngine(memory_manager=manager, latent_engine=<a stub whose get_intuition_context returns None>)`. For each probe it calls `recall(RecallRequest(user_id=probe.user_id, user_input=probe.question, depth=2, limit=5, include_cold_start=True, include_latent=False))`, and computes `gold_found` against `packet.all_text()`. It sets `packet_chars = len(packet.all_text())`, `packet_tokens = trace.tokens_after`, `tokens_before = trace.tokens_before` and `trace_turn_id`.
+- **Tests:** `test_recall_engine_embedded.py`, on the embedded engine with the FakeClock and the stub embeddings:
+  - Scenario: on day 0, "My dog's name is Biscuit", "I work as a nurse" and "My sister is called Ana" (same user). A dream on day 1. On day 2, the probe "What's my dog's name?" with gold `["Biscuit"]`.
+  - (a) `run(..., via="recall")` completes, and the result's `gold_found == run(..., via="legacy")`'s `gold_found` (same accuracy; this does not assert that the gold is found).
+  - (b) If the trace has any `duplicate` item, `tokens_before > packet_tokens`. Otherwise `tokens_before == packet_tokens`. Record which case happened in the log.
+  - (c) Ablation: with `recall_dedup_enabled` and `recall_budget_enabled` monkeypatched to `False`, `packet_tokens == tokens_before`.
+  - Run the full suite. `test_runner_smoke.py` must pass unchanged.
+- **Done when:** the new test passes offline (no model download, no SurrealDB server) and the full suite passes. The log records the legacy and recall `packet_tokens` for the probe.
+- **Do not:** change `src/`. Do not change the legacy path's retrieval arguments. Do not assert that the gold was found.
+
+---
+
+**W2-25 Remove the VRM avatar**
+- **PRD:** avatar section 4 and milestone V0 (test T1)
+- **Tier:** bulk
+- **Files:**
+  - **Delete:**
+    - `frontend/src/components/vrm-engine/` (the whole directory)
+    - `frontend/src/components/VrmModelSelector.tsx`
+    - `frontend/src/components/AvatarCanvas.tsx`
+    - `frontend/src/components/AuraAvatar.tsx`
+    - `frontend/src/components/FloatingAvatarWindow.tsx`
+    - `frontend/src/services/animationRouterInstance.ts`
+    - `frontend/src/services/avatarAudioBridge.ts`
+    - `frontend/src/utils/emotionToBlendshape.ts`: imported only by `AvatarCanvas.tsx`
+    - `frontend/inspect-vrm.js`: it only inspects `node_modules/@pixiv/three-vrm`
+    - `frontend/public/vrm-assets/` (the whole directory)
+    - `src/aura/api/routes/l5_animation.py`
+  - **Edit:**
+    - `frontend/src/pages/chat.tsx`
+    - `frontend/package.json` and `frontend/package-lock.json`, through `npm uninstall` only
+    - `src/aura/main.py`: only the `l5_animation` import (line 32) and its `include_router` line (line 490)
+  - **Read:** `frontend/src/components/SpiralAvatar.tsx`, and the `FloatingAvatarWindow.tsx` collapsed-state `Box` (around lines 160 to 180, for the position values) before deleting it.
+- **Change:**
+  1. Setup: from `frontend/`, run `npm ci` first. `node_modules` is not installed in this checkout. Then run `npm run build` once **before** any change, and record whether it passes. If it fails before the change, stop and report the errors. Do not fix unrelated build errors.
+  2. Delete the files and directories listed above with `git rm -r`. `public/vrm-assets/` holds:
+     - 10 `.vrm` models: `Aera`, `AvatarSample_A` to `AvatarSample_D`, `Dhahlia`, `Epithet`, `Lara Lightland`, `Onyx` and `Velara`
+     - 15 `.vrma` clips
+     - `thumb-placeholder.jpg`
+
+     If `vrm-animations-temp/` exists at the repository root, delete it too. Today it is not present and not tracked.
+  3. In `chat.tsx`:
+     - Remove the imports of `FloatingAvatarWindow` and `avatarAudioBridge` (lines 86 and 87).
+     - In the TTS handler, remove the `blob.arrayBuffer().then(buf => { avatarAudioBridge.dispatch(...) }).catch(...)` statement and its two comment lines. Keep `audioQueue.push(blob); playNextInQueue();`.
+     - Remove the whole `// ---- Movement Command ...` `try { ... animationRouterInstance ... } catch {}` block.
+     - Remove the whole `// ---- L5 Animation Selector ...` `try { fetch(`${API_BASE_URL}/l5/select-animation` ...) } catch (l5Err) {...}` block.
+     - Replace `<FloatingAvatarWindow />` with:
+       ```tsx
+       <Box sx={{ position: 'fixed', right: { xs: 16, md: 24 }, bottom: { xs: 96, md: 112 }, zIndex: 1320, pointerEvents: 'none' }}>
+         <SpiralAvatar size={64} />
+       </Box>
+       ```
+       Then add `import SpiralAvatar from '@/components/SpiralAvatar';` next to the other component imports. `Box` is already imported from `@mui/material`.
+     - If the build or lint then reports a variable that became unused because of these removals (for example `emotion`), remove only that variable.
+  4. Dependencies: run `npm uninstall @pixiv/three-vrm stats.js lil-gui three-mesh-bvh @mkkellogg/gaussian-splats-3d` from `frontend/`. Each of these is imported only by files deleted in step 2:
+     - `@pixiv/three-vrm`: `vrm-engine/` and `AvatarCanvas.tsx`
+     - `stats.js`, `lil-gui` and `three-mesh-bvh`: `vrm-engine/features/vrmViewer/viewer.ts`
+     - `@mkkellogg/gaussian-splats-3d`: `vrm-engine/features/vrmViewer/room.ts`
+
+     Before uninstalling, confirm each one with `grep -rn "<name>" src` returning nothing.
+  5. In `main.py`, delete the `from aura.api.routes import l5_animation as l5_animation_routes` line and the `app.include_router(l5_animation_routes.router, tags=["l5-animation"])` line.
+- **Tests:** the frontend has no test suite (`package.json` has no `test` script), so the checks are:
+  - from `frontend/`: `npm ci`, then `npm run build` passes
+  - from `aura-app`: the Python suite `.venv\Scripts\python.exe -m pytest`
+  - start the dev server and check by hand that `/chat` shows the spiral at the bottom right
+- **Done when:**
+  - `npm run build` succeeds from `frontend/` after `npm ci`.
+  - `grep -rniE "three-vrm|vrm-engine|VrmRenderer|VrmModelSelector|AuraAvatar|AvatarCanvas|FloatingAvatarWindow|avatarAudioBridge|animationRouter|emotionToBlendshape|l5/select-animation" frontend/src frontend/package.json` prints nothing (this is T1).
+  - `grep -cE "\"(@pixiv/three-vrm|stats.js|lil-gui|three-mesh-bvh|@mkkellogg/gaussian-splats-3d)\"" frontend/package.json` prints `0`, and the same names no longer appear as top-level `"node_modules/<name>"` keys in `package-lock.json`.
+  - `git ls-files frontend/public/vrm-assets | wc -l` prints `0`, and `git ls-files | grep -ciE "\.vrma?$"` prints `0`.
+  - `grep -rn "l5_animation" src` prints nothing, and the Python suite passes.
+  - `SpiralAvatar.tsx` and `ChatMessage.tsx` are unchanged (`git diff --stat` does not list them).
+- **Do not:**
+  - Do not remove `three` or `@types/three`, because `SpiralAvatar` uses them. Do not remove `@gltf-transform/core`: nothing in `src` imports it, but the PRD does not list it, so report it instead.
+  - Do not add `AvatarStage` or any V1 work. Do not add anything that needs the MetaHuman or new asset.
+  - Do not touch `ttsService`, the TTS queue, `l5_structure_analysis` in `llm/layers.py`, the `l5_model` settings or `discord.tsx`. The MUI `Avatar` there is unrelated.
+
+---
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
