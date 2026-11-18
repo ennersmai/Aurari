@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aura.config import settings
+from aura.engines.recall.render import render_insights
 from aura.llm.provider import OpenRouterClient
 from aura.llm.unified_provider import UnifiedLLMClient
 from aura.llm.router import ContextModeRouter, ContextMode
@@ -972,15 +973,7 @@ Your output must be parseable JSON only.""",
         
         # 1.1 Knowledge / Insights (Elevated Priority)
         if context.learning_context and context.learning_context.insights:
-            prompt += "<relevant_knowledge>\n"
-            prompt += "  <instruction>PRIORITY: The following facts are specific to this user/session. Prioritize these over your generic training or core narrative defaults.</instruction>\n"
-            for insight in context.learning_context.insights[:8]:
-                prompt += f"  <insight type='{insight.type}' confidence='{insight.confidence:.2f}'>{insight.content}</insight>\n"
-            
-            mastery = context.learning_context.mastery_level
-            if mastery > 0.7:
-                prompt += f"  <mastery level='{mastery:.2f}'/>\n"
-            prompt += "</relevant_knowledge>\n\n"
+            prompt += render_insights(context.learning_context.insights[:8], context.learning_context.mastery_level)
 
         # Identity context
         if context.identity_context:
