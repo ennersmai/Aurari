@@ -1,12 +1,14 @@
 # Overnight Build Log
 
-## Summary
-- **Done (21/18 listed cards):** W0-01 (by setup), W0-02, W0-03, W0-04, W0-05, W1-01, W1-02, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09, W1-10, W1-11, W1-12, W1-13, W1-14, W1-15, W1-16
-- **Not done, by instruction:** none remaining in waves 0-1
-- **Stopped at:** none. Every listed card passed its tests and the supervisor review.
-- **Wave 0-1 review:** see docs/metrics/wave-1.md. Full suite 47 passed.
-- **Wave 2:** W2-01 (scenario runner) DONE. The previous stop was unblocked by the card's own dependency approval (`surrealdb[embedded]`): I installed the embedded engine into `.venv`, added `surrealdb[embedded]` to the `dev` optional deps in `pyproject.toml`, and the embedded `mem://` engine starts on this machine. The runner drives the real `MemoryManager` and `DreamingEngine` over the embedded engine; the smoke test passes offline with no model download and no running SurrealDB server.
-- **Nothing else carded tonight:** B0 is frontier and blocks M2 and G1; G1 also touches tool execution; V0 is held (avatar); the probe set must come from Mai. See docs/metrics/wave-1.md.
+## Summary (kept current by the supervisor)
+- **Night 2 instructions (Mai):** all six PRDs in section 5 order, frontier approved, surrealdb[embedded] approved, avatar except MetaHuman steps, probe set as placeholder.
+- **Wave 0-1:** all 21 cards done (W0-01..W0-05, W1-01..W1-16). Review in docs/metrics/wave-1.md.
+- **Wave 2 done:** W2-01 scenario runner; B0 complete (W2-02..W2-11: one `_turn_pipeline`, both entry points thin wrappers, 20+16 characterisation tests); W2-12, W2-13 (real SurrealDB query bugs found by the runner).
+- **Wave 2 queued:** W2-26, W2-27 (follow-up fixes), M2 Recall Engine W2-14..W2-24, V0 avatar removal W2-25.
+- **Please review first:** W2-20 changes behaviour on purpose: the user id now reaches retrieval inside the tool loop (today it silently runs as "default", undoing W1-04), retrieval runs once per turn, and the cold-start and latent blocks reach the prompt.
+- **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
+- **Stopped / skipped cards:** none so far.
+- **Suite:** 119 passed.
 
 ---
 

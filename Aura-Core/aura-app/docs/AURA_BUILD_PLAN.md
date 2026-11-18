@@ -690,6 +690,32 @@ W2-20 changes the first two points on purpose. See that card.
 
 ---
 
+**W2-26 Fix the clause order in the four remaining edge queries**
+- **PRD:** memory (retrieval). Reported by W2-13 (see its log entry).
+- **Tier:** bulk
+- **Files:** `src/aura/engines/memory/manager.py`, new `tests/scenarios/test_edge_queries_clause_order_embedded.py`. Read `tests/scenarios/test_spreading_edge_query_embedded.py` (W2-13) and `tests/scenarios/runner.py`.
+- **Change:** these four queries put `FETCH in` before `LIMIT`, which SurrealDB rejects (the order is ... ORDER, LIMIT, START, FETCH ...). In each, move `LIMIT <n>` before `FETCH in`, keeping every other token, parameter name and binding unchanged:
+  1. `_fetch_thought_cluster`, the `abstracted_into` sources query: `... WHERE out = $mid FETCH in LIMIT 5` becomes `... WHERE out = $mid LIMIT 5 FETCH in`.
+  2. `_fetch_thought_cluster`, the `next_experience` before-traversal query: `... FETCH in LIMIT 2` becomes `... LIMIT 2 FETCH in`.
+  3. `traverse_timeline`, the forward-step query: `... FETCH in LIMIT 1` becomes `... LIMIT 1 FETCH in`.
+  4. `fetch_supporting_evidence`, the `abstracted_into` evidence query: `... FETCH in LIMIT 10` becomes `... LIMIT 10 FETCH in`.
+- **Tests:** following the W2-13 test, run each of the four new query strings on the embedded engine with suitable empty bindings and assert none raises. Run the full suite.
+- **Done when:** the new tests pass offline, `grep -nE "FETCH in(, out)? LIMIT" src/aura/engines/memory/manager.py` prints nothing, and the full suite passes.
+- **Do not:** change what the queries select or their bindings. Do not touch the try/except blocks around them.
+
+---
+
+**W2-27 Fix the hash slice in the scenario runner's embedding stub**
+- **PRD:** memory section 8.1 (scenario runner). Reported by W2-12.
+- **Tier:** bulk
+- **Files:** `tests/scenarios/runner.py`
+- **Change:** in the stub embedding function, `int.from_bytes(h[:4,], "little")` slices with a tuple, which raises at runtime for non-empty text. Change it to `int.from_bytes(h[:4], "little")`. If W2-12's test worked around this with empty content, make it store real text again ("I like hiking in the mountains").
+- **Tests:** add a unit test that the stub returns a vector of the expected length with at least one non-zero entry for a non-empty sentence, and that the same sentence gives the same vector twice. Run the full suite.
+- **Done when:** the new test passes and the full suite passes.
+- **Do not:** change the vector length or the normalisation.
+
+---
+
 **W2-14 Recall Engine package: models, config and the pure assembly step**
 - **PRD:** memory section 6.1 (interface), 6.3 step 6 (budgeted assembly, without abstention), 6.6 (trace), M2
 - **Tier:** frontier
