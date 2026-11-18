@@ -556,3 +556,57 @@ async def test_w2_06_forced_tool_by_name_lookup(turn_orchestrator):
     )
     assert result == "final answer"
     await _drain()
+
+
+# ---------------------------------------------------------------------------
+# (W2-19) Characterise what the blocking loop context drops today
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_loop_context_drops_cold_start_latent_and_user_id_blocking(turn_orchestrator):
+    """W2-19 (a): pins pre-M2 behaviour; W2-20 changes this on purpose.
+
+    On the blocking path with no conversation history, ``_gather_turn_context``
+    computes a non-empty ``cold_start_xml`` (from ``get_cold_start_context``)
+    and a non-empty ``latent_intuition_xml`` (from ``get_intuition_context``)
+    and stores both on ``ctx`` and ``ctx.synthesis_context``. However, the
+    loop context built inside ``_generate_blocking`` constructs a *new*
+    ``SynthesisContext`` that omits ``cold_start_xml``, ``latent_intuition_xml``
+    and ``user_id``, so those default to ``None``, ``None`` and ``"default"``
+    — the cold-start and latent blocks never reach the prompt on the regular
+    blocking loop, and the user id falls back to ``"default"`` (undoing W1-04
+    in practice). This test pins that drop so W2-20 can flip it on purpose.
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    orch.llm_layers.l3_synthesis = AsyncMock(return_value="ok")
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+
+    # Make the cold-start and latent channels return non-empty XML so that
+    # _gather_turn_context actually populates ctx.cold_start_xml and
+    # ctx.latent_intuition_xml (and ctx.synthesis_context.* likewise). The
+    # loop context should still drop both.
+    orch._fake_memory_manager.get_cold_start_context = AsyncMock(
+        return_value=SimpleNamespace(
+            xml_block="<cold_start_context>X</cold_start_context>",
+            core_memories=[],
+            recent_memories=[],
+        )
+    )
+    orch._fake_latent_engine.get_intuition_context = MagicMock(
+        return_value="<latent>L</latent>"
+    )
+
+    # No conversation_history -> the blocking path runs the cold-start branch.
+    await orch.process_query("hello", user_id="u1")
+
+    # Sanity: the channels actually ran and returned non-empty XML.
+    orch._fake_memory_manager.get_cold_start_context.assert_awaited_once_with("u1")
+    orch._fake_latent_engine.get_intuition_context.assert_called_once_with("u1")
+
+    # The loop context passed to l3_synthesis drops all three.
+    orch.llm_layers.l3_synthesis.assert_awaited_once()
+    loop_ctx = orch.llm_layers.l3_synthesis.await_args.args[0]
+    assert loop_ctx.cold_start_xml is None
+    assert loop_ctx.latent_intuition_xml is None
+    assert loop_ctx.user_id == "default"
+    await _drain()

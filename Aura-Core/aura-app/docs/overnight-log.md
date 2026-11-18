@@ -3,12 +3,12 @@
 ## Summary (kept current by the supervisor)
 - **Night 2 instructions (Mai):** all six PRDs in section 5 order, frontier approved, surrealdb[embedded] approved, avatar except MetaHuman steps, probe set as placeholder.
 - **Wave 0-1:** all 21 cards done (W0-01..W0-05, W1-01..W1-16). Review in docs/metrics/wave-1.md.
-- **Wave 2 done:** W2-01 scenario runner; B0 complete (W2-02..W2-11: one `_turn_pipeline`, both entry points thin wrappers, 20+16 characterisation tests); W2-12, W2-13 (real SurrealDB query bugs found by the runner).
+- **Wave 2 done:** W2-01 scenario runner; B0 complete (W2-02..W2-11: one `_turn_pipeline`, both entry points thin wrappers, 20+16 characterisation tests); W2-12, W2-13 (real SurrealDB query bugs found by the runner); W2-19 (test-only safety net for the loop-context drops W2-20 changes).
 - **Wave 2 queued:** W2-26, W2-27 (follow-up fixes), M2 Recall Engine W2-14..W2-24, V0 avatar removal W2-25.
 - **Please review first:** W2-20 changes behaviour on purpose: the user id now reaches retrieval inside the tool loop (today it silently runs as "default", undoing W1-04), retrieval runs once per turn, and the cold-start and latent blocks reach the prompt.
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
 - **Stopped / skipped cards:** none so far.
-- **Suite:** 159 passed.
+- **Suite:** 161 passed.
 
 ---
 
@@ -749,3 +749,19 @@
 - **Note on test (b)'s assertion choice:** the card says "the learning insights do not appear". The `<user_profile>` instruction prose at line 969 contains the literal `see <relevant_knowledge> below`, so a naive `"<relevant_knowledge>" not in out` assertion would false-positive on that prose (exactly the W2-16 false-positive). I asserted against the rendered block's distinctive content instead (`"PRIORITY: The following facts are specific"`, `"<insight "`, the insight content strings, and the `"<relevant_knowledge>\n"` block opener that `render_insights` emits). This precisely captures "the learning insights do not appear" without the prose false-positive.
 - **Unsure about:** Only the "Done when" `retrieve_for_l3(` grep false-positive above (the comment at line 1102). Everything else is scoped to the `packet` kwarg, the three prompt blocks, and the two `retrieve_for_l3` short-circuits; the full suite (159 passed) confirms nothing else regressed.
   The W0-04/W0-05 recording tests rewrote the frozen `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.
+
+## W2-19: Characterise what the loop contexts drop today (tests only)
+- **Status:** DONE
+- **PRD:** memory M2. A safety net before W2-20 changes the injection on purpose.
+- **Tier:** bulk
+- **Files changed:** `tests/unit/test_turn_process_query.py` (added test (a)), `tests/unit/test_turn_stream_query.py` (added test (b)). No file under `src/` was changed (the card's "Do not"; `git diff --stat -- src/` is empty).
+- **Test result:** 161 passed (full suite: 159 prior + 2 new). Both new tests pass; the full suite passes.
+- **What I did, step by step:**
+  1. Read `_generate_blocking` (coordinator.py lines 1284–1375) and `_generate_streaming` (lines 1377–1504), plus `_gather_turn_context` (lines 1055–1283) to confirm exactly what is dropped. Both helpers build their loop contexts as a **new** `SynthesisContext(...)` that passes only `user_input`, `conversation_history`, `emotional_state`, `learning_context`, `identity_context`, `goal_context` and (blocking only) `recent_critique`. They do **not** pass `cold_start_xml`, `latent_intuition_xml` or `user_id`, so those default to `None`, `None` and `"default"` — even though `_gather_turn_context` computed the cold-start XML (when there is no history) and the latent intuition XML and stored both on `ctx` and `ctx.synthesis_context`.
+  2. Added `test_loop_context_drops_cold_start_latent_and_user_id_blocking` to `test_turn_process_query.py` (card (a)). It overrides the fixture's fakes so `get_cold_start_context("u1")` returns `xml_block="<cold_start_context>X</cold_start_context>"` and `get_intuition_context("u1")` returns `"<latent>L</latent>"`, runs `process_query("hello", user_id="u1")` (no history, plain CHAT, `extract_tool_calls` returns `[]`), sanity-checks that both channels were called with `"u1"`, then asserts the context passed to `l3_synthesis` has `cold_start_xml is None`, `latent_intuition_xml is None` and `user_id == "default"`.
+  3. Added `test_loop_context_drops_cold_start_latent_and_user_id_streaming` to `test_turn_stream_query.py` (card (b)). Same setup for the latent fake (and the cold-start fake for parity, though the stream path does not call it — the cold-start branch only runs on the blocking path with no history), a scripted stream, then `stream_query("hello", user_id="u1")` via `_collect`. Sanity-checks that `get_intuition_context("u1")` ran, then asserts the single context passed to `stream_l3_synthesis` has `cold_start_xml is None`, `latent_intuition_xml is None` and `user_id == "default"`, and that the yielded chunks are the scripted ones.
+  4. Both tests carry the docstring the card requires: "pins pre-M2 behaviour; W2-20 changes this on purpose", and both names match the card's `test_loop_context_drops_*` pattern.
+- **"Done when" verified:** the two new tests pass (run in isolation, 2 passed), the full suite passes (161 passed), and `git diff --stat -- src/` is empty.
+- **Do-not checks:** No `src/` file was changed. No existing test was altered. The fixture was not changed (no optional knobs were needed — overriding the stashed fakes `orch._fake_memory_manager` / `orch._fake_latent_engine` per test was enough).
+  The W0-04/W0-05 recording tests rewrote the frozen `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.
+- **Unsure about:** Nothing. The change is two test-only additions; no behaviour changed and no `src/` file was touched. One observation (not a failure, not asserted beyond what the card asks): on the streaming path the cold-start channel is not exercised at all today (the stream branch of `_gather_turn_context` never calls `get_cold_start_context`), so test (b) pins only the latent drop and the `user_id` fallback there, while still setting the cold-start fake so the drop is visible if the stream path ever starts calling it.

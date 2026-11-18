@@ -487,3 +487,57 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
     assert ctx.user_input.startswith("I executed a tool for you.")
     assert ctx.user_input.endswith("Original user query: hello")
     assert chunks == ["per", "sona"]
+
+
+# ---------------------------------------------------------------------------
+# (W2-19) Characterise what the streaming loop context drops today
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_loop_context_drops_cold_start_latent_and_user_id_streaming(turn_orchestrator):
+    """W2-19 (b): pins pre-M2 behaviour; W2-20 changes this on purpose.
+
+    On the regular streaming loop path, the loop context built inside
+    ``_generate_streaming`` constructs a *new* ``SynthesisContext`` that omits
+    ``cold_start_xml``, ``latent_intuition_xml`` and ``user_id``, so those
+    default to ``None``, ``None`` and ``"default"``. The streaming path never
+    calls ``get_cold_start_context`` at all (it only runs when there is no
+    history, and the stream path skips that branch), but the latent channel
+    is computed by ``_gather_turn_context`` and stored on ``ctx``; the loop
+    context still drops it. This test pins that drop so W2-20 can flip it on
+    purpose.
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+    orch.llm_layers._stream_chunks_queue.append(["ab", "cd"])
+
+    # The latent channel returns non-empty XML so _gather_turn_context
+    # populates ctx.latent_intuition_xml (and ctx.synthesis_context likewise).
+    # The loop context should still drop it. (get_cold_start_context is not
+    # called on the stream path, but we set it for parity with the blocking
+    # test and to make the drop obvious if the stream path ever starts calling
+    # it.)
+    orch._fake_memory_manager.get_cold_start_context = AsyncMock(
+        return_value=SimpleNamespace(
+            xml_block="<cold_start_context>X</cold_start_context>",
+            core_memories=[],
+            recent_memories=[],
+        )
+    )
+    orch._fake_latent_engine.get_intuition_context = MagicMock(
+        return_value="<latent>L</latent>"
+    )
+
+    chunks = await _collect(orch.stream_query("hello", user_id="u1"))
+    await _drain()
+
+    # Sanity: the latent channel actually ran and returned non-empty XML.
+    orch._fake_latent_engine.get_intuition_context.assert_called_once_with("u1")
+
+    # The loop context passed to stream_l3_synthesis drops all three.
+    assert len(orch.llm_layers._stream_calls) == 1
+    loop_ctx, _ = orch.llm_layers._stream_calls[0]
+    assert loop_ctx.cold_start_xml is None
+    assert loop_ctx.latent_intuition_xml is None
+    assert loop_ctx.user_id == "default"
+    assert chunks == ["ab", "cd"]
