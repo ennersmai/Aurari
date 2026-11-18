@@ -1885,7 +1885,7 @@ Original user query: {user_input}"""
     async def execute_l2_internal_tool(self, tool_name: str, arguments: dict) -> str:
         """Execute an internal cognitive tool called by L2 during reasoning.
 
-        Routes tool calls to the appropriate MemoryManager method and returns
+        Routes tool calls to the appropriate RecallEngine method and returns
         the result as a formatted string for re-injection into L2's context.
 
         Args:
@@ -1895,8 +1895,8 @@ Original user query: {user_input}"""
         Returns:
             Formatted string result for L2 consumption.
         """
-        from aura.engines.memory.manager import get_memory_manager
-        mm = get_memory_manager()
+        from aura.engines.recall.engine import get_recall_engine
+        recall = get_recall_engine()
 
         try:
             if tool_name == "traverse_timeline":
@@ -1904,7 +1904,7 @@ Original user query: {user_input}"""
                 steps = int(arguments.get("steps", 3))
                 direction = arguments.get("direction", "forward")
 
-                timeline = await mm.traverse_timeline(
+                timeline = await recall.timeline(
                     experience_id=experience_id,
                     steps=steps,
                     direction=direction,
@@ -1926,7 +1926,7 @@ Original user query: {user_input}"""
             elif tool_name == "fetch_supporting_evidence":
                 insight_id = arguments.get("insight_id", "")
 
-                evidence = await mm.fetch_supporting_evidence(insight_id=insight_id)
+                evidence = await recall.evidence(insight_id=insight_id)
 
                 if not evidence:
                     return f"[fetch_supporting_evidence] No evidence found for {insight_id}."

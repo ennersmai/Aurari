@@ -408,6 +408,42 @@ class RecallEngine:
         evicted or never stored."""
         return self._traces.get(turn_id)
 
+    # ------------------------------------------------------------------
+    # Recall tools (W2-22): delegate to MemoryManager for L2 internal tools
+    # ------------------------------------------------------------------
+
+    async def timeline(
+        self,
+        experience_id: str,
+        steps: int = 3,
+        direction: str = "forward",
+    ) -> list[dict[str, Any]]:
+        """Delegate to MemoryManager.traverse_timeline.
+
+        This is the Recall Engine's entry point for the ``traverse_timeline``
+        internal tool (PRD 6.4, M2 fifth injector). It returns the result
+        unchanged so the orchestrator's formatting stays the same.
+        """
+        memory_manager = await self._get_memory_manager()
+        return await memory_manager.traverse_timeline(
+            experience_id=experience_id,
+            steps=steps,
+            direction=direction,
+        )
+
+    async def evidence(
+        self,
+        insight_id: str,
+    ) -> list[dict[str, Any]]:
+        """Delegate to MemoryManager.fetch_supporting_evidence.
+
+        This is the Recall Engine's entry point for the ``fetch_supporting_evidence``
+        internal tool (PRD 6.4, M2 fifth injector). It returns the result
+        unchanged so the orchestrator's formatting stays the same.
+        """
+        memory_manager = await self._get_memory_manager()
+        return await memory_manager.fetch_supporting_evidence(insight_id=insight_id)
+
 
 # =============================================================================
 # SINGLETON

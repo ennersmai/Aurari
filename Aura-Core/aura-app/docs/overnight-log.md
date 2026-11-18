@@ -825,3 +825,31 @@
   - `grep -rn "retrieve_for_l3(" src --include=*.py` shows only `manager.py` (the definition, docs, and one comment in layers.py).
 - **Do-not checks:** Did not change the goal engine. Did not pass the goal engine's `learning_context` into the request (its insights render through the unchanged no-packet branch). Did not change any other part of the prompt assembly.
 - **Unsure about:** Nothing. The change is scoped to the two fallback branches in `layers.py` and the two new tests. The goal engine's call to `l3_synthesis` (which builds a `SynthesisContext` with no packet) now uses the Recall Engine fallback path, which applies deduplication and the token budget to the memories block — this is the intended behaviour per the card. The card's "Done when" conditions are all satisfied.
+
+## W2-22: Route the recall tools through the Recall Engine
+- **Status:** DONE
+- **PRD:** memory section 6.4 (the deep-path tools live in the Recall Engine) and M2 (the fifth injector)
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files changed:** `src/aura/engines/recall/engine.py`, `src/aura/orchestrator/coordinator.py`, `tests/unit/test_recall_tools.py`
+- **Test result:** 171 passed (full suite: 164 prior + 7 new)
+- **What I did, step by step:**
+  1. Added two methods to `RecallEngine` in `src/aura/engines/recall/engine.py` that delegate unchanged to the MemoryManager:
+     - `async def timeline(self, experience_id: str, steps: int = 3, direction: str = "forward") -> list[dict[str, Any]]`: calls `memory_manager.traverse_timeline(experience_id=..., steps=..., direction=...)`
+     - `async def evidence(self, insight_id: str) -> list[dict[str, Any]]`: calls `memory_manager.fetch_supporting_evidence(insight_id=...)`
+     Both methods use the return annotations the manager methods have and return the results as-is.
+  2. In `execute_l2_internal_tool` (coordinator.py), replaced `from aura.engines.memory.manager import get_memory_manager` and `mm = get_memory_manager()` with `from aura.engines.recall.engine import get_recall_engine` and `recall = get_recall_engine()`. The tool calls now invoke `recall.timeline(...)` and `recall.evidence(...)` with the same arguments. The formatting of the returned strings is unchanged.
+  3. Created `tests/unit/test_recall_tools.py` with 7 tests:
+     - `test_traverse_timeline_formats_result_as_before`: verifies the formatted output matches the pre-W2-22 behaviour for a scripted timeline result.
+     - `test_traverse_timeline_empty_result_returns_no_events_string`: verifies the "No events found" string for empty results.
+     - `test_fetch_supporting_evidence_formats_result_as_before`: verifies the formatted output matches the pre-W2-22 behaviour for a scripted evidence result.
+     - `test_fetch_supporting_evidence_empty_result_returns_no_evidence_string`: verifies the "No evidence found" string for empty results.
+     - `test_unknown_tool_returns_error_string`: verifies unknown tool names return an error string.
+     - `test_tool_exception_returns_error_string`: verifies exceptions in the Recall Engine are caught and return an error string.
+     - `test_execute_l2_internal_tool_uses_recall_engine_not_memory_manager`: verifies that `get_memory_manager` is no longer called from `execute_l2_internal_tool` (it tracks calls to the real `get_memory_manager` and asserts it was not invoked).
+- **Done when verified:**
+  - The full suite passes (171 passed).
+  - `grep -n "get_memory_manager" src/aura/orchestrator/coordinator.py` shows only lines 2121 and 2123 (in `_async_l2_analysis`, outside `execute_l2_internal_tool`). The method at line 1885-1947 contains no `get_memory_manager`.
+  - `grep -n "async def timeline\|async def evidence" src/aura/engines/recall/engine.py` shows both methods at lines 415 and 434.
+- **Do-not checks:** Did not rename the tools or change their schemas in `L2_INTERNAL_TOOLS`. Did not add the PRD's new tools (`recall`, `what_changed`, `pin`); they are M5.
+- **Unsure about:** Nothing. The change is scoped to the Recall Engine's two new delegation methods and the orchestrator's `execute_l2_internal_tool` routing. The formatting logic is identical to the pre-W2-22 code.
