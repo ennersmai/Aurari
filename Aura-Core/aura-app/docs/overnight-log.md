@@ -198,6 +198,17 @@
 
 ## W1-15: Emotion physics with a true resting state
 - **Status:** DONE
+
+## W2-25: Remove the VRM avatar
+- **Status:** STOPPED (pre-existing build failure)
+- **Files changed:** none (log only)
+- **Test result:** no tests written; no code changed. Full suite not re-run.
+- **What I found:** Per the card's setup step, ran `npm ci` (succeeded) then `npm run build` from `frontend/` before any changes. The build fails with:
+  ```
+  ./src/components/agent/AgentLoopPanel.tsx
+  Module not found: Can't resolve '@/lib/utils'
+  ```
+  The same missing import appears in `CulturalPanel.tsx`, `SystemDebugPanel.tsx`, `AuraIDE.tsx`, and `TaskTimeline.tsx` (all traced through `mission-control.tsx`, `chat.tsx`, or `ide.tsx`). The `@/lib/utils` module does not exist anywhere in the frontend source tree (no `src/lib/utils.ts` or similar). This is a pre-existing build error unrelated to the VRM avatar removal. Per the card's instruction: "If it fails before the change, stop and report the errors. Do not fix unrelated build errors." No frontend files were deleted, no npm packages uninstalled, no Python files modified.
 - **PRD:** emotion section 4, milestone E1
 - **Tier:** frontier (Mai-approved)
 - **Files changed:** `src/aura/engines/emotion/physics.py`, `src/aura/models/emotion.py`, `src/aura/engines/emotion/engine.py`, `tests/unit/test_emotion_physics_v2.py`, `tests/scenarios/test_emotion_after_record.py`, `docs/metrics/emotion_after.json`
