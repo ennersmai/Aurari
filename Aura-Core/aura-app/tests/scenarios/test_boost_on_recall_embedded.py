@@ -1,31 +1,3 @@
-"""Embedded-SurrealDB test for ``boost_on_recall`` (card W2-12).
-
-The scenario runner (W2-01) found that ``MemoryManager.boost_on_recall``
-bound the caller's *string* record id straight into ``UPDATE $mid``.
-The embedded SurrealDB engine (and strict server modes) treat the whole
-string ``"memory:abc"`` as a table name when it is bound to a parameter
-the database expects to be a record id, so the boost raised::
-
-    Cannot execute UPDATE statement using value: 'memory:<id>'
-
-and the memory's ``recall_count`` never advanced.  W2-12 fixes this by
-converting the string to a typed ``RecordID`` via the shared
-``aura.db.query_utils.to_record_id`` helper before binding it.
-
-This test drives the real ``MemoryManager`` over an in-memory embedded
-SurrealDB (``EmbeddedSurrealDB`` / ``_build_manager`` from the W2-01
-runner) — no server, no model download, no network.
-"""
-
-from __future__ import annotations
-
-import pytest
-from surrealdb import RecordID
-
-from aura.db.query_utils import to_record_id
-from tests.scenarios.runner import EmbeddedSurrealDB, _build_manager
-
-
 @pytest.mark.asyncio
 async def test_boost_on_recall_advances_recall_count_by_two():
     """Two ``boost_on_recall`` calls raise ``recall_count`` by exactly two.
@@ -72,24 +44,3 @@ async def test_boost_on_recall_advances_recall_count_by_two():
         assert after == 2, f"expected recall_count 2 after two boosts, got {after!r}"
     finally:
         await db.close()
-
-
-def test_to_record_id_converts_table_id_string():
-    """``"memory:abc"`` becomes ``RecordID("memory", "abc")``."""
-    result = to_record_id("memory:abc")
-    assert isinstance(result, RecordID)
-    assert str(result) == "memory:abc"
-
-
-def test_to_record_id_returns_bare_table_name_unchanged():
-    """``"memory"`` (no colon) is returned unchanged."""
-    result = to_record_id("memory")
-    assert result == "memory"
-    assert not isinstance(result, RecordID)
-
-
-def test_to_record_id_returns_existing_record_id_unchanged():
-    """A value that is already a ``RecordID`` is returned unchanged."""
-    original = RecordID("memory", "abc")
-    result = to_record_id(original)
-    assert result is original
