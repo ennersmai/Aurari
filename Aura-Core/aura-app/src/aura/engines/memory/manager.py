@@ -678,6 +678,38 @@ class MemoryManager:
         Returns:
             (memories, xml_block) — the xml_block is ready to paste into the system prompt.
         """
+        memories, cluster_data = await self.retrieve_for_l3_parts(
+            query=query,
+            current_emotions=current_emotions,
+            user_id=user_id,
+            limit=limit,
+            namespace=namespace,
+            depth=depth,
+        )
+        if not memories:
+            return [], ""
+        return memories, self._format_memories_xml(memories, cluster_data)
+
+    async def retrieve_for_l3_parts(
+        self,
+        query: str,
+        current_emotions: dict[str, float] | None = None,
+        user_id: str | None = None,
+        limit: int = 5,
+        namespace: str | None = None,
+        depth: int = 1,
+    ) -> tuple[list[Memory], dict[str, dict]]:
+        """Retrieve memories and their thought-cluster data, without formatting.
+
+        This is the pure retrieval + cluster-enrichment half of
+        :meth:`retrieve_for_l3`. It returns ``(memories, cluster_data)`` ready for
+        :meth:`_format_memories_xml`, so the Recall Engine can deduplicate and
+        budget the items before they are formatted (PRD M2).
+
+        Returns:
+            (memories, cluster_data). When no memories are found, returns
+            ``([], {})``.
+        """
         if depth >= 2:
             memories = await self.retrieve_with_spreading_activation(
                 query=query,
@@ -710,7 +742,7 @@ class MemoryManager:
             memories = merged[:limit]
 
         if not memories:
-            return [], ""
+            return [], {}
 
         # Boost recalled memories (Hebbian reinforcement)
         boost_ids = [m.memory_id for m in memories]
@@ -731,8 +763,7 @@ class MemoryManager:
         except Exception as e:
             logger.debug(f"Thought cluster enrichment failed (non-critical): {e}")
 
-        xml = self._format_memories_xml(memories, cluster_data)
-        return memories, xml
+        return memories, cluster_data
 
     # =========================================================================
     # THOUGHT CLUSTER — Multi-hop Graph Traversal (Session 6)
@@ -1246,6 +1277,40 @@ class MemoryManager:
     # COLD START — First Impression on Every Conversation
     # =========================================================================
 
+    def _format_cold_start_xml(
+        self,
+        core_memories: list[Memory],
+        recent_memories: list[Memory],
+        top_insights: list[dict[str, Any]],
+        active_cultural_node: str | None,
+    ) -> str:
+        """Format the cold-start context block as XML for L3 injection.
+
+        Renders the wrapper even when every list is empty, so the block stays
+        present whenever the channel ran (PRD M2).
+        """
+        xml = "<cold_start_context>\n"
+        if core_memories:
+            xml += "  <core_memories>\n"
+            for m in core_memories:
+                xml += f"    <memory importance='{m.importance:.2f}'>{_truncate_for_inject(m.content)}</memory>\n"
+            xml += "  </core_memories>\n"
+        if recent_memories:
+            xml += "  <recent_context>\n"
+            for m in recent_memories:
+                ts = self._format_ts(m.timestamp)
+                xml += f"    <memory timestamp='{ts}'>{_truncate_for_inject(m.content)}</memory>\n"
+            xml += "  </recent_context>\n"
+        if top_insights:
+            xml += "  <key_insights>\n"
+            for ins in top_insights:
+                xml += f"    <insight type='{ins.get('type', 'PATTERN')}' confidence='{ins.get('confidence', 0.5):.2f}'>{ins.get('content', '')}</insight>\n"
+            xml += "  </key_insights>\n"
+        if active_cultural_node:
+            xml += f"  <cultural_node>{active_cultural_node}</cultural_node>\n"
+        xml += "</cold_start_context>"
+        return xml
+
     async def get_cold_start_context(self, user_id: str) -> ColdStartContext:
         """Load warm context for a new conversation before any retrieval happens.
 
@@ -1338,26 +1403,9 @@ class MemoryManager:
             emotional_baseline = emotion_rows[0].get("vector", {})
 
         # Build XML block
-        xml = "<cold_start_context>\n"
-        if core_memories:
-            xml += "  <core_memories>\n"
-            for m in core_memories:
-                xml += f"    <memory importance='{m.importance:.2f}'>{_truncate_for_inject(m.content)}</memory>\n"
-            xml += "  </core_memories>\n"
-        if recent_memories:
-            xml += "  <recent_context>\n"
-            for m in recent_memories:
-                ts = self._format_ts(m.timestamp)
-                xml += f"    <memory timestamp='{ts}'>{_truncate_for_inject(m.content)}</memory>\n"
-            xml += "  </recent_context>\n"
-        if top_insights:
-            xml += "  <key_insights>\n"
-            for ins in top_insights:
-                xml += f"    <insight type='{ins.get('type', 'PATTERN')}' confidence='{ins.get('confidence', 0.5):.2f}'>{ins.get('content', '')}</insight>\n"
-            xml += "  </key_insights>\n"
-        if active_cultural_node:
-            xml += f"  <cultural_node>{active_cultural_node}</cultural_node>\n"
-        xml += "</cold_start_context>"
+        xml = self._format_cold_start_xml(
+            core_memories, recent_memories, top_insights, active_cultural_node
+        )
 
         ctx = ColdStartContext(
             core_memories=core_memories,
