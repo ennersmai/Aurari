@@ -500,6 +500,13 @@ class AuraDiscordBot:
         author_id = str(author.id)
         author_name = str(author)
 
+        # Requester role (W1-01, agency S1): only configured owner ids may
+        # trigger tool use. Every other Discord user is a guest.
+        owner_ids = {
+            oid.strip() for oid in settings.discord_owner_ids.split(",") if oid.strip()
+        }
+        requester_role = "owner" if author_id in owner_ids else "guest"
+
         # Broadcast INPUT event
         t_start = asyncio.get_event_loop().time()
         in_event = DiscordMessageEvent(
@@ -523,7 +530,8 @@ class AuraDiscordBot:
             try:
                 async with channel.typing():
                     response_text = await self._call_orchestrator(
-                        content, author_name, discord_user_id, channel_id, guild_id
+                        content, author_name, discord_user_id, channel_id, guild_id,
+                        requester_role=requester_role,
                     )
             except Exception as typing_err:
                 # 403 Forbidden (Missing Access) â€” bot lacks typing permission.
@@ -533,11 +541,13 @@ class AuraDiscordBot:
                     typing_err,
                 )
                 response_text = await self._call_orchestrator(
-                    content, author_name, discord_user_id, channel_id, guild_id
+                    content, author_name, discord_user_id, channel_id, guild_id,
+                    requester_role=requester_role,
                 )
         else:
             response_text = await self._call_orchestrator(
-                content, author_name, discord_user_id, channel_id, guild_id
+                content, author_name, discord_user_id, channel_id, guild_id,
+                requester_role=requester_role,
             )
 
         t_end = asyncio.get_event_loop().time()
@@ -585,6 +595,8 @@ class AuraDiscordBot:
         user_id: str,
         channel_id: str,
         guild_id: str,
+        *,
+        requester_role: str = "guest",
     ) -> str:
         """Forward user input to the Orchestrator and return Aura's response.
         
@@ -620,6 +632,7 @@ class AuraDiscordBot:
                 user_id=user_id,
                 conversation_history=history,
                 deep_analysis_enabled=True,
+                requester_role=requester_role,
             )
             response_text = str(response)
 

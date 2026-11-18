@@ -10,7 +10,7 @@ import logging
 import re
 import importlib.util
 import os
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from aura.db.client import get_db_client
 
@@ -135,12 +135,19 @@ class ToolExecutor:
         
         return tool_calls
     
-    async def execute_tool_call(self, tool_call: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute_tool_call(
+        self,
+        tool_call: Dict[str, Any],
+        *,
+        requester_role: Literal["owner", "trusted", "guest"],
+    ) -> Dict[str, Any]:
         """
         Execute a single tool call.
         
         Args:
             tool_call: Dictionary with "tool" and "arguments" keys
+            requester_role: Role of the caller. Only "owner" may execute tools;
+                other roles are refused before any tool is run.
             
         Returns:
             Dictionary with execution result:
@@ -151,6 +158,16 @@ class ToolExecutor:
                 "tool_name": str
             }
         """
+        # Requester-role gate (W1-01, agency S1). Only the owner may execute
+        # tools. Refuse every other role before doing anything else.
+        if requester_role != "owner":
+            return {
+                "success": False,
+                "result": "",
+                "error": "Tool use is not available to this user.",
+                "tool_name": tool_call.get("tool", "unknown"),
+            }
+
         tool_name = tool_call.get("tool")
         arguments = tool_call.get("arguments", {})
         
@@ -762,14 +779,18 @@ class ToolExecutor:
             return
     
     async def execute_and_feedback(
-        self, 
-        tool_calls: list[Dict[str, Any]]
+        self,
+        tool_calls: list[Dict[str, Any]],
+        *,
+        requester_role: Literal["owner", "trusted", "guest"],
     ) -> str:
         """
         Execute multiple tool calls and format results for L3 feedback.
         
         Args:
             tool_calls: List of tool call dictionaries
+            requester_role: Role of the caller; passed through to each
+                ``execute_tool_call`` unchanged.
             
         Returns:
             Formatted string with execution results
@@ -781,7 +802,7 @@ class ToolExecutor:
         results = []
         for tool_call in tool_calls:
             self.logger.info(f"🔧 Executing tool call: {tool_call.get('tool', 'unknown')} with args: {tool_call.get('arguments', {})}")
-            result = await self.execute_tool_call(tool_call)
+            result = await self.execute_tool_call(tool_call, requester_role=requester_role)
             self.logger.info(f"🔧 Tool execution result - success: {result.get('success')}, result length: {len(str(result.get('result', '')))}, error: {result.get('error')}")
             results.append(result)
         

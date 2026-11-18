@@ -649,6 +649,13 @@ class Settings(BaseSettings):
         ge=5.0,
         le=300.0,
     )
+    discord_owner_ids: str = Field(
+        default="",
+        validation_alias="AURA_DISCORD_OWNER_IDS",
+        description="Comma-separated Discord user ids that act as the owner role for tool "
+                    "execution. Other Discord users are treated as guests and cannot "
+                    "trigger tool calls.",
+    )
 
     # =========================================================================
     # Utility Helper

@@ -554,6 +554,7 @@ Constraints:
         deep_analysis_enabled: bool = True,
         session_id: str | None = None,
         context_mode: str = "deep_work",
+        requester_role: str = "owner",
     ) -> str:
         """
         Full orchestrated query processing.
@@ -1104,7 +1105,7 @@ Constraints:
             self.logger.info(f"[BOX] Raw tool call from forced mode: {raw_tool_call[:300]}...")
             seed_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
             if seed_calls:
-                seed_results = await self.tool_executor.execute_and_feedback(seed_calls)
+                seed_results = await self.tool_executor.execute_and_feedback(seed_calls, requester_role=requester_role)
                 if seed_results:
                     tool_history_blocks.append(f"[Seed]\n{seed_results}")
             else:
@@ -1141,7 +1142,7 @@ Constraints:
                 break
 
             self.logger.info(f"[WRENCH] Tool loop round {round_idx}: detected {len(tool_calls)} tool call(s)")
-            tool_results = await self.tool_executor.execute_and_feedback(tool_calls)
+            tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
             if not tool_results:
                 response = self._remove_tool_calls_from_text(response)
                 break
@@ -1751,6 +1752,7 @@ Constraints:
         deep_analysis_enabled: bool = True,
         session_id: str | None = None,
         context_mode: str = "deep_work",
+        requester_role: str = "owner",
     ):
         """
         Stream orchestrated response generation.
@@ -2289,7 +2291,7 @@ Constraints:
                 self.logger.info(f"✅ Extracted {len(tool_calls)} tool call(s) from forced mode")
                 
                 # EXECUTE THE TOOL
-                tool_output = await self.tool_executor.execute_and_feedback(tool_calls)
+                tool_output = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
                 
                 # Log the tool output for debugging
                 self.logger.info(f"[WRENCH] Tool execution completed. Output length: {len(tool_output) if tool_output else 0} chars")
@@ -2326,7 +2328,7 @@ Original user query: {user_input}"""
                 tool_calls = self.tool_executor.extract_tool_calls(full_response)
                 if tool_calls:
                     self.logger.info(f"[WRENCH] Detected {len(tool_calls)} tool call(s) in fallback streamed response")
-                    tool_results = await self.tool_executor.execute_and_feedback(tool_calls)
+                    tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
                     
                     if tool_results:
                         follow_up_input = f"{user_input}\n\n[Tool Execution Results]\n{tool_results}"
@@ -2378,7 +2380,7 @@ Original user query: {user_input}"""
                 self.logger.info(
                     f"[WRENCH] Tool loop round {round_idx} (streaming): detected {len(tool_calls)} tool call(s)"
                 )
-                tool_results = await self.tool_executor.execute_and_feedback(tool_calls)
+                tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
                 if not tool_results:
                     break
 

@@ -592,7 +592,7 @@ class AgentLoop:
 
                 t0 = time.time()
                 try:
-                    result = await self.executor.execute_tool_call(tc)
+                    result = await self.executor.execute_tool_call(tc, requester_role="owner")
                     exec_duration = int((time.time() - t0) * 1000)
                 except Exception as e:
                     exec_duration = int((time.time() - t0) * 1000)
@@ -743,7 +743,7 @@ class AgentLoop:
 
                     t0 = time.time()
                     try:
-                        result = await self.executor.execute_tool_call(approved_tc)
+                        result = await self.executor.execute_tool_call(approved_tc, requester_role="owner")
                         exec_duration = int((time.time() - t0) * 1000)
                     except Exception as e:
                         exec_duration = int((time.time() - t0) * 1000)
