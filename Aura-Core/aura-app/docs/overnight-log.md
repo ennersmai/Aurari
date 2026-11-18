@@ -24,3 +24,9 @@
 - **Files changed:** `src/aura/clock.py`, `tests/unit/test_clock.py`
 - **Test result:** 10 passed
 - **Notes:** Created Clock base class, FakeClock with set() and advance(), get_clock() and set_clock() for global access. All tests pass. No other files changed.
+
+## W0-04: Record today's emotion physics
+- **Status:** DONE
+- **Files changed:** `tests/scenarios/test_emotion_baseline_record.py`
+- **Test result:** 1 passed
+- **Notes:** Recorded baseline to docs/metrics/emotion_before.json. After 600 ticks from baseline, several emotions drift up due to relationship amplification. Half-life from 0.7: sadness=100000 (capped), anger=23, joy=18, love=100000 (capped - persistent emotion).
