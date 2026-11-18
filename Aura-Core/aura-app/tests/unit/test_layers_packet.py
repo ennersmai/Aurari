@@ -16,6 +16,7 @@ from aura.engines.recall.models import (
     BLOCK_ORDER,
     Block,
     ContextPacket,
+    RecallRequest,
     RecallTrace,
 )
 from aura.llm.layers import LLMLayers, SynthesisContext
@@ -86,6 +87,24 @@ def _packet(
 def _layers() -> LLMLayers:
     # ``__new__`` avoids ``__init__`` constructing a real LLM client.
     return LLMLayers.__new__(LLMLayers)
+
+
+class _StubClient:
+    """Minimal client for non-streaming L3 calls."""
+
+    def __init__(self):
+        self.captured: dict = {}
+
+    async def complete(self, *, messages, model, **kwargs):
+        self.captured["system_prompt"] = messages[0]["content"]
+        return "OK"
+
+
+class _StubStreamingClient:
+    """Minimal streaming client that yields a single chunk."""
+
+    async def stream_complete(self, *, messages, model, **kwargs):
+        yield "OK"
 
 
 def _insight(insight_id: str, content: str, confidence: float = 0.9) -> Insight:
@@ -210,20 +229,14 @@ async def test_c_l3_synthesis_with_packet_does_not_call_memory_manager(monkeypat
     # Stub the LLM client so no real network call runs. Capture the system
     # prompt built from the packet so we can also assert the memories block
     # reached it.
-    captured: dict = {}
-
-    class _StubClient:
-        async def complete(self, *, messages, model, **kwargs):
-            captured["system_prompt"] = messages[0]["content"]
-            return "OK"
-
-    layers.client = _StubClient()
+    stub = _StubClient()
+    layers.client = stub
 
     result = await layers.l3_synthesis(ctx)
 
     assert result == "OK"
     # The packet's memories block reached the system prompt.
-    assert MEMORIES_XML in captured["system_prompt"]
+    assert MEMORIES_XML in stub.captured["system_prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -363,3 +376,90 @@ def test_d_packet_none_mastery_0_5_matches_golden():
     layers = _layers()
     out = layers._build_l3_system_prompt(_context_no_packet(0.5), "T", None)
     assert out == GOLDEN_PROMPT_MASTERY_0_5
+
+
+# ---------------------------------------------------------------------------
+# (e) packet=None: l3_synthesis and stream_l3_synthesis call RecallEngine.recall
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_e_l3_synthesis_packet_none_calls_recall_engine(monkeypatch):
+    """With ``packet=None``, ``l3_synthesis`` awaits the monkeypatched
+    ``get_recall_engine().recall`` once with ``depth=2``."""
+    called: dict = {}
+
+    class _FakeRecallEngine:
+        async def recall(self, request: RecallRequest):
+            called["request"] = request
+            return ContextPacket(
+                stable_blocks=[],
+                dynamic_blocks=[],
+                abstain=False,
+                trace=_trace(),
+            )
+
+    fake_engine = _FakeRecallEngine()
+    # Monkeypatch where the function is used (imported into layers module)
+    monkeypatch.setattr(
+        "aura.llm.layers.get_recall_engine", lambda: fake_engine
+    )
+
+    layers = _layers()
+    layers.client = _StubClient()
+
+    ctx = _context_no_packet(0.8)
+    await layers.l3_synthesis(ctx)
+
+    assert "request" in called
+    req = called["request"]
+    assert isinstance(req, RecallRequest)
+    assert req.depth == 2
+    assert req.limit == 5
+    assert req.include_cold_start is False
+    assert req.include_latent is False
+    assert req.learning_context is None
+    assert req.user_id == "default"
+    assert req.user_input == "hi"
+
+
+@pytest.mark.asyncio
+async def test_e_stream_l3_synthesis_packet_none_calls_recall_engine(monkeypatch):
+    """With ``packet=None``, ``stream_l3_synthesis`` awaits the monkeypatched
+    ``get_recall_engine().recall`` once with ``depth=1``."""
+    called: dict = {}
+
+    class _FakeRecallEngine:
+        async def recall(self, request: RecallRequest):
+            called["request"] = request
+            return ContextPacket(
+                stable_blocks=[],
+                dynamic_blocks=[],
+                abstain=False,
+                trace=_trace(),
+            )
+
+    fake_engine = _FakeRecallEngine()
+    # Monkeypatch where the function is used (imported into layers module)
+    monkeypatch.setattr(
+        "aura.llm.layers.get_recall_engine", lambda: fake_engine
+    )
+
+    layers = _layers()
+    layers.client = _StubStreamingClient()
+
+    ctx = _context_no_packet(0.8)
+    # Exhaust the async generator
+    chunks = [c async for c in layers.stream_l3_synthesis(ctx)]
+    assert chunks == ["OK"]
+
+    assert "request" in called
+    req = called["request"]
+    assert isinstance(req, RecallRequest)
+    assert req.depth == 1
+    assert req.limit == 5
+    assert req.include_cold_start is False
+    assert req.include_latent is False
+    assert req.learning_context is None
+    assert req.user_id == "default"
+    assert req.user_input == "hi"

@@ -803,3 +803,25 @@
   - `grep -c "get_recall_engine()" src/aura/orchestrator/coordinator.py` prints at least `1` (prints 2).
 - **Do-not checks:** Did not change the 10 s gather, the critique handling, `SynthesisContext.user_id`, or the tool loops. Did not call the memory manager from the coordinator for prompt context. Did not remove the `cold_start_xml` and `latent_intuition_xml` fields.
 - **Unsure about:** Nothing. The change is scoped to the coordinator's context gathering, the three loop contexts, and the system prompt cache. The 6 intentional behaviour changes are listed above and can be reverted by toggling request fields or the ablation flags from W2-14. The full suite (162 passed) confirms nothing else regressed.
+
+## W2-21: The layers' fallback path goes through the Recall Engine too
+- **Status:** DONE
+- **PRD:** memory section 6.1 ("llm/layers.py stops calling retrieve_for_l3 ...") and PRD rule 4
+- **Tier:** bulk
+- **Depends on:** W2-20
+- **Files changed:** `src/aura/llm/layers.py`, `tests/unit/test_layers_packet.py`
+- **Test result:** 164 passed (full suite: 162 prior + 2 new)
+- **What I did, step by step:**
+  1. In `src/aura/llm/layers.py`, added imports for `get_recall_engine` and `RecallRequest` from `aura.engines.recall`.
+  2. In `l3_synthesis`, replaced the `else` branch (which called `get_memory_manager().retrieve_for_l3(query=context.user_input, current_emotions=current_emo, user_id=context.user_id, limit=5, depth=2)`) with a call to `get_recall_engine().recall(RecallRequest(user_id=context.user_id, user_input=context.user_input, emotional_state=context.emotional_state, learning_context=None, depth=2, limit=5, include_cold_start=False, include_latent=False))`. The returned packet's `block_text("memories")` is used as `memory_xml`. The surrounding `try/except` and warning log are kept unchanged.
+  3. In `stream_l3_synthesis`, replaced the `else` branch (which called `get_memory_manager().retrieve_for_l3(query=context.user_input, current_emotions=current_emo, user_id=context.user_id, limit=5, depth=1)`) with the same Recall Engine call but with `depth=1`. The surrounding `try/except` and warning log are kept unchanged.
+  4. In `tests/unit/test_layers_packet.py`, added two new tests:
+     - `test_e_l3_synthesis_packet_none_calls_recall_engine`: with `packet=None`, `l3_synthesis` awaits the monkeypatched `get_recall_engine().recall` once with `depth=2`, `limit=5`, `include_cold_start=False`, `include_latent=False`, `learning_context=None`.
+     - `test_e_stream_l3_synthesis_packet_none_calls_recall_engine`: with `packet=None`, `stream_l3_synthesis` awaits the monkeypatched `get_recall_engine().recall` once with `depth=1`, `limit=5`, `include_cold_start=False`, `include_latent=False`, `learning_context=None`.
+     - Also moved the `_StubClient` and `_StubStreamingClient` classes to module level for reuse, and updated `test_c` to use the module-level `_StubClient`.
+- **Done when verified:**
+  - The full suite passes (164 passed).
+  - `grep -c "get_memory_manager\|retrieve_for_l3(" src/aura/llm/layers.py` prints `0`.
+  - `grep -rn "retrieve_for_l3(" src --include=*.py` shows only `manager.py` (the definition, docs, and one comment in layers.py).
+- **Do-not checks:** Did not change the goal engine. Did not pass the goal engine's `learning_context` into the request (its insights render through the unchanged no-packet branch). Did not change any other part of the prompt assembly.
+- **Unsure about:** Nothing. The change is scoped to the two fallback branches in `layers.py` and the two new tests. The goal engine's call to `l3_synthesis` (which builds a `SynthesisContext` with no packet) now uses the Recall Engine fallback path, which applies deduplication and the token budget to the memories block — this is the intended behaviour per the card. The card's "Done when" conditions are all satisfied.

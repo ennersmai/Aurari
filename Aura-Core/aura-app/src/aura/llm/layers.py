@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aura.config import settings
-from aura.engines.recall.models import ContextPacket
+from aura.engines.recall.engine import get_recall_engine
+from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.recall.render import render_insights
 from aura.llm.provider import OpenRouterClient
 from aura.llm.unified_provider import UnifiedLLMClient
@@ -1181,23 +1182,17 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
             memory_xml = context.packet.block_text("memories") or ""
         else:
             try:
-                from aura.engines.memory.manager import get_memory_manager
-                memory_manager = get_memory_manager()
-
-                # Pass current emotions so the scorer can do mood-congruent recall
-                current_emo = (
-                    context.emotional_state.vector.model_dump()
-                    if context.emotional_state and hasattr(context.emotional_state, 'vector')
-                    else None
-                )
-
-                _memories, memory_xml = await memory_manager.retrieve_for_l3(
-                    query=context.user_input,
-                    current_emotions=current_emo,
+                packet = await get_recall_engine().recall(RecallRequest(
                     user_id=context.user_id,
-                    limit=5,
+                    user_input=context.user_input,
+                    emotional_state=context.emotional_state,
+                    learning_context=None,
                     depth=2,  # Session 5: use spreading activation for rich L3 context
-                )
+                    limit=5,
+                    include_cold_start=False,
+                    include_latent=False,
+                ))
+                memory_xml = packet.block_text("memories") or ""
             except Exception as e:
                 logger.warning(f"Failed to retrieve memories: {e}")
         
@@ -1419,22 +1414,17 @@ If you include any text before or after the JSON, the system will fail."""
             memory_xml = context.packet.block_text("memories") or ""
         else:
             try:
-                from aura.engines.memory.manager import get_memory_manager
-                memory_manager = get_memory_manager()
-
-                current_emo = (
-                    context.emotional_state.vector.model_dump()
-                    if context.emotional_state and hasattr(context.emotional_state, 'vector')
-                    else None
-                )
-
-                _memories, memory_xml = await memory_manager.retrieve_for_l3(
-                    query=context.user_input,
-                    current_emotions=current_emo,
+                packet = await get_recall_engine().recall(RecallRequest(
                     user_id=context.user_id,
-                    limit=5,
+                    user_input=context.user_input,
+                    emotional_state=context.emotional_state,
+                    learning_context=None,
                     depth=1,  # Streaming uses depth=1 for faster response time
-                )
+                    limit=5,
+                    include_cold_start=False,
+                    include_latent=False,
+                ))
+                memory_xml = packet.block_text("memories") or ""
             except Exception as e:
                 logger.warning(f"Failed to retrieve memories for stream: {e}")
         
