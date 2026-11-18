@@ -1105,3 +1105,5 @@
 - **Attempt 1 (reverted in ae3c8a9):** the worker could not find W2-29 in the now very long build plan, redid W2-12's record-id work instead, and deleted about 1,100 lines of this log. Cause: the supervisor's runner made the worker search the plan. Fixed: the runner now embeds the card's exact text in the prompt and flags any commit that deletes log lines.
 - **Attempt 2 (discarded, uncommitted):** correct files, but the OpenCode session ended mid-card on a 400 from cloudflare/@cf/openai/gpt-oss-120b ("Bad input ... Type mismatch of '/messages/0/content', 'array' not in 'string'"), which Sluice passed through. Fixed in Sluice ec04f77: that 400 now fails over to the next route.
 - **Decision:** neither failure came from the card, so W2-29 gets a third run instead of being skipped under the fail-twice rule.
+
+- **Attempt 3 (discarded):** the session ended when cohere/command-a-plus answered 200 and streamed an error ("invalid tool generation") as its first event; Sluice forwarded it. Fixed in Sluice: a stream that opens with an error event now fails over. Mai has since raised the limit to four attempts per card.
