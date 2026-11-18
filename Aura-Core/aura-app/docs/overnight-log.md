@@ -1,14 +1,18 @@
 # Overnight Build Log
 
 ## Summary (kept current by the supervisor)
-- **Night 2 instructions (Mai):** all six PRDs in section 5 order, frontier approved, surrealdb[embedded] approved, avatar except MetaHuman steps, probe set as placeholder.
 - **Wave 0-1:** all 21 cards done (W0-01..W0-05, W1-01..W1-16). Review in docs/metrics/wave-1.md.
-- **Wave 2 done:** W2-01 scenario runner; B0 complete (W2-02..W2-11: one `_turn_pipeline`, both entry points thin wrappers, 20+16 characterisation tests); W2-12, W2-13 (real SurrealDB query bugs found by the runner); W2-19 (test-only safety net for the loop-context drops W2-20 changes).
-- **Wave 2 queued:** W2-26, W2-27 (follow-up fixes), M2 Recall Engine W2-14..W2-24, V0 avatar removal W2-25.
-- **Please review first:** W2-20 changes behaviour on purpose: the user id now reaches retrieval inside the tool loop (today it silently runs as "default", undoing W1-04), retrieval runs once per turn, and the cold-start and latent blocks reach the prompt.
+- **Wave 2 done:**
+  - W2-01 scenario runner (embedded SurrealDB, FakeClock, stub embeddings).
+  - B0 complete, W2-02..W2-11: one `_turn_pipeline`; `process_query` and `stream_query` are thin wrappers; characterisation tests pin both paths.
+  - Real SurrealDB query bugs found by the runner, fixed: W2-12 (record id in `boost_on_recall`), W2-13 and W2-26 (FETCH before LIMIT in five edge queries), W2-27 (runner stub).
+  - M2 Recall Engine complete, W2-14..W2-24: one entry point with budget, deduplication and trace; the turn goes through it (W2-20); trace endpoints (W2-23); end-to-end runner comparison (W2-24).
+- **Please review first:** W2-20 changes behaviour on purpose: retrieval runs once per turn with the real user id (before, the tool loop silently used "default", undoing W1-04), and the cold-start and latent blocks now reach the prompt.
+- **Stopped:** W2-25 (V0, remove the VRM avatar) stopped twice on a frontend build that was already broken: missing `frontend/src/lib/utils.ts` (restored from Mai's old copy) and two vrm-engine modules under a `lib/` folder that are not in the repository. BF-07 checks the ignore rule; the files must come from Mai's old working copy. W2-25 is skipped until then.
+- **Queued:** night-3 bug fixes BF-01..BF-07, then G1 (W2-28..W2-38), then wave 3 in section 5 order.
+- **Supervisor fixes:** baselines restored twice (bccf884, 6668d2f) until BF-03 lands; the overnight log was restored once after a session rewrote it (3db9728).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
-- **Stopped / skipped cards:** none so far.
-- **Suite:** 161 passed.
+- **Night 3 (2026-11-19):** Sluice billing safety (Part 1) verified first; see the Sluice repo, docs/night3-log.md. Mistral is credit-capped and ineligible until 2026-12-18.
 
 ---
 

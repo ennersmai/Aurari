@@ -1524,6 +1524,95 @@ Written against `overnight-wave-0-1` after B0 (W2-02 to W2-10), M2 (W2-14 to W2-
 
 ---
 
+### Bug fixes after wave 2: cards (night 3, Part 2)
+
+Written by the supervisor against the code on overnight-wave-0-1. Done-when lines use tests, or greps anchored to code constructs that cannot match comments or prose.
+
+---
+
+**BF-01 The fifth edge query with FETCH before LIMIT**
+- **PRD:** memory (retrieval). Missed by W2-26.
+- **Tier:** bulk
+- **Files:** `src/aura/engines/memory/manager.py` (`_fetch_thought_cluster`, the `next_experience` after-traversal query that ends `FETCH out LIMIT 2`), new `tests/scenarios/test_after_traversal_clause_order_embedded.py`. Read `tests/scenarios/test_edge_queries_clause_order_embedded.py` (W2-26) and copy its pattern.
+- **Change:** in that query, move `LIMIT 2` before `FETCH out`, so it ends `LIMIT 2 FETCH out`. Keep every other token, parameter name and binding unchanged.
+- **Tests:** following W2-26, run the new query string on the embedded engine with suitable empty bindings and assert it does not raise; run the old string and assert it raises. Run the full suite.
+- **Done when:** the new test passes and the full suite passes.
+- **Do not:** change any other query, or the try/except around it.
+
+---
+
+**BF-02 Pin and unpin report a failed database write**
+- **PRD:** memory F3 (follow-up to W1-10).
+- **Tier:** bulk
+- **Files:** `src/aura/engines/memory/manager.py` (`set_core`), `src/aura/api/routes/memory.py` (the `POST /memory/{memory_id}/pin` and `/unpin` routes), `tests/unit/test_set_core.py`.
+- **Change:**
+  1. In `set_core`, keep the `logger.error(...)` line but re-raise the exception after logging it, so callers can see the failure.
+  2. In both routes, catch the exception from `set_core` and return HTTP 500 with a JSON body `{"error": "Failed to update the memory", "memory_id": <id>}`. Follow the error-response style the file already uses.
+- **Tests:** a fake database whose `merge` raises makes `set_core` raise; the pin route and the unpin route each return 500 with that body when `set_core` raises (call the route handlers directly, or use FastAPI's TestClient if it is already available). The existing pin/unpin success tests still pass.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change what `set_core` writes on success.
+
+---
+
+**BF-03 Baseline files are written only on request**
+- **PRD:** build plan W0-04 and W0-05 (follow-up).
+- **Tier:** bulk
+- **Files:** `tests/scenarios/test_emotion_baseline_record.py` (W0-04), `tests/scenarios/test_memory_horizon_record.py` (W0-05). If `tests/scenarios/test_emotion_after_record.py` (W1-15) writes a file the same way, apply the same change there.
+- **Change:** each recording test still computes its measurements and still runs every assertion, but writes its JSON file only when the environment variable `RECORD_BASELINE` equals `"1"`. Otherwise it leaves the file untouched. Read the variable with `os.environ.get("RECORD_BASELINE") == "1"` inside the test.
+- **Tests:** add one unit test that runs the recording function with `RECORD_BASELINE` unset (use `monkeypatch.delenv`) and asserts the target file's content and modification time are unchanged, and one with `RECORD_BASELINE=1` that writes to a temporary path (use `tmp_path`; refactor only as much as needed to pass the output path in). Run the full suite twice and check that `git status --short Aura-Core/aura-app/docs/metrics/` prints nothing afterwards.
+- **Done when:** the new tests pass, the full suite passes, and after a full suite run `git status --short Aura-Core/aura-app/docs/metrics/` is empty.
+- **Do not:** change any measured value or the JSON format. Do not regenerate the committed baseline files.
+
+---
+
+**BF-04 A valid IdentityContext in the stream fallback**
+- **PRD:** behaviour B0 follow-up.
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_gather_turn_context`, the streaming branch's fallbacks), `src/aura/models/identity.py` (read only), `tests/unit/test_turn_stream_query.py`.
+- **Change:** the streaming branch builds `IdentityContext(core_identity="Aura", tone_and_style="Helpful")` in two places (the timeout fallback and the per-result fallback). `IdentityContext` has no such fields: its required fields are `narrative: str` and `core_values: dict[str, float]`, so this raises a validation error the moment the fallback runs. Replace both with `IdentityContext(narrative="I am Aura.", core_values={})`.
+- **Tests:** two tests that force each fallback: (a) the identity call raises, so the per-result fallback is used; (b) the context gathering times out (patch `asyncio.wait_for` or the timeout so it raises `asyncio.TimeoutError` immediately, no real sleeping). In both, the stream completes and the L3 context's `identity_context` is an `IdentityContext` whose `narrative == "I am Aura."`.
+- **Done when:** the new tests pass, the full suite passes, and `grep -nE "IdentityContext\(core_identity=" src/aura/orchestrator/coordinator.py` prints nothing.
+- **Do not:** change the non-stream path or the timeout value.
+
+---
+
+**BF-05 Memory reads time through the clock provider**
+- **PRD:** memory section 8.1 (injectable clock); build plan rule 7. Listed by the scenario runner in W2-01.
+- **Tier:** bulk
+- **Files:** `src/aura/models/memory.py` (the `Memory` model's `timestamp` default), `src/aura/engines/memory/manager.py` (`_compute_decay_factor`), `src/aura/clock.py` (read only).
+- **Change:** replace every direct time read in those two places (`datetime.utcnow()`, `datetime.now(...)`, `time.time()`) with `get_clock().now()` from `aura.clock`. Where the old value was naive (no timezone), keep it naive with `get_clock().now().replace(tzinfo=None)`, so stored and compared values keep their current form. For a pydantic field default, use `default_factory=lambda: <the same expression>`.
+- **Tests:** with `FakeClock` installed through `set_clock`: a new `Memory()` gets the fake clock's time as its timestamp; `_compute_decay_factor` on a memory whose timestamp is the fake "now" minus 30 days gives the same value as the old code gave for a real 30-day-old memory (compute the expected value from the formula, do not hardcode a number taken from the old run).
+- **Done when:** the new tests pass, the full suite passes, and `grep -nE "datetime\.(utcnow|now)\(|time\.time\(" src/aura/models/memory.py` prints nothing and the same grep limited to the body of `_compute_decay_factor` prints nothing.
+- **Do not:** change any decay formula or constant.
+
+---
+
+**BF-06 Dreaming reads time through the clock provider, and a 30-day scenario test**
+- **PRD:** memory section 8.1; build plan rule 7. Depends on BF-05.
+- **Tier:** bulk
+- **Files:** `src/aura/engines/dreaming/engine.py` (`_tiered_pruning`, `_compute_decay`, `_weave_causality`, `_emotional_reprocessing`), new `tests/scenarios/test_clock_thirty_days.py`. Read `tests/scenarios/runner.py`.
+- **Change:** replace every direct time read in those four functions with `get_clock().now()`, keeping naive values naive as in BF-05.
+- **Tests:** a scenario test using the runner: on day 0 store a memory; advance the fake clock to day 30; assert that the memory's age as computed by `DreamingEngine._compute_decay` (and `MemoryManager._compute_decay_factor`) is that of a 30-day-old memory (compare with the value the formula gives for 30 days), and that a dream cycle at day 30 sees it as 30 days old. Run the full suite.
+- **Done when:** the new test passes, the full suite passes, and none of the four function bodies contains `datetime.utcnow(`, `datetime.now(` or `time.time(` (check with a small Python snippet using `inspect.getsource` on each function, printed in your log entry).
+- **Do not:** change any pruning threshold, decay formula or query.
+
+---
+
+**BF-07 Find what hides the missing frontend files**
+- **PRD:** V0 prerequisite (W2-25 stopped twice on a broken frontend build).
+- **Tier:** bulk
+- **Files:** the repository root `.gitignore` only. Read the W2-25 entries in `docs/overnight-log.md`.
+- **Change:**
+  1. From the repository root run `git check-ignore -v` for `Aura-Core/aura-app/frontend/src/lib/utils.ts` and for the two modules the frontend build cannot resolve: find their expected paths from the import lines that W2-25 reported (`../../lib/VRMAnimation/loadVRMAnimation` and `../../lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin`, resolved relative to the files that import them). Record the exact output in the log.
+  2. If a `.gitignore` rule matches them, narrow that rule so it can no longer match anything under `Aura-Core/aura-app/frontend/src/` (for example anchor the Python `lib/` rule to the paths it was meant for, such as `/lib/` and `Aura-Core/aura-app/lib/`, and remove the now redundant `!Aura-Core/aura-app/frontend/src/lib/` exception if it is no longer needed). Run `git check-ignore -v` again and record that the files are no longer ignored.
+  3. In the log, list the missing files by their full repository paths for Mai: they must come from his old working copy.
+- **Tests:** run the full Python suite (unchanged).
+- **Done when:** `git check-ignore -q` exits non-zero for all three paths, and the full suite passes.
+- **Do not:** recreate, stub or download the missing files. Do not touch anything under `frontend/`.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
