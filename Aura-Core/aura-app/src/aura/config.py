@@ -506,6 +506,15 @@ class Settings(BaseSettings):
         default=60.0, description="Seconds between emotion state saves"
     )
 
+    # Memory injection configuration
+    memory_inject_max_chars: int = Field(
+        default=600,
+        validation_alias="AURA_MEMORY_INJECT_MAX_CHARS",
+        description="Maximum characters of a memory's content to inject into L3 prompts. "
+                    "Longer content is truncated and a '...' marker is appended. "
+                    "Does not affect what is stored.",
+    )
+
     # CORS Configuration
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001",

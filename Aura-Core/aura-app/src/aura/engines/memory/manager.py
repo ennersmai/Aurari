@@ -38,6 +38,7 @@ from typing import Any
 from uuid import uuid4
 
 from aura.db.client import get_db_client
+from aura.config import settings
 from aura.llm.embeddings import get_embeddings_client
 from aura.models.memory import (
     ColdStartContext,
@@ -159,6 +160,19 @@ def _compute_emotional_intensity(signature: dict[str, float]) -> float:
         return 0.0
     rms = math.sqrt(sum(v * v for v in active) / len(active))
     return max(0.0, min(1.0, rms))
+
+
+def _truncate_for_inject(content: str) -> str:
+    """Truncate a memory's content to ``settings.memory_inject_max_chars`` for
+    injection into L3 prompts, appending ``...`` when it is cut. This only
+    affects what is injected — what is stored is never truncated.
+    """
+    max_chars = settings.memory_inject_max_chars
+    if max_chars <= 0 or not content:
+        return content or ""
+    if len(content) <= max_chars:
+        return content
+    return content[:max_chars] + "..."
 
 
 class MemoryManager:
@@ -871,7 +885,7 @@ class MemoryManager:
             cluster = cluster_data.get(mem.memory_id)
             if cluster:
                 xml += f"  <thought_cluster {attrs}>\n"
-                xml += f"    <core_memory>{mem.content}</core_memory>\n"
+                xml += f"    <core_memory>{_truncate_for_inject(mem.content)}</core_memory>\n"
 
                 # Chronological context
                 before = cluster.get("timeline_before", [])
@@ -902,7 +916,7 @@ class MemoryManager:
 
                 xml += "  </thought_cluster>\n"
             else:
-                xml += f"  <memory {attrs}>{mem.content}</memory>\n"
+                xml += f"  <memory {attrs}>{_truncate_for_inject(mem.content)}</memory>\n"
 
         xml += "</relevant_memories>"
         return xml
@@ -1249,6 +1263,7 @@ class MemoryManager:
             SELECT * FROM memory
             WHERE user_id = $uid AND core_memory = true AND deprecated = false
             ORDER BY importance DESC
+            LIMIT 10
             """,
             {"uid": user_id},
         )
@@ -1327,13 +1342,13 @@ class MemoryManager:
         if core_memories:
             xml += "  <core_memories>\n"
             for m in core_memories:
-                xml += f"    <memory importance='{m.importance:.2f}'>{m.content}</memory>\n"
+                xml += f"    <memory importance='{m.importance:.2f}'>{_truncate_for_inject(m.content)}</memory>\n"
             xml += "  </core_memories>\n"
         if recent_memories:
             xml += "  <recent_context>\n"
             for m in recent_memories:
                 ts = self._format_ts(m.timestamp)
-                xml += f"    <memory timestamp='{ts}'>{m.content}</memory>\n"
+                xml += f"    <memory timestamp='{ts}'>{_truncate_for_inject(m.content)}</memory>\n"
             xml += "  </recent_context>\n"
         if top_insights:
             xml += "  <key_insights>\n"
