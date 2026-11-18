@@ -2143,6 +2143,10 @@ IMPORTANT: Output an array of insight objects, not nested dicts.
                 
                 # If no exact match, check semantic similarity as fallback
                 embedding = await self.embeddings.embed(content)
+                # PRD F5: when a similar FACT is found above the dedup threshold and its
+                # normalised content differs, the old record is superseded by a new one.
+                # Set here so the "create new" path below can pick it up.
+                supersede_old_id: str | None = None
                 if embedding and existing_insights:
                     # --- SESSION 7 FIX: Dynamic deduplication threshold ---
                     # As insights accumulate, raise the bar for what counts as "duplicate"
@@ -2169,21 +2173,36 @@ IMPORTANT: Output an array of insight objects, not nested dicts.
                     )
                     
                     # If we find a very similar insight above the DYNAMIC threshold, update it instead
+                    # (For FACT insights whose normalised content differs, the old one is superseded
+                    # by a new record instead — see memory PRD F5.)
                     for similar in similar_insights:
                         similarity = similar.get("similarity", 0.0)
                         if similarity > dedup_threshold:  # Dynamic threshold (was fixed 0.90)
                             existing_id = similar.get("id", "")
                             existing_confidence = similar.get("confidence", 0.5)
-                            
-                            # Use the higher confidence value
+
+                            # FACT supersession (PRD F5): a changed fact replaces the old one.
+                            # The new fact is stored as a new record; the old one is marked
+                            # ``deprecated`` and points at its replacement via ``superseded_by``.
+                            # Exact/substring matches were already handled above, so a differing
+                            # normalised content here means the fact genuinely changed.
+                            if insight_type == "FACT":
+                                existing_content = similar.get("content", "")
+                                existing_normalized = re.sub(r'[^\w\s]', '', existing_content.lower().strip())
+                                if normalized_content != existing_normalized:
+                                    supersede_old_id = str(existing_id)
+                                    break  # fall through to "create new" below
+
+                            # Other types (or identical content): keep today's behaviour —
+                            # bump the existing insight's confidence and return it.
                             updated_confidence = max(existing_confidence, new_confidence)
-                            
+
                             # Update existing insight with higher confidence
                             await self.db.merge(str(existing_id), {
                                 "confidence": updated_confidence,
                                 "last_used": datetime.utcnow()
                             })
-                            
+
                             self.logger.info(
                                 f"Semantically similar insight detected (similarity: {similarity:.2f}). "
                                 f"Updated existing {existing_id} confidence: {existing_confidence:.2f} -> {updated_confidence:.2f}"
@@ -2207,6 +2226,18 @@ IMPORTANT: Output an array of insight objects, not nested dicts.
 
                 # Create insight in database with proper record ID
                 await self.db.create(insight_id, insight.model_dump())
+
+                # FACT supersession (PRD F5): if this new fact replaced a semantically
+                # similar old one, deprecate the old record and link it to its replacement.
+                if supersede_old_id is not None:
+                    await self.db.merge(supersede_old_id, {
+                        "deprecated": True,
+                        "superseded_by": insight_id,
+                    })
+                    self.logger.info(
+                        f"Superseded fact {supersede_old_id} -> {insight_id} "
+                        f"(deprecated, superseded_by set)"
+                    )
 
                 self.insights_created += 1
                 self.logger.info(f"Insight created: {insight_id} - {insight.type}: {insight.content[:50]}...")
