@@ -774,24 +774,20 @@ class MemoryManager:
             if mem_row:
                 conv_id = (mem_row[0] or {}).get("conversation_id")
                 mem_ts = (mem_row[0] or {}).get("timestamp")
-                if conv_id or mem_ts:
-                    # Find the closest experience by conversation context
+                if conv_id:
+                    # Find the experience in this conversation whose timestamp is
+                    # not later than the memory's own, so the chronology lines up
+                    # with when the memory was actually formed.
                     exp_match = await self.db.query(
-                        """
-                        SELECT id FROM experience
-                        WHERE context.user_query != NONE
-                        ORDER BY timestamp DESC
-                        LIMIT 1
-                        """,
-                    ) if not conv_id else await self.db.query(
                         """
                         SELECT id FROM experience
                         WHERE context.conversation_id = $cid
                            OR metadata.conversation_id = $cid
+                        AND timestamp <= $ts
                         ORDER BY timestamp DESC
                         LIMIT 1
                         """,
-                        {"cid": conv_id},
+                        {"cid": conv_id, "ts": mem_ts},
                     )
 
                     if exp_match:
