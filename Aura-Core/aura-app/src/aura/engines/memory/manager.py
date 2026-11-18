@@ -475,7 +475,7 @@ class MemoryManager:
         if ts is None:
             return 0.0
 
-        now = datetime.now(timezone.utc)
+        now = get_clock().now()
         age_hours = max((now - ts).total_seconds() / 3600, 0)
 
         # Start with base half-life

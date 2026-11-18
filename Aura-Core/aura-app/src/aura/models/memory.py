@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import Field
 
+from aura.clock import get_clock
 from aura.models.base import BaseModel
 
 
@@ -46,7 +47,7 @@ class Memory(BaseModel):
 
     memory_id: str
     content: str = Field(..., description="Memory content")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: get_clock().now().replace(tzinfo=None))
 
     # Emotional context
     emotional_signature: dict[str, float] = Field(

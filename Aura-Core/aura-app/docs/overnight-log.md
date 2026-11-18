@@ -1008,3 +1008,24 @@
      - `test_bf_04_identity_fallback_timeout`: patches `asyncio.wait_for` to immediately raise `TimeoutError`, verifies the stream completes and the loop context's `identity_context.narrative == "I am Aura."`.
   5. Verified the fix: `grep -nE "IdentityContext\(core_identity=" src/aura/orchestrator/coordinator.py` returns no matches.
 - **Unsure about:** Nothing. The change is scoped to the two fallback constructions and the two new tests. The non-stream path (which correctly returns a valid `IdentityContext` from the identity engine) is untouched. The timeout value (10.0) is untouched per the card's "Do not" instruction.
+
+## BF-05: Memory reads time through the clock provider
+- **Status:** DONE
+- **PRD:** memory section 8.1 (injectable clock); build plan rule 7. Listed by the scenario runner in W2-01.
+- **Tier:** bulk
+- **Files changed:** `src/aura/models/memory.py`, `src/aura/engines/memory/manager.py`, `tests/unit/test_memory_clock.py` (new)
+- **Test result:** 198 passed (full suite: 194 prior + 4 new in `test_memory_clock.py`; 114 warnings, 46.19s)
+- **What I did, step by step:**
+  1. In `src/aura/models/memory.py`: added import for `get_clock` from `aura.clock`. Changed the `Memory.timestamp` field default from `datetime.utcnow` to a `default_factory=lambda: get_clock().now().replace(tzinfo=None)` — this keeps the stored timestamp naive (no timezone) as the old `datetime.utcnow()` did, while routing through the clock provider so tests can control time via `FakeClock`.
+  2. In `src/aura/engines/memory/manager.py`: changed `now = datetime.now(timezone.utc)` in `_compute_decay_factor` to `now = get_clock().now()`. The clock provider returns a timezone-aware UTC datetime, which is what the function already expected (it compares with `_parse_ts` which normalizes to timezone-aware UTC).
+  3. Created `tests/unit/test_memory_clock.py` with four tests:
+     - `test_memory_timestamp_uses_fake_clock`: installs a `FakeClock` via `set_clock`, creates a `Memory()` without a timestamp, and asserts the timestamp matches the fake clock's time (naive UTC).
+     - `test_compute_decay_factor_uses_fake_clock`: installs a `FakeClock`, creates a memory row with timestamp = fixed_time - 30 days, calls `_compute_decay_factor`, and verifies the result matches the expected value computed from the formula (exp(-0.693 * 720 / 48)), not a hardcoded number.
+     - `test_compute_decay_factor_core_memory_returns_one`: sanity check that core memories still return 1.0 regardless of clock.
+     - `test_compute_decay_factor_semantic_memory_returns_one`: sanity check that semantic memories still return 1.0 regardless of clock.
+- **Done when verified:**
+  - New tests pass (4 passed).
+  - Full suite passes (198 passed).
+  - `grep -nE "datetime\.(utcnow|now)\(|time\.time\(" src/aura/models/memory.py` prints nothing.
+  - The same grep limited to the body of `_compute_decay_factor` prints nothing (checked via Python snippet using `inspect.getsource`).
+- **Unsure about:** Nothing. The change is scoped exactly to the two places named in the card (the `Memory` model's `timestamp` default and `_compute_decay_factor`). The other two `datetime.utcnow` occurrences in `memory.py` (`Conversation.started_at` and `DreamConsolidationReport.timestamp`) are not mentioned in the card and were left untouched per rule 3.
