@@ -690,6 +690,66 @@ Constraints:
 
         return None
 
+    async def _classify_intent(
+        self, user_input: str, user_id: str, stream: bool
+    ) -> tuple[dict[str, Any], str, str | None]:
+        """
+        L1 intent classification, telemetry, keyword fallback, and the
+        teaching fast lane. Returns ``(intent_data, intent, teaching_reply)``.
+        ``teaching_reply`` is the teaching string when L1 routes to TEACHING
+        (and ``log_experience`` has been called), otherwise ``None``.
+        ``stream`` controls only whether the L1 trace payload carries
+        ``"mode": "stream"``; both entry points share the rest verbatim.
+        """
+        # --- CHANGE 1: THE GATEKEEPER ---
+        # Call the new L1 classifier
+        intent_data = await self.llm_layers.l1_classify_intent(user_input)
+        intent = intent_data.get("intent", "CHAT")
+        # --- Telemetry: L1 routing decision ---
+        trace_payload: dict[str, Any] = {
+            "intent": intent,
+            "confidence": round(float(intent_data.get("confidence") or 0), 3),
+            "model": settings.l1_model,
+        }
+        if stream:
+            trace_payload["mode"] = "stream"
+        self._publish_trace("L1", "intent_classified", trace_payload)
+
+        # FALLBACK: If intent classification failed or returned empty, try keyword-based detection
+        if not intent_data or intent == "CHAT":
+            # Check for tool-use keywords as fallback
+            tool_keywords = ["search", "stock", "price", "weather", "current", "latest", "now", "today", "find", "look up"]
+            user_lower = user_input.lower()
+            if any(keyword in user_lower for keyword in tool_keywords):
+                self.logger.info(f"[MAG] Fallback: Keyword-based TOOL_USE detection triggered")
+                intent = "TOOL_USE"
+                intent_data["intent"] = "TOOL_USE"
+                intent_data["confidence"] = 0.7
+                intent_data["needs_agentic_rag"] = True
+                # Try to detect which tool
+                if "search" in user_lower or "stock" in user_lower or "price" in user_lower:
+                    intent_data["detected_tool"] = "web_search"
+
+        # 1. TEACHING FAST LANE (Existing)
+        if intent == "TEACHING":
+            self.logger.info("[BRAIN] L1 detected Teaching Intent - Routing to Learning Engine")
+
+            # Create a "Teaching Experience"
+            experience_data = {
+                "user_id": user_id,
+                "task_type": "instruction",  # Matches the fix we made in Learning Engine
+                "domain": "coding",  # Or infer from L1
+                "context": {"user_query": user_input},
+                "metadata": {"intent": "teaching"}
+            }
+
+            # Send directly to Learning Engine (The "Fast Lane" we discussed)
+            await self.learning_engine.log_experience(experience_data)
+
+            return intent_data, intent, "I've processed that instruction. I'm analyzing the schema and adding it to my skills now."
+
+        return intent_data, intent, None
+
     async def process_query(
         self,
         user_input: str,
@@ -738,50 +798,13 @@ Constraints:
         if reply is not None:
             return reply
 
-        # --- CHANGE 1: THE GATEKEEPER ---
-        # Call the new L1 classifier
-        intent_data = await self.llm_layers.l1_classify_intent(user_input)
-        intent = intent_data.get("intent", "CHAT")
-        # --- Telemetry: L1 routing decision ---
-        self._publish_trace("L1", "intent_classified", {
-            "intent": intent,
-            "confidence": round(float(intent_data.get("confidence") or 0), 3),
-            "model": settings.l1_model,
-        })
+        # L1 intent classification, telemetry, keyword fallback, teaching lane.
+        intent_data, intent, teaching_reply = await self._classify_intent(
+            user_input, user_id, stream=False
+        )
+        if teaching_reply is not None:
+            return teaching_reply
 
-        # FALLBACK: If intent classification failed or returned empty, try keyword-based detection
-        if not intent_data or intent == "CHAT":
-            # Check for tool-use keywords as fallback
-            tool_keywords = ["search", "stock", "price", "weather", "current", "latest", "now", "today", "find", "look up"]
-            user_lower = user_input.lower()
-            if any(keyword in user_lower for keyword in tool_keywords):
-                self.logger.info(f"[MAG] Fallback: Keyword-based TOOL_USE detection triggered")
-                intent = "TOOL_USE"
-                intent_data["intent"] = "TOOL_USE"
-                intent_data["confidence"] = 0.7
-                intent_data["needs_agentic_rag"] = True
-                # Try to detect which tool
-                if "search" in user_lower or "stock" in user_lower or "price" in user_lower:
-                    intent_data["detected_tool"] = "web_search"
-        
-        # 1. TEACHING FAST LANE (Existing)
-        if intent == "TEACHING":
-            self.logger.info("[BRAIN] L1 detected Teaching Intent - Routing to Learning Engine")
-            
-            # Create a "Teaching Experience"
-            experience_data = {
-                "user_id": user_id,
-                "task_type": "instruction",  # Matches the fix we made in Learning Engine
-                "domain": "coding",  # Or infer from L1
-                "context": {"user_query": user_input},
-                "metadata": {"intent": "teaching"}
-            }
-            
-            # Send directly to Learning Engine (The "Fast Lane" we discussed)
-            await self.learning_engine.log_experience(experience_data)
-            
-            return "I've processed that instruction. I'm analyzing the schema and adding it to my skills now."
-        
         # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
         target_skill_id = intent_data.get("target_action")
@@ -1798,53 +1821,15 @@ Constraints:
             return
 
         # --- L1 GATEKEEPER: Check intent first ---
-        intent_data = await self.llm_layers.l1_classify_intent(user_input)
-        intent = intent_data.get("intent", "CHAT")
-        # --- Telemetry: L1 routing decision (streaming path) ---
-        self._publish_trace("L1", "intent_classified", {
-            "intent": intent,
-            "confidence": round(float(intent_data.get("confidence") or 0), 3),
-            "model": settings.l1_model,
-            "mode": "stream",
-        })
-
-        # FALLBACK: If intent classification failed or returned empty, try keyword-based detection
-        if not intent_data or intent == "CHAT":
-            # Check for tool-use keywords as fallback
-            tool_keywords = ["search", "stock", "price", "weather", "current", "latest", "now", "today", "find", "look up"]
-            user_lower = user_input.lower()
-            if any(keyword in user_lower for keyword in tool_keywords):
-                self.logger.info(f"[MAG] Fallback: Keyword-based TOOL_USE detection triggered (streaming)")
-                intent = "TOOL_USE"
-                intent_data["intent"] = "TOOL_USE"
-                intent_data["confidence"] = 0.7
-                intent_data["needs_agentic_rag"] = True
-                # Try to detect which tool
-                if "search" in user_lower or "stock" in user_lower or "price" in user_lower:
-                    intent_data["detected_tool"] = "web_search"
-        
-        # 1. TEACHING FAST LANE (Existing)
-        if intent == "TEACHING":
-            self.logger.info("[BRAIN] L1 detected Teaching Intent - Routing to Learning Engine")
-            
-            # Create a "Teaching Experience"
-            experience_data = {
-                "user_id": user_id,
-                "task_type": "instruction",  # Matches the fix we made in Learning Engine
-                "domain": "coding",  # Or infer from L1
-                "context": {"user_query": user_input},
-                "metadata": {"intent": "teaching"}
-            }
-            
-            # Send directly to Learning Engine (The "Fast Lane" we discussed)
-            await self.learning_engine.log_experience(experience_data)
-            
+        intent_data, intent, teaching_reply = await self._classify_intent(
+            user_input, user_id, stream=True
+        )
+        if teaching_reply is not None:
             # Yield the response message
-            response_message = "I've processed that instruction. I'm analyzing the schema and adding it to my skills now."
-            for char in response_message:
+            for char in teaching_reply:
                 yield char
             return
-        
+
         # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
         target_skill_id = intent_data.get("target_action")
