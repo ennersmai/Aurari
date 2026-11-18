@@ -1,9 +1,9 @@
 # Overnight Build Log
 
 ## Summary
-- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07
+- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08
 - **Stopped at:** None yet (in progress)
-- **Current card:** W1-07
+- **Current card:** W1-08
 
 ---
 
@@ -68,3 +68,10 @@
 - **Test result:** 24 passed (full suite)
 - **Notes:** In `_compute_formation_score`, the novelty block previously selected the five most recent memories (`ORDER BY timestamp DESC LIMIT 5`) and recomputed cosine similarity to each in Python via `self._cosine_similarity`. Changed it to select the five most similar: the SELECT now includes `vector::similarity::cosine(embedding, $emb) AS sim`, the new memory's embedding is passed as `$emb` (added to the params dict up front, matching the pattern in `_create_related_edges`), the ORDER BY is now `sim DESC`, and the loop reads `row.get("sim")` (cast to float) instead of recomputing cosine. The two penalty thresholds (0.88 heavy, 0.75 light) and the `novelty = 1.0` start are unchanged, as are the four formation-signal weights. A `sim is None` guard replaces the old `if not other_emb` guard so rows missing the sim alias are skipped. The `if recent and embedding:` guard on the penalty loop is kept. Wrote four tests: identical old memory (sim 0.95) gets the heavy penalty (novelty 0.6); a novel memory unlike any stored gets novelty 1.0 even when the five returned rows are about a different topic (all sim < 0.75); a medium-similarity neighbour (0.80) gets the light penalty (novelty 0.85); and a check that the emitted SQL orders by `sim DESC`, selects `vector::similarity::cosine(embedding, $emb) AS sim`, does not order by `timestamp`, and passes the embedding as the `emb` parameter. The W0-05 recording test rewrote `docs/metrics/memory_before.json` during the run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are included in this commit.
 - **Unsure about:** Nothing. The change is scoped to the novelty block only; the surprise block (which still uses `self._cosine_similarity` in Python) and everything else are untouched.
+
+## W1-08: Stop deleting memories by age
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/dreaming/engine.py`, `tests/unit/test_dreaming_no_age_prune.py`
+- **Test result:** 26 passed (full suite)
+- **Notes:** In `DreamingEngine._tiered_pruning`, removed the "Tier 3" block that fetched non-core, non-ephemeral memories older than the 7-day cutoff and merged `deprecated = true` onto any whose computed decay fell below `_DECAY_THRESHOLD` (0.05). Tiers 1 and 2 (which hard-delete *ephemeral* memories) are unchanged. Updated the `_tiered_pruning` docstring: dropped the "Non-core, decay_factor < 0.05 → soft delete" rule line and added a note that non-ephemeral memories are never deleted by age here; retrieval ranking still uses decay. Left `_compute_decay` and the `_DECAY_THRESHOLD` constant in place per the card's "Do not remove `_compute_decay`" — `_compute_decay` is now unused inside `_tiered_pruning` but is retained (retrieval ranking still uses decay; the card forbids removing it). Wrote two tests in `tests/unit/test_dreaming_no_age_prune.py`: (1) a non-ephemeral memory 60 days old with no recalls is still `deprecated = false` after `_tiered_pruning` (built a `DreamingEngine` via `__new__` to avoid `__init__` opening a real DB, and wired in `FakeDatabaseClient`, inserting the row directly into the `memory` table because the fake's `create` keys on the full record id); (2) `_tiered_pruning` no longer emits the Tier 3 query (no sent SQL contains both `core_memory = false` and `ephemeral = false`), and `DreamingEngine._compute_decay` still exists. The W0-04/W0-05 recording tests rewrote `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.
+- **Unsure about:** Nothing. The change is scoped to the Tier 3 block and the docstring only.

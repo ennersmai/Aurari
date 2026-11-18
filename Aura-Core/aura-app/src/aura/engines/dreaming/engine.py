@@ -193,8 +193,11 @@ class DreamingEngine(BaseEngine):
         Rules:
         - ephemeral=True, older than 24h, 0 recalls → hard delete
         - ephemeral=True, older than 7 days regardless → hard delete
-        - Non-core, decay_factor < 0.05 (effectively faded) → soft delete (deprecated=True)
         - core_memory=True → never touched
+
+        Non-ephemeral memories are never deleted by age here. Retrieval
+        ranking still uses decay (see ``_compute_decay``), so faded
+        memories naturally sink out of view without being removed.
         """
         pruned = 0
         now = datetime.now(timezone.utc)
@@ -241,31 +244,6 @@ class DreamingEngine(BaseEngine):
                     pruned += 1
         except Exception as e:
             self.logger.warning(f"Tier 2 pruning error: {e}")
-
-        # Tier 3: non-core, non-ephemeral, effectively faded → soft delete
-        try:
-            # Fetch old non-core memories and check decay in Python
-            tier3_candidates = await self.db.query(
-                """
-                SELECT id, timestamp, emotional_intensity, recall_count, ephemeral
-                FROM memory
-                WHERE core_memory = false
-                  AND ephemeral = false
-                  AND deprecated = false
-                  AND timestamp < $cutoff
-                LIMIT 300
-                """,
-                {"cutoff": cutoff_7d},
-            )
-            for row in (tier3_candidates or []):
-                decay = self._compute_decay(row)
-                if decay < _DECAY_THRESHOLD:
-                    mid = row.get("id")
-                    if mid:
-                        await self.db.merge(str(mid), {"deprecated": True})
-                        pruned += 1
-        except Exception as e:
-            self.logger.warning(f"Tier 3 pruning error: {e}")
 
         if pruned > 0:
             self.logger.info(f"[CLEAN] Tiered pruning: {pruned} memories dissolved")
