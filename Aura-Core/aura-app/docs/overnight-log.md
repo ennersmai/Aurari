@@ -1187,3 +1187,6 @@
   - `grep -n "execute_tool_call" src/aura/orchestrator/tool_loop.py` prints only a docstring comment (line 7), no actual calls
 - **Do not checks respected:** Did not touch `coordinator.py`. Did not add native function calling (W2-37). Did not import the registry. The loop does not check roles, does not call `execute_tool_call`, never passes `approved` — role and approval checks stay in the executor's single gate (rule 4).
 - **Unsure about:** Nothing. The implementation matches the card's step-by-step instructions exactly.
+
+## W2-32: supervisor note (attempt 1)
+- **Discarded:** the session ended mid-edit (coordinator.py left with a syntax error) when cohere/command-a-plus returned an "invalid tool generation" error that Sluice did not recognise as a stream error. Second time Cohere broke a session on OpenCode tool sets. Cohere removed from the coder pool (kept in chat). Rerun.
