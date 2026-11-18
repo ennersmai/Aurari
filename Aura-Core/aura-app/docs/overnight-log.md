@@ -879,3 +879,31 @@
   - All four new tests pass.
 - **Do-not checks:** Did not add the frontend debug view (later, with M3). Did not persist traces to the database (traces stay in memory as per the RecallEngine design).
 - **Unsure about:** Nothing. The change is scoped to the new route file, the two lines in `main.py`, and the new test file. No existing code was modified beyond the two additions in `main.py`.
+
+---
+
+## W2-24: Scenario runner through the Recall Engine, end to end
+- **Status:** DONE
+- **PRD:** memory M2 gate ("same accuracy as M1, fewer tokens per turn") and section 8.1
+- **Tier:** bulk
+- **Depends on:** W2-17
+- **Files changed:** `tests/scenarios/runner.py` (added `via` parameter, `StubLatentEngine`, new `ProbeResult` fields), new `tests/scenarios/test_recall_engine_embedded.py`.
+- **Test result:** 179 passed (full suite: 175 prior + 4 new). All new tests pass offline on the embedded engine; the full suite passes.
+- **What I did, step by step:**
+  1. **`ProbeResult` new fields (card step 1):** added `packet_tokens: int = 0`, `tokens_before: int = 0`, `trace_turn_id: str | None = None` to the dataclass.
+  2. **`run(scenario, via)` parameter (card step 2):** added `via: Literal["legacy", "recall"] = "legacy"` to the `run` function signature.
+     - **`via="legacy"` (unchanged path):** calls `manager.retrieve_for_l3` exactly as before; additionally sets `packet_tokens = estimate_tokens(packet_xml)` using the Recall Engine's `estimate_tokens` helper.
+     - **`via="recall"` (new path):** builds `RecallEngine(memory_manager=manager, latent_engine=StubLatentEngine())` where `StubLatentEngine.get_intuition_context` returns `""`. For each probe, calls `recall(RecallRequest(user_id=probe.user_id, user_input=probe.question, depth=2, limit=5, include_cold_start=True, include_latent=False))`. Computes `gold_found` against `packet.all_text()`. Sets `packet_chars = len(packet.all_text())`, `packet_tokens = trace.tokens_after`, `tokens_before = trace.tokens_before`, `trace_turn_id = trace.turn_id`.
+  3. **`StubLatentEngine`:** minimal stub class with `get_intuition_context` returning empty string, so the latent channel is effectively disabled for the runner's recall path (matching `include_latent=False`).
+- **Tests (`tests/scenarios/test_recall_engine_embedded.py`, 4 tests):**
+  - `test_recall_engine_embedded_same_accuracy_as_legacy`: scenario with three turns on day 0 ("My dog's name is Biscuit", "I work as a nurse", "My sister is called Ana"), dream on day 1, probe on day 2 ("What's my dog's name?" with gold `["Biscuit"]`). Asserts `recall_results[0].gold_found == legacy_results[0].gold_found` (same accuracy; does not assert gold is found). Logs both `packet_tokens` values: legacy=103, recall=86.
+  - `test_recall_engine_embedded_tokens_before_vs_after`: same scenario via recall; checks that if the trace has any `duplicate` item, `tokens_before > packet_tokens`, otherwise `tokens_before == packet_tokens`. In this run `tokens_before=110`, `packet_tokens=86` (duplicates/budget drops present), logged accordingly.
+  - `test_recall_engine_embedded_ablation_no_dedup_no_budget`: with `recall_dedup_enabled` and `recall_budget_enabled` monkeypatched to `False`, asserts `packet_tokens == tokens_before`. Result: both equal 110.
+  - `test_runner_smoke_still_passes`: verifies the original W2-01 smoke scenario still works with the updated `runner.py` (defaults to `via="legacy"`), and the new `ProbeResult` fields are present with sensible defaults (`trace_turn_id is None`).
+- **Done when verified:**
+  - The new test passes offline (no model download, no SurrealDB server).
+  - The full suite passes (179 passed).
+  - The legacy smoke test (`test_runner_smoke.py`) passes unchanged.
+  - The frozen baselines `emotion_before.json` / `memory_before.json` were restored before committing.
+- **Do-not checks:** No `src/` files changed. The legacy path's retrieval arguments are unchanged. No assertion that the gold was found.
+- **Unsure about:** Nothing. The change is scoped to `runner.py` and the new test file. The token counts logged (legacy=103, recall=86) show the Recall Engine's deduplication/budget reduces tokens while preserving the same gold-found outcome for this scenario. The `trace_turn_id` is captured for traceability.

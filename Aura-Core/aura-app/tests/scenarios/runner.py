@@ -39,7 +39,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from surrealdb import AsyncSurreal
 from surrealdb.types import RecordID
@@ -47,6 +47,7 @@ from surrealdb.types import RecordID
 from aura.clock import FakeClock, set_clock
 from aura.engines.dreaming.engine import DreamingEngine
 from aura.engines.memory.manager import MemoryManager
+from aura.engines.recall import RecallEngine, RecallRequest, estimate_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,21 @@ class ProbeResult:
     question: str
     gold_found: dict[str, bool]
     packet_chars: int
+    packet_tokens: int = 0
+    tokens_before: int = 0
+    trace_turn_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Stub latent engine for the recall path (W2-24)
+# ---------------------------------------------------------------------------
+
+
+class StubLatentEngine:
+    """Minimal latent engine stub whose get_intuition_context returns None."""
+
+    def get_intuition_context(self, user_id: str) -> str:
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -363,15 +379,27 @@ def _build_dreaming(db: EmbeddedSurrealDB) -> DreamingEngine:
 _PHASE_ORDER = {"turn": 0, "dream": 1, "probe": 2}
 
 
-async def run(scenario: Scenario) -> list[ProbeResult]:
+async def run(
+    scenario: Scenario, via: Literal["legacy", "recall"] = "legacy"
+) -> list[ProbeResult]:
     """Run a scenario and return the probe results.
 
     Feeds each turn through ``MemoryManager.store_memory`` with the
     arguments the app uses, runs ``DreamingEngine.enter_rem_sleep`` at
     each dream time (dependencies set as the app sets them), then
-    answers each probe with ``retrieve_for_l3`` as the app calls it,
-    recording whether each gold string appears in the returned packet
-    text.
+    answers each probe.
+
+    Two modes are supported:
+    - ``via="legacy"``: answers probes with ``MemoryManager.retrieve_for_l3``
+      (the original path). Also sets ``packet_tokens`` via
+      ``estimate_tokens`` on the returned XML.
+    - ``via="recall"``: answers probes through the ``RecallEngine``.
+      Builds a ``RecallEngine(memory_manager=manager, latent_engine=StubLatentEngine())``.
+      For each probe calls ``recall(RecallRequest(user_id=probe.user_id,
+      user_input=probe.question, depth=2, limit=5, include_cold_start=True,
+      include_latent=False))``. Computes ``gold_found`` against
+      ``packet.all_text()``. Sets ``packet_chars``, ``packet_tokens``,
+      ``tokens_before`` and ``trace_turn_id`` from the returned packet's trace.
     """
     db = EmbeddedSurrealDB()
     await db.connect()
@@ -394,6 +422,14 @@ async def run(scenario: Scenario) -> list[ProbeResult]:
         events.sort(key=lambda e: (e[0], e[1]))
 
         results: list[ProbeResult] = []
+
+        # For the recall path, build the engine once (manager is already wired).
+        recall_engine: RecallEngine | None = None
+        if via == "recall":
+            recall_engine = RecallEngine(
+                memory_manager=manager, latent_engine=StubLatentEngine()
+            )
+
         for at_day, _phase, kind, payload in events:
             clock.set(_START + timedelta(days=at_day))
 
@@ -417,22 +453,50 @@ async def run(scenario: Scenario) -> list[ProbeResult]:
                 await dreaming.enter_rem_sleep()
             elif kind == "probe":
                 probe: Probe = payload
-                # The app's standard (non-streaming) call (llm/layers.py).
-                _memories, packet_xml = await manager.retrieve_for_l3(
-                    query=probe.question,
-                    current_emotions=None,
-                    user_id=probe.user_id,
-                    limit=5,
-                    depth=2,
-                )
-                gold_found = {g: (g in (packet_xml or "")) for g in probe.gold}
-                results.append(
-                    ProbeResult(
-                        question=probe.question,
-                        gold_found=gold_found,
-                        packet_chars=len(packet_xml or ""),
+                if via == "legacy":
+                    # The app's standard (non-streaming) call (llm/layers.py).
+                    _memories, packet_xml = await manager.retrieve_for_l3(
+                        query=probe.question,
+                        current_emotions=None,
+                        user_id=probe.user_id,
+                        limit=5,
+                        depth=2,
                     )
-                )
+                    gold_found = {g: (g in (packet_xml or "")) for g in probe.gold}
+                    packet_chars = len(packet_xml or "")
+                    packet_tokens = estimate_tokens(packet_xml or "")
+                    results.append(
+                        ProbeResult(
+                            question=probe.question,
+                            gold_found=gold_found,
+                            packet_chars=packet_chars,
+                            packet_tokens=packet_tokens,
+                        )
+                    )
+                else:  # via == "recall"
+                    assert recall_engine is not None
+                    request = RecallRequest(
+                        user_id=probe.user_id,
+                        user_input=probe.question,
+                        depth=2,
+                        limit=5,
+                        include_cold_start=True,
+                        include_latent=False,
+                    )
+                    packet = await recall_engine.recall(request)
+                    all_text = packet.all_text()
+                    gold_found = {g: (g in all_text) for g in probe.gold}
+                    trace = packet.trace
+                    results.append(
+                        ProbeResult(
+                            question=probe.question,
+                            gold_found=gold_found,
+                            packet_chars=len(all_text),
+                            packet_tokens=trace.tokens_after,
+                            tokens_before=trace.tokens_before,
+                            trace_turn_id=trace.turn_id,
+                        )
+                    )
         return results
     finally:
         await db.close()
