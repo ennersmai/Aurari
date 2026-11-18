@@ -23,6 +23,7 @@ from unittest.mock import DEFAULT, AsyncMock, MagicMock
 import pytest
 
 from aura.config import settings
+from tests.conftest import _TURN_FIXED_DATETIME
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +174,18 @@ async def test_c_plain_chat_pins_stream_behaviour(turn_orchestrator):
     # (c3) check_goals_needing_autonomous_pursuit is NOT called
     orch.goal_engine.check_goals_needing_autonomous_pursuit.assert_not_awaited()
 
-    # (c4) get_cold_start_context is NOT called
-    orch._fake_memory_manager.get_cold_start_context.assert_not_awaited()
+    # (c4) Recall Engine: the packet was assembled once (stream path).
+    orch._fake_recall_engine.recall.assert_awaited_once()
+    recall_request = orch._fake_recall_engine.recall.await_args.args[0]
+    assert recall_request.user_input == "hello"
+    assert recall_request.user_id == "default"
+    assert recall_request.depth == 1
+    assert recall_request.include_cold_start is False
+    assert recall_request.learning_context is orch.learning_engine.get_learning_context.return_value
 
-    # (c5) retrieve_memories call args
-    orch._fake_memory_manager.retrieve_memories.assert_awaited_once_with(
-        query="hello", limit=3, importance_min=0.5, namespace=None
-    )
+    # (c5) the memory/latent stores are no longer called from the coordinator.
+    orch._fake_memory_manager.get_cold_start_context.assert_not_awaited()
+    orch._fake_memory_manager.retrieve_memories.assert_not_awaited()
 
     # (c6) stream_l3_synthesis is called once with reasoning_enabled=<arg> and a
     # context with user_id == "default" and recent_critique is None.
@@ -490,54 +496,45 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
 
 
 # ---------------------------------------------------------------------------
-# (W2-19) Characterise what the streaming loop context drops today
+# (W2-19/20) The streaming loop context carries the Recall packet
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_loop_context_drops_cold_start_latent_and_user_id_streaming(turn_orchestrator):
-    """W2-19 (b): pins pre-M2 behaviour; W2-20 changes this on purpose.
+async def test_loop_context_carries_packet_streaming(turn_orchestrator):
+    """W2-19 (b) -> W2-20: the streaming loop context carries the Recall packet.
 
-    On the regular streaming loop path, the loop context built inside
-    ``_generate_streaming`` constructs a *new* ``SynthesisContext`` that omits
-    ``cold_start_xml``, ``latent_intuition_xml`` and ``user_id``, so those
-    default to ``None``, ``None`` and ``"default"``. The streaming path never
-    calls ``get_cold_start_context`` at all (it only runs when there is no
-    history, and the stream path skips that branch), but the latent channel
-    is computed by ``_gather_turn_context`` and stored on ``ctx``; the loop
-    context still drops it. This test pins that drop so W2-20 can flip it on
-    purpose.
+    Previously (pre-M2) the streaming loop context built a new
+    ``SynthesisContext`` that dropped ``cold_start_xml``,
+    ``latent_intuition_xml`` and ``user_id``. W2-20 routes the turn through
+    the Recall Engine, so the loop context now carries the packet the engine
+    returned. This test pins that carry so a later card does not silently drop
+    it again.
     """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
     orch.llm_layers._stream_chunks_queue.append(["ab", "cd"])
 
-    # The latent channel returns non-empty XML so _gather_turn_context
-    # populates ctx.latent_intuition_xml (and ctx.synthesis_context likewise).
-    # The loop context should still drop it. (get_cold_start_context is not
-    # called on the stream path, but we set it for parity with the blocking
-    # test and to make the drop obvious if the stream path ever starts calling
-    # it.)
-    orch._fake_memory_manager.get_cold_start_context = AsyncMock(
-        return_value=SimpleNamespace(
-            xml_block="<cold_start_context>X</cold_start_context>",
-            core_memories=[],
-            recent_memories=[],
-        )
+    # Replace the fixture's empty packet with one carrying a latent block so
+    # the carry is observable.
+    from aura.engines.recall.models import Block, ContextPacket, RecallTrace
+    packet = ContextPacket(
+        stable_blocks=[],
+        dynamic_blocks=[Block(kind="latent", text="<latent>L</latent>", tokens=1, stable=False)],
+        abstain=False,
+        trace=RecallTrace(
+            turn_id="t", user_id="u1", query="hello",
+            created_at=_TURN_FIXED_DATETIME,
+            budget_tokens=0, tokens_before=0, tokens_after=0,
+            items=[], channel_errors={},
+        ),
     )
-    orch._fake_latent_engine.get_intuition_context = MagicMock(
-        return_value="<latent>L</latent>"
-    )
+    orch._fake_recall_engine.recall = AsyncMock(return_value=packet)
 
     chunks = await _collect(orch.stream_query("hello", user_id="u1"))
     await _drain()
 
-    # Sanity: the latent channel actually ran and returned non-empty XML.
-    orch._fake_latent_engine.get_intuition_context.assert_called_once_with("u1")
-
-    # The loop context passed to stream_l3_synthesis drops all three.
+    # The loop context passed to stream_l3_synthesis carries the packet.
     assert len(orch.llm_layers._stream_calls) == 1
     loop_ctx, _ = orch.llm_layers._stream_calls[0]
-    assert loop_ctx.cold_start_xml is None
-    assert loop_ctx.latent_intuition_xml is None
-    assert loop_ctx.user_id == "default"
+    assert loop_ctx.packet is packet
     assert chunks == ["ab", "cd"]

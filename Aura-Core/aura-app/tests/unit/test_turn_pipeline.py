@@ -178,3 +178,47 @@ async def test_c_turn_pipeline_streaming_passes_guest_role_to_execute_and_feedba
     # The guest requester_role reached execute_and_feedback.
     assert orch.tool_executor.execute_and_feedback.await_count == 1
     assert orch.tool_executor.execute_and_feedback.await_args.kwargs["requester_role"] == "guest"
+
+
+# ---------------------------------------------------------------------------
+# (W2-20) When the Recall Engine raises, the turn still completes and the loop
+#         context has ``packet is None`` (layers fall back as in W2-18).
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_w2_20_recall_raises_turn_completes_with_packet_none(turn_orchestrator):
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    orch.llm_layers.l3_synthesis = AsyncMock(return_value="ok")
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+
+    # The Recall Engine raises; _gather_turn_context must catch it and set
+    # packet = None so the layers fall back as in W2-18.
+    orch._fake_recall_engine.recall = AsyncMock(side_effect=RuntimeError("recall boom"))
+
+    events = await _collect(
+        orch._turn_pipeline(
+            "hello",
+            "u1",
+            None,
+            stream=False,
+            context_limit=None,
+            enable_l2=True,
+            conversation_id="c1",
+            reasoning_enabled=False,
+            l2_reasoning_enabled=False,
+            session_id=None,
+            context_mode="deep_work",
+            requester_role="owner",
+        )
+    )
+    await _drain()
+
+    # The turn completed (the pipeline yielded exactly one done event).
+    assert len(events) == 1
+    assert events[0].kind == "done"
+    assert events[0].text == "ok"
+
+    # The loop context passed to l3_synthesis has packet is None.
+    orch.llm_layers.l3_synthesis.assert_awaited_once()
+    loop_ctx = orch.llm_layers.l3_synthesis.await_args.args[0]
+    assert loop_ctx.packet is None

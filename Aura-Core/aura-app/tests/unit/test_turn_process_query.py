@@ -24,6 +24,7 @@ from unittest.mock import DEFAULT, AsyncMock, MagicMock
 import pytest
 
 from aura.config import settings
+from tests.conftest import _TURN_FIXED_DATETIME
 
 
 # ---------------------------------------------------------------------------
@@ -264,13 +265,20 @@ async def test_f_plain_chat_pins_observed_behaviour(turn_orchestrator):
     orch.goal_engine.get_goal_context.assert_awaited_once_with()
     orch.goal_engine.check_goals_needing_autonomous_pursuit.assert_awaited_once_with()
 
-    # (f4) retrieve_memories call args
-    orch._fake_memory_manager.retrieve_memories.assert_awaited_once_with(
-        query="hello", limit=3, importance_min=0.5, namespace=None
-    )
+    # (f4) Recall Engine: the packet was assembled once with the turn's input.
+    orch._fake_recall_engine.recall.assert_awaited_once()
+    recall_request = orch._fake_recall_engine.recall.await_args.args[0]
+    assert recall_request.user_input == "hello"
+    assert recall_request.user_id == "default"
+    assert recall_request.depth == 2
+    assert recall_request.include_cold_start is True
+    assert recall_request.learning_context is orch.learning_engine.get_learning_context.return_value
 
-    # (f5) cold start context is called because there is no history
-    orch._fake_memory_manager.get_cold_start_context.assert_awaited_once_with("default")
+    # (f5) the memory/latent stores are no longer called from the coordinator
+    # (W2-20): recall replaces them. They are stashed on the fixture for tests
+    # that want to drive them directly, so confirm they were *not* awaited here.
+    orch._fake_memory_manager.get_cold_start_context.assert_not_awaited()
+    orch._fake_memory_manager.retrieve_memories.assert_not_awaited()
 
     # (f6) cached system prompt
     assert orch._last_system_prompt["default"] == "PROMPT"
@@ -559,54 +567,46 @@ async def test_w2_06_forced_tool_by_name_lookup(turn_orchestrator):
 
 
 # ---------------------------------------------------------------------------
-# (W2-19) Characterise what the blocking loop context drops today
+# (W2-19/20) The blocking loop context carries the Recall packet
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_loop_context_drops_cold_start_latent_and_user_id_blocking(turn_orchestrator):
-    """W2-19 (a): pins pre-M2 behaviour; W2-20 changes this on purpose.
+async def test_loop_context_carries_packet_blocking(turn_orchestrator):
+    """W2-19 (a) -> W2-20: the loop context carries the Recall packet.
 
-    On the blocking path with no conversation history, ``_gather_turn_context``
-    computes a non-empty ``cold_start_xml`` (from ``get_cold_start_context``)
-    and a non-empty ``latent_intuition_xml`` (from ``get_intuition_context``)
-    and stores both on ``ctx`` and ``ctx.synthesis_context``. However, the
-    loop context built inside ``_generate_blocking`` constructs a *new*
-    ``SynthesisContext`` that omits ``cold_start_xml``, ``latent_intuition_xml``
-    and ``user_id``, so those default to ``None``, ``None`` and ``"default"``
-    — the cold-start and latent blocks never reach the prompt on the regular
-    blocking loop, and the user id falls back to ``"default"`` (undoing W1-04
-    in practice). This test pins that drop so W2-20 can flip it on purpose.
+    Previously (pre-M2) the blocking loop context built a new
+    ``SynthesisContext`` that dropped ``cold_start_xml``,
+    ``latent_intuition_xml`` and ``user_id``. W2-20 routes the turn through
+    the Recall Engine, so the loop context now carries the packet the engine
+    returned. This test pins that carry so a later card does not silently drop
+    it again.
     """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.llm_layers.l3_synthesis = AsyncMock(return_value="ok")
     orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
 
-    # Make the cold-start and latent channels return non-empty XML so that
-    # _gather_turn_context actually populates ctx.cold_start_xml and
-    # ctx.latent_intuition_xml (and ctx.synthesis_context.* likewise). The
-    # loop context should still drop both.
-    orch._fake_memory_manager.get_cold_start_context = AsyncMock(
-        return_value=SimpleNamespace(
-            xml_block="<cold_start_context>X</cold_start_context>",
-            core_memories=[],
-            recent_memories=[],
-        )
+    # The fixture's fake recall engine returns an empty packet by default;
+    # replace it with one carrying a non-empty cold-start block so the carry is
+    # observable.
+    from aura.engines.recall.models import Block, ContextPacket, RecallTrace
+    packet = ContextPacket(
+        stable_blocks=[Block(kind="cold_start", text="<cold_start_context>X</cold_start_context>", tokens=1, stable=True)],
+        dynamic_blocks=[],
+        abstain=False,
+        trace=RecallTrace(
+            turn_id="t", user_id="u1", query="hello",
+            created_at=_TURN_FIXED_DATETIME,
+            budget_tokens=0, tokens_before=0, tokens_after=0,
+            items=[], channel_errors={},
+        ),
     )
-    orch._fake_latent_engine.get_intuition_context = MagicMock(
-        return_value="<latent>L</latent>"
-    )
+    orch._fake_recall_engine.recall = AsyncMock(return_value=packet)
 
-    # No conversation_history -> the blocking path runs the cold-start branch.
+    # No conversation_history -> the blocking path runs.
     await orch.process_query("hello", user_id="u1")
 
-    # Sanity: the channels actually ran and returned non-empty XML.
-    orch._fake_memory_manager.get_cold_start_context.assert_awaited_once_with("u1")
-    orch._fake_latent_engine.get_intuition_context.assert_called_once_with("u1")
-
-    # The loop context passed to l3_synthesis drops all three.
+    # The loop context passed to l3_synthesis carries the packet.
     orch.llm_layers.l3_synthesis.assert_awaited_once()
     loop_ctx = orch.llm_layers.l3_synthesis.await_args.args[0]
-    assert loop_ctx.cold_start_xml is None
-    assert loop_ctx.latent_intuition_xml is None
-    assert loop_ctx.user_id == "default"
+    assert loop_ctx.packet is packet
     await _drain()

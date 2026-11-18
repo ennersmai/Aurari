@@ -242,6 +242,12 @@ def turn_orchestrator(monkeypatch):
     ``process_query`` touches onto fakes, so the real ``process_query`` can run
     end-to-end against mocks with no database, LLM or network.
 
+    W2-20 adds a fake Recall Engine: ``aura.engines.recall.engine.get_recall_engine``
+    is monkeypatched to return a fake whose ``recall`` is an ``AsyncMock``
+    returning an empty :class:`ContextPacket` (no blocks, trace with
+    ``turn_id="t"`` and zero tokens), exposed as ``orch._fake_recall_engine``.
+    The memory and latent fakes are kept.
+
     The fixture follows card W2-02 exactly, with one documented deviation:
     ``IdentityContext`` has no ``core_identity`` / ``tone_and_style`` fields
     (see ``src/aura/models/identity.py`` — the required fields are ``narrative``
@@ -380,5 +386,36 @@ def turn_orchestrator(monkeypatch):
     # reaching back into the monkeypatch closures.
     orch._fake_memory_manager = fake_memory_manager
     orch._fake_latent_engine = fake_latent_engine
+
+    # --- recall engine (W2-20) --------------------------------------------
+    # ``_gather_turn_context`` calls ``get_recall_engine().recall(...)``. The
+    # fake returns an empty packet by default: no blocks, a trace with
+    # ``turn_id="t"`` and zero tokens. Tests can configure or override it.
+    from aura.engines.recall.models import ContextPacket, RecallTrace
+
+    fake_recall_engine = MagicMock()
+    fake_recall_engine.recall = AsyncMock(
+        return_value=ContextPacket(
+            stable_blocks=[],
+            dynamic_blocks=[],
+            abstain=False,
+            trace=RecallTrace(
+                turn_id="t",
+                user_id="default",
+                query="",
+                created_at=_TURN_FIXED_DATETIME,
+                budget_tokens=0,
+                tokens_before=0,
+                tokens_after=0,
+                items=[],
+                channel_errors={},
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "aura.engines.recall.engine.get_recall_engine",
+        lambda: fake_recall_engine,
+    )
+    orch._fake_recall_engine = fake_recall_engine
 
     return orch

@@ -20,6 +20,7 @@ from aura.engines.emotion.engine import EmotionEngine
 from aura.engines.goal.engine import GoalEngine
 from aura.engines.identity.engine import IdentityEngine
 from aura.engines.learning.engine import LearningEngine
+from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
 from aura.llm.layers import LLMLayers, SynthesisContext
@@ -50,6 +51,7 @@ class TurnContext:
     cold_start_xml: str | None
     latent_intuition_xml: str | None
     synthesis_context: SynthesisContext
+    packet: ContextPacket | None = None
 
 
 @dataclass
@@ -1001,20 +1003,13 @@ Constraints:
     ) -> None:
         """Build and cache the L3 system prompt for debugging (before calling synthesis)."""
         try:
-            # Retrieve relevant memories for context (same as L3 does)
-            relevant_memories = []
-            try:
-                from aura.engines.memory.manager import get_memory_manager
-                memory_manager = get_memory_manager()
-                relevant_memories = await memory_manager.retrieve_memories(
-                    query=user_input,
-                    limit=3,
-                    importance_min=0.5,
-                    namespace=getattr(self, "_current_session_namespace", None),
-                )
-            except Exception as e:
-                self.logger.warning(f"Failed to retrieve memories for prompt cache: {e}")
-            
+            # W2-20: the cached prompt shows the Recall packet's memories.
+            relevant_memories = (
+                synthesis_context.packet.block_text("memories")
+                if getattr(synthesis_context, "packet", None)
+                else None
+            )
+
             # Build and cache the system prompt
             system_prompt = self.llm_layers.build_l3_system_prompt(
                 synthesis_context,
@@ -1126,32 +1121,51 @@ Constraints:
                 recent_critiques = self.critique_buffer.pop(user_id, [])
             recent_critique = "\n\n".join(recent_critiques) if recent_critiques else None
 
-            # Cold start context (Session 5): inject when no conversation history exists
-            cold_start_xml: str | None = None
-            if not conversation_history or len(conversation_history) == 0:
-                try:
-                    from aura.engines.memory.manager import get_memory_manager
-                    mm = get_memory_manager()
-                    cold_ctx = await mm.get_cold_start_context(user_id)
-                    if cold_ctx.xml_block:
-                        cold_start_xml = cold_ctx.xml_block
-                        self.logger.info(
-                            f"[ICE] Cold start context loaded: {len(cold_ctx.core_memories)} core, "
-                            f"{len(cold_ctx.recent_memories)} recent"
-                        )
-                except Exception as e:
-                    self.logger.debug(f"Cold start context failed (non-critical): {e}")
-
-            # Session 7: TITANS Latent Intuition (MAC — Memory as Context)
-            # Zero-latency cached read — no DB query, pure in-memory access.
-            latent_intuition_xml: str | None = None
+            # Recall Engine (M2, W2-20): one call assembles the insights, latent,
+            # cold-start and memories blocks. Replaces the separate cold-start
+            # and latent-intuition blocks and the per-round retrieval in L3.
+            from aura.engines.recall.engine import get_recall_engine
+            packet: ContextPacket | None = None
             try:
-                from aura.engines.latent.engine import get_latent_engine
-                latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
-                if latent_intuition_xml:
-                    self.logger.debug(f"[BRAIN] MAC injected ({len(latent_intuition_xml)} chars)")
+                packet = await get_recall_engine().recall(RecallRequest(
+                    user_id=user_id,
+                    user_input=user_input,
+                    recent_turns=(conversation_history or [])[-6:],
+                    emotional_state=emotional_state,
+                    learning_context=learning_context,
+                    depth=2,
+                    limit=5,
+                    namespace=None,
+                    include_cold_start=True,
+                    include_latent=True,
+                ))
             except Exception as e:
-                self.logger.debug(f"Latent intuition fetch failed (non-critical): {e}")
+                self.logger.warning(f"Recall engine failed (non-critical): {e}")
+                packet = None
+
+            cold_start_xml = packet.block_text("cold_start") if packet else None
+            latent_intuition_xml = packet.block_text("latent") if packet else None
+            if packet is not None:
+                self.logger.info(
+                    f"[ICE] Recall packet: {packet.trace.tokens_after} tokens "
+                    f"(before {packet.trace.tokens_before})"
+                )
+                self.logger.debug(
+                    f"[BRAIN] MAC injected ({len(latent_intuition_xml or '')} chars)"
+                )
+                duplicate_count = sum(
+                    1 for item in packet.trace.items if item.fate == "duplicate"
+                )
+                over_budget_count = sum(
+                    1 for item in packet.trace.items if item.fate == "over_budget"
+                )
+                self._publish_trace("RECALL", "packet_built", {
+                    "turn_id": packet.trace.turn_id,
+                    "tokens_before": packet.trace.tokens_before,
+                    "tokens_after": packet.trace.tokens_after,
+                    "duplicates": duplicate_count,
+                    "over_budget": over_budget_count,
+                })
 
             synthesis_context = SynthesisContext(
                 user_input=user_input,
@@ -1165,6 +1179,7 @@ Constraints:
                 resonance_score=resonance_score,
                 cold_start_xml=cold_start_xml,
                 latent_intuition_xml=latent_intuition_xml,
+                packet=packet,
             )
 
             return TurnContext(
@@ -1177,6 +1192,7 @@ Constraints:
                 cold_start_xml=cold_start_xml,
                 latent_intuition_xml=latent_intuition_xml,
                 synthesis_context=synthesis_context,
+                packet=packet,
             )
 
         # stream == True
@@ -1250,13 +1266,48 @@ Constraints:
         resonance_score = self._compute_resonance_score(emotional_state)
         self.logger.info(f"[WAVE] Resonance score (stream): {resonance_score:.2f}")
 
-        # Session 7: TITANS Latent Intuition (MAC) for streaming path
-        latent_intuition_xml: str | None = None
+        # Recall Engine (M2, W2-20): one call assembles the insights, latent,
+        # cold-start and memories blocks for the streaming path.
+        from aura.engines.recall.engine import get_recall_engine
+        packet: ContextPacket | None = None
         try:
-            from aura.engines.latent.engine import get_latent_engine
-            latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
-        except Exception:
-            pass
+            packet = await get_recall_engine().recall(RecallRequest(
+                user_id=user_id,
+                user_input=user_input,
+                recent_turns=(conversation_history or [])[-6:],
+                emotional_state=emotional_state,
+                learning_context=learning_context,
+                depth=1,
+                limit=5,
+                namespace=None,
+                include_cold_start=False,
+                include_latent=True,
+            ))
+        except Exception as e:
+            self.logger.warning(f"Recall engine failed (non-critical): {e}")
+            packet = None
+
+        cold_start_xml = packet.block_text("cold_start") if packet else None
+        latent_intuition_xml = packet.block_text("latent") if packet else None
+        if packet is not None:
+            self.logger.info(
+                f"[ICE] Recall packet (stream): {packet.trace.tokens_after} tokens "
+                f"(before {packet.trace.tokens_before})"
+            )
+            self.logger.debug(f"[BRAIN] MAC injected ({len(latent_intuition_xml or '')} chars)")
+            duplicate_count = sum(
+                1 for item in packet.trace.items if item.fate == "duplicate"
+            )
+            over_budget_count = sum(
+                1 for item in packet.trace.items if item.fate == "over_budget"
+            )
+            self._publish_trace("RECALL", "packet_built", {
+                "turn_id": packet.trace.turn_id,
+                "tokens_before": packet.trace.tokens_before,
+                "tokens_after": packet.trace.tokens_after,
+                "duplicates": duplicate_count,
+                "over_budget": over_budget_count,
+            })
 
         # Synthesis context
         synthesis_context = SynthesisContext(
@@ -1267,6 +1318,7 @@ Constraints:
             identity_context=identity_context,
             goal_context=goal_context,
             latent_intuition_xml=latent_intuition_xml,
+            packet=packet,
         )
 
         return TurnContext(
@@ -1276,9 +1328,10 @@ Constraints:
             goal_context=goal_context,
             resonance_score=resonance_score,
             recent_critique=None,
-            cold_start_xml=None,
+            cold_start_xml=cold_start_xml,
             latent_intuition_xml=latent_intuition_xml,
             synthesis_context=synthesis_context,
+            packet=packet,
         )
 
     async def _generate_blocking(
@@ -1339,6 +1392,7 @@ Constraints:
                 identity_context=ctx.identity_context,
                 goal_context=ctx.goal_context,
                 recent_critique=ctx.recent_critique,
+                packet=ctx.packet,
             )
 
             response = await self.llm_layers.l3_synthesis(
@@ -1457,6 +1511,7 @@ Original user query: {user_input}"""
                             learning_context=ctx.learning_context,
                             identity_context=ctx.identity_context,
                             goal_context=ctx.goal_context,
+                            packet=ctx.packet,
                         )
 
                         yield "\n\n", False
@@ -1480,6 +1535,7 @@ Original user query: {user_input}"""
                     learning_context=ctx.learning_context,
                     identity_context=ctx.identity_context,
                     goal_context=ctx.goal_context,
+                    packet=ctx.packet,
                 )
 
                 round_response = ""
