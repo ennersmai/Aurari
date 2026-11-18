@@ -345,10 +345,10 @@ async def pin_memory(memory_id: str) -> dict[str, Any]:
         memory_manager = get_memory_manager()
         await memory_manager.set_core(memory_id, True)
         return {"success": True, "memory_id": memory_id, "core_memory": True}
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to pin memory: {str(e)}",
+            detail={"error": "Failed to update the memory", "memory_id": memory_id},
         )
 
 
@@ -359,10 +359,10 @@ async def unpin_memory(memory_id: str) -> dict[str, Any]:
         memory_manager = get_memory_manager()
         await memory_manager.set_core(memory_id, False)
         return {"success": True, "memory_id": memory_id, "core_memory": False}
-    except Exception as e:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to unpin memory: {str(e)}",
+            detail={"error": "Failed to update the memory", "memory_id": memory_id},
         )
 
 

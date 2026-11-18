@@ -953,3 +953,21 @@
      - `test_after_traversal_old_clause_order_raises`: executes the old query (`FETCH out LIMIT 2`) and asserts it raises.
   3. Ran `./.venv/Scripts/python.exe -m pytest` from `Aura-Core/aura-app` (181 passed), then restored the frozen baselines `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` with `git checkout --`.
 - **Unsure about:** Nothing. Note that `manager.py` still has two other queries with `FETCH out` before `LIMIT` (`abs_out` in `_fetch_thought_cluster` and the backward step in `traverse_timeline`), which were left untouched per the card's "Do not: change any other query".
+
+## BF-02: Pin and unpin report a failed database write
+- **Status:** DONE
+- **PRD:** memory F3 (follow-up to W1-10).
+- **Tier:** bulk
+- **Files changed:** `src/aura/engines/memory/manager.py` (`set_core`), `src/aura/api/routes/memory.py` (`pin_memory`, `unpin_memory`), `tests/unit/test_set_core.py`
+- **Test result:** 184 passed (full suite: 179 prior + 3 new failure-case tests in `test_set_core.py` + 2 new scenario tests for BF-01 = 184; 114 warnings, 57.57s)
+- **What I did, step by step:**
+  1. In `manager.py`, `set_core`: kept the `logger.error(...)` line and added `raise` after it so the exception propagates to callers.
+  2. In `memory.py`, both `pin_memory` and `unpin_memory` routes: replaced the generic error detail string with an HTTP 500 that returns JSON `{"error": "Failed to update the memory", "memory_id": <id>}` — matching the file's existing error-response style of returning a dict in `detail`.
+  3. In `tests/unit/test_set_core.py`:
+     - Added `FailingDatabaseClient` subclass of `FakeDatabaseClient` whose `merge` raises.
+     - Added `test_set_core_raises_when_db_merge_fails`: verifies `set_core` re-raises when `merge` fails (both pin and unpin).
+     - Added `test_pin_route_returns_500_when_set_core_raises`: calls the `pin_memory` route handler directly with a mocked failing manager, asserts `HTTPException` with status 500 and the exact expected JSON body.
+     - Added `test_unpin_route_returns_500_when_set_core_raises`: same for `unpin_memory`.
+  4. All 4 original W1-10 success tests still pass; 3 new failure-case tests pass.
+  5. Full suite passes (184 tests). Frozen baselines `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` were restored with `git checkout --` before committing.
+- **Unsure about:** Nothing. The change is scoped exactly to the card's three files; the success path behaviour is unchanged, and the error responses now follow the file's existing pattern (dict in `detail`).

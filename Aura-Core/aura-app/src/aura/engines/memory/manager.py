@@ -1272,6 +1272,7 @@ class MemoryManager:
                 await self.db.merge(memory_id, {"core_memory": False})
         except Exception as e:
             logger.error(f"Failed to set core flag: {e}")
+            raise
 
     # =========================================================================
     # COLD START — First Impression on Every Conversation
