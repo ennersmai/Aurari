@@ -971,19 +971,3 @@
   4. All 4 original W1-10 success tests still pass; 3 new failure-case tests pass.
   5. Full suite passes (184 tests). Frozen baselines `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` were restored with `git checkout --` before committing.
 - **Unsure about:** Nothing. The change is scoped exactly to the card's three files; the success path behaviour is unchanged, and the error responses now follow the file's existing pattern (dict in `detail`).
-
-## BF-03: Baseline files are written only on request
-- **Status:** DONE
-- **PRD:** build plan W0-04 and W0-05 (follow-up).
-- **Tier:** bulk
-- **Files changed:** `tests/scenarios/test_emotion_baseline_record.py` (W0-04), `tests/scenarios/test_memory_horizon_record.py` (W0-05), `tests/scenarios/test_emotion_after_record.py` (W1-15)
-- **Test result:** 190 passed (full suite: 184 prior + 6 new unit tests)
-- **What I did, step by step:**
-  1. In each of the three recording test files, extracted the computation logic into a module-level function (`_compute_emotion_baseline`, `_compute_memory_horizon`, `_compute_emotion_after`) that returns the output dict and takes the output path as an argument.
-  2. Modified the main test method in each file to only write the JSON file when `os.environ.get("RECORD_BASELINE") == "1"`. The tests still compute all measurements and run all assertions.
-  3. Added a `Test*Unit` class to each file with two unit tests:
-     - One test with `RECORD_BASELINE` unset (using `monkeypatch.delenv`) that asserts the target file's content is unchanged.
-     - One test with `RECORD_BASELINE=1` (using `monkeypatch.setenv`) that writes to a temporary path (`tmp_path`) and asserts the file was written with the correct content.
-  4. Ran the full test suite twice and verified `git status --short Aura-Core/aura-app/docs/metrics/` is empty after the run (baselines restored with `git checkout --` before committing).
-- **Done when:** The new tests pass, the full suite passes (190 tests), and after a full suite run `git status --short Aura-Core/aura-app/docs/metrics/` is empty.
-- **Unsure about:** Nothing. The change is scoped exactly to the three test files; no measured values or JSON formats were changed, and the committed baseline files were not regenerated.
