@@ -1,7 +1,7 @@
 # Overnight Build Log
 
 ## Summary
-- **Done:** W0-01
+- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07
 - **Stopped at:** None yet (in progress)
 - **Current card:** W1-07
 
@@ -61,3 +61,10 @@
 - **Test result:** 20 passed (full suite)
 - **Notes:** Replaced the body of `_compute_emotional_intensity` with the exact code from the card: filter to active dimensions (>=0.1), compute RMS over those, clamp to [0,1]. Old formula was L2 magnitude over all dims normalised by sqrt(27) (~5.2), which capped a 3-dim/0.8 emotion at ~0.27 and a 14-dim/1.0 at ~0.72, never reaching the thresholds. New: 3@0.8 -> 0.8, 14@1.0 -> 1.0, empty -> 0.0, all matching the card's tests. Only the one function was changed; no thresholds or other callers were touched. The W0-05 scenario test (`test_memory_horizon_record.py`) re-recorded `docs/metrics/memory_before.json` because it is a non-asserting recording test — its emotional_intensity values now read 0.8/0.7/1.0, and the decay numbers differ only in the last decimal places from floating-point/time-of-run noise. This is expected and harmless; that test asserts nothing about specific values.
 - **Unsure about:** Whether to commit the regenerated `memory_before.json`. I included it because it is a tracked baseline artifact that now reflects the post-W1-06 intensity values; the card explicitly does not change decay, and the decay deltas are just float noise. Flagging in case the reviewer prefers the baseline pinned to its pre-W1-06 values.
+
+## W1-07: Novelty against the nearest memories
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/memory/manager.py`, `tests/unit/test_novelty_nearest.py`
+- **Test result:** 24 passed (full suite)
+- **Notes:** In `_compute_formation_score`, the novelty block previously selected the five most recent memories (`ORDER BY timestamp DESC LIMIT 5`) and recomputed cosine similarity to each in Python via `self._cosine_similarity`. Changed it to select the five most similar: the SELECT now includes `vector::similarity::cosine(embedding, $emb) AS sim`, the new memory's embedding is passed as `$emb` (added to the params dict up front, matching the pattern in `_create_related_edges`), the ORDER BY is now `sim DESC`, and the loop reads `row.get("sim")` (cast to float) instead of recomputing cosine. The two penalty thresholds (0.88 heavy, 0.75 light) and the `novelty = 1.0` start are unchanged, as are the four formation-signal weights. A `sim is None` guard replaces the old `if not other_emb` guard so rows missing the sim alias are skipped. The `if recent and embedding:` guard on the penalty loop is kept. Wrote four tests: identical old memory (sim 0.95) gets the heavy penalty (novelty 0.6); a novel memory unlike any stored gets novelty 1.0 even when the five returned rows are about a different topic (all sim < 0.75); a medium-similarity neighbour (0.80) gets the light penalty (novelty 0.85); and a check that the emitted SQL orders by `sim DESC`, selects `vector::similarity::cosine(embedding, $emb) AS sim`, does not order by `timestamp`, and passes the embedding as the `emb` parameter. The W0-05 recording test rewrote `docs/metrics/memory_before.json` during the run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are included in this commit.
+- **Unsure about:** Nothing. The change is scoped to the novelty block only; the surprise block (which still uses `self._cosine_similarity` in Python) and everything else are untouched.

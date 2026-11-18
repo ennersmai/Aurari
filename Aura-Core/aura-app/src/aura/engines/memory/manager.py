@@ -211,27 +211,28 @@ class MemoryManager:
         novelty = 1.0
         try:
             conditions = ["deprecated = false"]
-            params: dict[str, Any] = {}
+            params: dict[str, Any] = {"emb": embedding}
             if user_id:
                 conditions.append("user_id = $user_id")
                 params["user_id"] = user_id
             where = " AND ".join(conditions)
             recent = await self.db.query(
                 f"""
-                SELECT embedding
+                SELECT embedding,
+                       vector::similarity::cosine(embedding, $emb) AS sim
                 FROM memory
                 WHERE {where}
-                ORDER BY timestamp DESC
+                ORDER BY sim DESC
                 LIMIT 5
                 """,
                 params,
             )
             if recent and embedding:
                 for row in recent:
-                    other_emb = row.get("embedding")
-                    if not other_emb:
+                    sim = row.get("sim")
+                    if sim is None:
                         continue
-                    sim = self._cosine_similarity(embedding, other_emb)
+                    sim = float(sim)
                     if sim > 0.88:
                         novelty = max(0.0, novelty - 0.4)  # heavy penalty
                     elif sim > 0.75:
