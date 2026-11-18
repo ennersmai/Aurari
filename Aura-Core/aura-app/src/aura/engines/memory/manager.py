@@ -848,8 +848,8 @@ class MemoryManager:
                                        out.timestamp AS timestamp
                                 FROM next_experience
                                 WHERE in = $eid
-                                FETCH out
                                 LIMIT 2
+                                FETCH out
                                 """,
                                 {"eid": exp_id},
                             )

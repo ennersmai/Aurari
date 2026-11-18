@@ -937,3 +937,19 @@
   Module not found: Can't resolve '../../lib/VRMAnimation/loadVRMAnimation'
   ```
   These are missing modules in the `vrm-engine` directory that is slated for deletion in this card. The modules (`VRMAnimation/loadVRMAnimation`, `VRMLookAtSmootherLoaderPlugin`) do not exist anywhere in the frontend source tree. This is a pre-existing build error in the code that will be removed. Per the card's instruction: "If it fails before the change, stop and report the errors. Do not fix unrelated build errors." No frontend files were deleted, no npm packages uninstalled, no Python files modified.
+
+---
+
+## BF-01: The fifth edge query with FETCH before LIMIT
+- **Status:** DONE
+- **PRD:** memory (retrieval). Missed by W2-26.
+- **Tier:** bulk
+- **Files changed:** `src/aura/engines/memory/manager.py` (`_fetch_thought_cluster`), `tests/scenarios/test_after_traversal_clause_order_embedded.py` (new)
+- **Test result:** 181 passed (full suite: 179 prior + 2 new in `test_after_traversal_clause_order_embedded.py`, 114 warnings, 86.95s)
+- **What I did, step by step:**
+  1. In `src/aura/engines/memory/manager.py` inside `_fetch_thought_cluster`, updated the `next_experience` after-traversal (`->next_experience`) query to move `LIMIT 2` before `FETCH out`, keeping every other token, parameter name (`$eid`), binding (`{"eid": exp_id}`), and the surrounding `try/except` unchanged. No other queries were modified.
+  2. Created `tests/scenarios/test_after_traversal_clause_order_embedded.py` following `tests/scenarios/test_edge_queries_clause_order_embedded.py` (W2-26), using `EmbeddedSurrealDB` (`mem://`) and binding `{"eid": "experience:none"}`:
+     - `test_after_traversal_new_clause_order_runs`: executes the corrected query (`LIMIT 2 FETCH out`) and asserts it returns `[]` without raising.
+     - `test_after_traversal_old_clause_order_raises`: executes the old query (`FETCH out LIMIT 2`) and asserts it raises.
+  3. Ran `./.venv/Scripts/python.exe -m pytest` from `Aura-Core/aura-app` (181 passed), then restored the frozen baselines `docs/metrics/emotion_before.json` and `docs/metrics/memory_before.json` with `git checkout --`.
+- **Unsure about:** Nothing. Note that `manager.py` still has two other queries with `FETCH out` before `LIMIT` (`abs_out` in `_fetch_thought_cluster` and the backward step in `traverse_timeline`), which were left untouched per the card's "Do not: change any other query".
