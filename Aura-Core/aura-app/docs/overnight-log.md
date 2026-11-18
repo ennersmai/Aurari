@@ -5,7 +5,8 @@
 - **Not done, by instruction:** W1-01, W1-02, W1-14, W1-15
 - **Stopped at:** none. Every listed card passed its tests and the supervisor review.
 - **Wave 0-1 review:** see docs/metrics/wave-1.md. Full suite 47 passed.
-- **Wave 2:** only the bulk work that does not depend on B0 is carded tonight (W2-01, scenario runner). B0, M2, G1, the probe set and V0 are listed for Mai in docs/metrics/wave-1.md.
+- **Wave 2:** W2-01 (scenario runner) STOPPED, legitimately: the installed surrealdb 3.0.0 has no embedded engine (mem:// needs the surrealdb[embedded] extra), and the card forbids adding a dependency, using fake_db or starting a server. Decision for Mai: allow surrealdb[embedded] as a dev dependency, or allow a local SurrealDB server for scenario tests. Then rerun W2-01 unchanged.
+- **Nothing else carded tonight:** B0 is frontier and blocks M2 and G1; G1 also touches tool execution; V0 is held (avatar); the probe set must come from Mai. See docs/metrics/wave-1.md.
 
 ---
 
