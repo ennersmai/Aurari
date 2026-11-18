@@ -10,9 +10,11 @@ import logging
 import re
 import importlib.util
 import os
+import time
 from typing import Any, Dict, Literal, Optional, Tuple
 
 from aura.db.client import get_db_client
+from aura.executor.tool_registry import get_tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -206,17 +208,28 @@ class ToolExecutor:
         
         self.logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
         
+        start = time.perf_counter()
+        
         try:
             # 1. Fetch skill from database
             skill_data = await self._get_skill_by_name(tool_name)
             if not skill_data:
                 self.logger.error(f"❌ Tool '{tool_name}' not found in skill database. Cannot execute.")
-                return {
+                result = {
                     "success": False,
                     "result": "",
                     "error": f"Tool '{tool_name}' not found in skill database. The skill may not be registered yet.",
                     "tool_name": tool_name
                 }
+                try:
+                    get_tool_registry().record_call(
+                        tool_name,
+                        bool(result.get("success")),
+                        (time.perf_counter() - start) * 1000
+                    )
+                except Exception:
+                    pass
+                return result
             
             self.logger.info(f"✅ Found skill record for '{tool_name}': {skill_data.get('id')} (type: {skill_data.get('skill_type')})")
             
@@ -234,12 +247,21 @@ class ToolExecutor:
                     tool_name, arguments, execution_config, skill_data.get("id")
                 )
             else:
-                return {
+                result = {
                     "success": False,
                     "result": "",
                     "error": f"Tool type '{skill_type}' not supported for execution",
                     "tool_name": tool_name
                 }
+                try:
+                    get_tool_registry().record_call(
+                        tool_name,
+                        bool(result.get("success")),
+                        (time.perf_counter() - start) * 1000
+                    )
+                except Exception:
+                    pass
+                return result
             
             # Attach routing metadata for better L3 grounding / debugging
             if isinstance(result, dict):
@@ -248,16 +270,33 @@ class ToolExecutor:
                     result.setdefault("server", server_name)
                 result.setdefault("arguments", arguments)
             
+            try:
+                get_tool_registry().record_call(
+                    tool_name,
+                    bool(result.get("success")),
+                    (time.perf_counter() - start) * 1000
+                )
+            except Exception:
+                pass
             return result
             
         except Exception as e:
             self.logger.error(f"Tool execution failed: {e}", exc_info=True)
-            return {
+            result = {
                 "success": False,
                 "result": "",
                 "error": str(e),
                 "tool_name": tool_name
             }
+            try:
+                get_tool_registry().record_call(
+                    tool_name,
+                    bool(result.get("success")),
+                    (time.perf_counter() - start) * 1000
+                )
+            except Exception:
+                pass
+            return result
     
     async def _get_skill_by_name(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """
@@ -673,6 +712,7 @@ class ToolExecutor:
                             skill_id=skill_id,
                             execution_config=execution_config,
                             error=str(e),
+                            tool_name=tool_name,
                         )
                         return {
                             "success": False,
@@ -687,6 +727,7 @@ class ToolExecutor:
                         skill_id=skill_id,
                         execution_config=execution_config,
                         error="No stored connection config to reconnect",
+                        tool_name=tool_name,
                     )
                     return {
                         "success": False,
@@ -705,6 +746,7 @@ class ToolExecutor:
                     skill_id=skill_id,
                     execution_config=execution_config,
                     error=str(e),
+                    tool_name=tool_name,
                 )
                 return {
                     "success": False,
@@ -719,6 +761,7 @@ class ToolExecutor:
                     skill_id=skill_id,
                     execution_config=execution_config,
                     error=str(e),
+                    tool_name=tool_name,
                 )
                 return {
                     "success": False,
@@ -733,6 +776,7 @@ class ToolExecutor:
                     skill_id=skill_id,
                     execution_config=execution_config,
                     error=str(e),
+                    tool_name=tool_name,
                 )
                 return {
                     "success": False,
@@ -745,7 +789,7 @@ class ToolExecutor:
 
             # Mark online on success (best effort)
             if success:
-                await self._mark_mcp_skill_online(skill_id=skill_id, execution_config=execution_config)
+                await self._mark_mcp_skill_online(skill_id=skill_id, execution_config=execution_config, tool_name=tool_name)
 
             return {
                 "success": bool(success),
@@ -769,7 +813,7 @@ class ToolExecutor:
             }
 
     async def _mark_mcp_skill_offline(
-        self, *, skill_id: Any, execution_config: Dict[str, Any], error: str
+        self, *, skill_id: Any, execution_config: Dict[str, Any], error: str, tool_name: str | None = None
     ) -> None:
         """Persist offline status for MCP tools (best effort)."""
         try:
@@ -783,11 +827,17 @@ class ToolExecutor:
             updated["status"] = "offline"
             updated["last_error"] = error
             await self.db.merge(skill_id_str, {"execution_config": updated})
+            
+            if tool_name:
+                try:
+                    get_tool_registry().set_health(tool_name, "offline", error)
+                except Exception:
+                    pass
         except Exception:
             # Non-critical: don't break tool execution just because status update failed.
             return
 
-    async def _mark_mcp_skill_online(self, *, skill_id: Any, execution_config: Dict[str, Any]) -> None:
+    async def _mark_mcp_skill_online(self, *, skill_id: Any, execution_config: Dict[str, Any], tool_name: str | None = None) -> None:
         """Persist online status for MCP tools (best effort)."""
         try:
             if not skill_id:
@@ -800,6 +850,12 @@ class ToolExecutor:
             updated["status"] = "online"
             # keep last_error for debugging; could clear if desired
             await self.db.merge(skill_id_str, {"execution_config": updated})
+            
+            if tool_name:
+                try:
+                    get_tool_registry().set_health(tool_name, "online")
+                except Exception:
+                    pass
         except Exception:
             return
     

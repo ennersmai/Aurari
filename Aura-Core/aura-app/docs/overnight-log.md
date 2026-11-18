@@ -1107,3 +1107,24 @@
 - **Decision:** neither failure came from the card, so W2-29 gets a third run instead of being skipped under the fail-twice rule.
 
 - **Attempt 3 (discarded):** the session ended when cohere/command-a-plus answered 200 and streamed an error ("invalid tool generation") as its first event; Sluice forwarded it. Fixed in Sluice: a stream that opens with an error event now fails over. Mai has since raised the limit to four attempts per card.
+
+## W2-29: The executor reports calls and MCP health to the registry
+- **Status:** DONE
+- **PRD:** agency 5.1 (`health`, `stats`)
+- **Tier:** bulk
+- **Depends on:** W2-28
+- **Files changed:** `src/aura/executor/tool_executor.py`, `tests/unit/test_tool_registry.py`
+- **Test result:** `tests/unit/test_tool_registry.py`: 21 passed (18 prior + 3 new). Full suite `.venv\Scripts\python.exe -m pytest`: **221 passed** (218 before, +3 new).
+- **What was built (per card steps 1-2):**
+  1. In `execute_tool_call`, added `start = time.perf_counter()` immediately before `# 1. Fetch skill from database`. After `result` is final (on both the success and exception paths), call `get_tool_registry().record_call(tool_name, bool(result.get("success")), (time.perf_counter() - start) * 1000)` inside `try/except Exception: pass`. Role-refused calls return before `start` and are not recorded. "Not found in skill database" results are recorded only if the name is in the registry (the registry's `record_call` ignores unknown names).
+  2. In `_mark_mcp_skill_offline`, added `tool_name: str | None = None` parameter; at the end of the `try` block, call `get_tool_registry().set_health(tool_name, "offline", error)` when `tool_name` is given. In `_mark_mcp_skill_online`, added `tool_name: str | None = None`; call `set_health(tool_name, "online")` when given. Updated all call sites in `_execute_mcp_tool` to pass `tool_name=tool_name`.
+- **Tests added (3) in `tests/unit/test_tool_registry.py` using the `ToolExecutor.__new__` + fake db pattern from `test_requester_role.py`:**
+  - `test_owner_call_records_stats_in_registry`: owner call to fake `local_function` tool registered in the registry → `stats.calls == 1`, `successes == 1`, one latency recorded.
+  - `test_guest_call_does_not_record_stats`: guest call → `stats.calls == 0`.
+  - `test_mark_mcp_skill_offline_updates_health`: `_mark_mcp_skill_offline(skill_id="skill:x", execution_config={}, error="e", tool_name="t")` with `t` registered → health `offline`, error `"e"`, `last_check` set.
+  - All tests use `reset_tool_registry()` via the `_reset_registry_for_w2_29` fixture.
+- **"Done when" verified:**
+  - New tests pass.
+  - Full suite (including `test_requester_role.py` and `test_tool_approval_runtime.py`, unchanged) passes: 221 passed.
+  - `grep -c "record_call" src/aura/executor/tool_executor.py` → 4 (≥ 1).
+- **Unsure about:** Nothing. The change is scoped to the card's exact files and matches the card's step-by-step instructions. Registry errors are caught and swallowed (best-effort) so they never fail a tool call. The role gate and argument stripping were not moved (they still run before `start`).

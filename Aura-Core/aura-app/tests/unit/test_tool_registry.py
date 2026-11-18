@@ -5,6 +5,11 @@ loading, skill-row conversion, schema sanitising, registry bookkeeping and
 ``refresh`` against a fake database.
 """
 
+import importlib
+import sys
+import types
+from typing import Any, Dict
+
 import pytest
 
 from aura.executor.tool_registry import (
@@ -326,6 +331,177 @@ def test_set_health_stamps_last_check():
         health = registry.get("t").health
         assert health.status == "offline"
         assert health.error == "boom"
+        assert health.last_check == clock.now()
+    finally:
+        set_clock(Clock())
+
+
+# ---------------------------------------------------------------------------
+# W2-29: Executor reports calls and MCP health to the registry
+# ---------------------------------------------------------------------------
+
+
+def _make_executor_with_registry(tool_module: types.ModuleType) -> ToolExecutor:
+    """Build a ``ToolExecutor`` without running ``__init__`` and wire a fake
+    database plus a stub tool module, so execute_tool_call can route a
+    ``local_function`` tool to the supplied module."""
+    from aura.executor.tool_executor import ToolExecutor
+    import sys
+
+    executor = ToolExecutor.__new__(ToolExecutor)
+    executor.logger = __import__("logging").getLogger("aura.executor.test")
+
+    # Fake database: the only query execute_tool_call issues before running
+    # the tool is the skill lookup. We return one local_function skill record
+    # that points at the supplied tool module.
+    class _FakeDB:
+        async def query(self, sql: str, vars: dict | None = None) -> list[dict]:
+            return [{
+                "id": "skill:stub_tool",
+                "name": "stub_tool",
+                "skill_type": "local_function",
+                "execution_config": {
+                    "module": "aura.tools._stub_for_w2_29",
+                    "function": "run",
+                },
+                "definition": {},
+            }]
+
+        async def merge(self, thing: str, data: dict) -> Any:  # noqa: ARG002
+            return []
+
+    executor.db = _FakeDB()
+
+    # Register the supplied stub tool module so the executor's import finds it.
+    sys.modules["aura.tools._stub_for_w2_29"] = tool_module
+
+    # Self-healing is not used here.
+    executor._llm_layers = None
+    return executor
+
+
+def _stub_tool_module(invoked: list[Dict[str, Any]]) -> types.ModuleType:
+    """Create a throwaway tool module whose ``run`` records its call."""
+    mod = types.ModuleType("aura.tools._stub_for_w2_29")
+
+    async def run(arguments: Dict[str, Any]) -> str:
+        invoked.append(dict(arguments))
+        return "ok:" + str(arguments.get("x"))
+
+    mod.run = run
+    return mod
+
+
+@pytest.fixture(autouse=True)
+def _reset_registry_for_w2_29():
+    """Reset the tool registry before and after each test in this module."""
+    reset_tool_registry()
+    yield
+    reset_tool_registry()
+
+
+@pytest.mark.asyncio
+async def test_owner_call_records_stats_in_registry():
+    """An owner call to a registered tool increments calls, successes and
+    records a latency in the registry."""
+    # Register a fake tool in the registry.
+    registry = get_tool_registry()
+    registry.register(ToolRecord(
+        name="stub_tool",
+        description="stub",
+        input_schema={"type": "object", "properties": {}},
+        transport="builtin",
+        risk="read",
+    ))
+
+    invoked: list[Dict[str, Any]] = []
+    executor = _make_executor_with_registry(_stub_tool_module(invoked))
+
+    result = await executor.execute_tool_call(
+        {"tool": "stub_tool", "arguments": {"x": 1}},
+        requester_role="owner",
+    )
+
+    assert result["success"] is True
+    assert len(invoked) == 1
+
+    record = registry.get("stub_tool")
+    assert record is not None
+    assert record.stats.calls == 1
+    assert record.stats.successes == 1
+    assert len(record.stats.latencies_ms) == 1
+    assert record.stats.latencies_ms[0] > 0
+
+
+@pytest.mark.asyncio
+async def test_guest_call_does_not_record_stats():
+    """A guest call is refused before the tool runs and must not be recorded
+    in the registry."""
+    registry = get_tool_registry()
+    registry.register(ToolRecord(
+        name="stub_tool",
+        description="stub",
+        input_schema={"type": "object", "properties": {}},
+        transport="builtin",
+        risk="read",
+    ))
+
+    invoked: list[Dict[str, Any]] = []
+    executor = _make_executor_with_registry(_stub_tool_module(invoked))
+
+    result = await executor.execute_tool_call(
+        {"tool": "stub_tool", "arguments": {"x": 1}},
+        requester_role="guest",
+    )
+
+    assert result["success"] is False
+    assert invoked == []
+
+    record = registry.get("stub_tool")
+    assert record is not None
+    assert record.stats.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_mark_mcp_skill_offline_updates_health():
+    """_mark_mcp_skill_offline with tool_name updates the registry health to
+    offline, sets the error, and stamps last_check."""
+    from aura.clock import Clock, FakeClock, set_clock
+    from aura.executor.tool_executor import ToolExecutor
+
+    clock = FakeClock()
+    set_clock(clock)
+    try:
+        registry = get_tool_registry()
+        registry.register(ToolRecord(
+            name="t",
+            description="test",
+            input_schema={"type": "object", "properties": {}},
+            transport="builtin",
+            risk="read",
+        ))
+
+        executor = ToolExecutor.__new__(ToolExecutor)
+        executor.logger = __import__("logging").getLogger("aura.executor.test")
+        executor._llm_layers = None
+        # merge must be async because the method awaits it
+        class _FakeDB:
+            @staticmethod
+            async def merge(thing: str, data: dict) -> None:
+                pass
+        executor.db = _FakeDB()
+
+        clock.advance(60)
+        await executor._mark_mcp_skill_offline(
+            skill_id="skill:x",
+            execution_config={},
+            error="e",
+            tool_name="t",
+        )
+
+        health = registry.get("t").health
+        assert health.status == "offline"
+        assert health.error == "e"
         assert health.last_check == clock.now()
     finally:
         set_clock(Clock())
