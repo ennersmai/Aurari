@@ -546,6 +546,15 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # TOOL SYNTHESIS Configuration
+    # =========================================================================
+    school_synthesis_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SCHOOL_SYNTHESIS_ENABLED",
+        description="Enable dynamic tool synthesis via the School API",
+    )
+
+    # =========================================================================
     # AGENT LOOP Configuration
     # =========================================================================
     agent_loop_max_iterations: int = Field(

@@ -125,6 +125,12 @@ def assert_run_function(tree: ast.Module) -> None:
 
 @router.post("/synthesize")
 async def synthesize_skill(request: SynthesizeRequest) -> dict[str, Any]:
+    if not settings.school_synthesis_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Tool synthesis is disabled",
+        )
+    
     learning_engine = get_learning_engine()
     llm_layers = get_llm_layers()
 

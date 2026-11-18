@@ -36,3 +36,9 @@
 - **Files changed:** `tests/scenarios/test_memory_horizon_record.py`
 - **Test result:** 1 passed
 - **Notes:** Recorded baseline to docs/metrics/memory_before.json. Emotional intensity: 3@0.8=0.2665, 9@0.7=0.4038, 14@1.0=0.7195. Decay at 1/5/9/15/30 days: MM and DE match closely. At 30 days decay ~3e-5.
+
+## W1-03: Disable in-process tool synthesis
+- **Status:** DONE
+- **Files changed:** `src/aura/config.py`, `src/aura/api/routes/school.py`
+- **Test result:** 14 passed (full suite)
+- **Notes:** Added school_synthesis_enabled setting (default False). The /synthesize route now returns HTTP 503 with "Tool synthesis is disabled" when the setting is false.
