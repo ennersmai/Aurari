@@ -42,3 +42,9 @@
 - **Files changed:** `src/aura/config.py`, `src/aura/api/routes/school.py`
 - **Test result:** 14 passed (full suite)
 - **Notes:** Added school_synthesis_enabled setting (default False). The /synthesize route now returns HTTP 503 with "Tool synthesis is disabled" when the setting is false.
+
+## W1-04: Scope memory retrieval to the user
+- **Status:** DONE
+- **Files changed:** `src/aura/llm/layers.py`
+- **Test result:** 14 passed (full suite)
+- **Notes:** Added user_id=context.user_id to both retrieve_for_l3 calls (standard L3 and streaming L3).

@@ -1182,6 +1182,7 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
             _memories, memory_xml = await memory_manager.retrieve_for_l3(
                 query=context.user_input,
                 current_emotions=current_emo,
+                user_id=context.user_id,
                 limit=5,
                 depth=2,  # Session 5: use spreading activation for rich L3 context
             )
@@ -1415,6 +1416,7 @@ If you include any text before or after the JSON, the system will fail."""
             _memories, memory_xml = await memory_manager.retrieve_for_l3(
                 query=context.user_input,
                 current_emotions=current_emo,
+                user_id=context.user_id,
                 limit=5,
                 depth=1,  # Streaming uses depth=1 for faster response time
             )
