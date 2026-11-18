@@ -1128,3 +1128,36 @@
   - Full suite (including `test_requester_role.py` and `test_tool_approval_runtime.py`, unchanged) passes: 221 passed.
   - `grep -c "record_call" src/aura/executor/tool_executor.py` → 4 (≥ 1).
 - **Unsure about:** Nothing. The change is scoped to the card's exact files and matches the card's step-by-step instructions. Registry errors are caught and swallowed (best-effort) so they never fail a tool call. The role gate and argument stripping were not moved (they still run before `start`).
+
+## W2-30: Tool selection: the top few by similarity and recent success
+- **Status:** DONE
+- **PRD:** agency 5.2 ("When more than about 15 tools are available, select the top few by embedding similarity to the request plus recent success"), T10
+- **Tier:** bulk
+- **Depends on:** W2-28
+- **Files changed:** `src/aura/config.py`, `src/aura/executor/tool_registry.py`, `tests/unit/test_tool_registry.py`
+- **Test result:** 227 passed (full suite: 221 prior + 6 new)
+- **What was built (per card steps 1-2):**
+  1. **Config** (`config.py`): added three fields next to the other `AURA_` fields:
+     - `tool_selection_threshold: int = 15` (`AURA_TOOL_SELECTION_THRESHOLD`): selection runs only when more tools than this are available.
+     - `tool_selection_top_k: int = 8` (`AURA_TOOL_SELECTION_TOP_K`)
+     - `tool_selection_success_weight: float = 0.2` (`AURA_TOOL_SELECTION_SUCCESS_WEIGHT`)
+  2. **Registry** (`tool_registry.py`): added `async def select_tools(self, request_text: str, *, requester_role: str, embed=None) -> list[ToolRecord]`:
+     - If `requester_role != "owner"`, return `[]`.
+     - `candidates = [r for r in self.all() if r.health.status != "offline"]`.
+     - If `len(candidates) <= settings.tool_selection_threshold`, return `candidates`.
+     - Otherwise embed `request_text` once (`embed` defaults to `get_embeddings_client().embed`). For each candidate with no `description_embedding`, embed `f"{r.name}: {r.description}"` once and cache it on the record.
+     - Score = cosine similarity + `settings.tool_selection_success_weight * (r.stats.success_rate if r.stats.calls >= 3 else 0.5)`.
+     - Return the top `settings.tool_selection_top_k` by score, ties broken by name. If the request embedding is `None` or raises, return the first `top_k` candidates by name and log a warning.
+- **Tests added (6) in `tests/unit/test_tool_registry.py` with a fake `embed` (deterministic vectors, no model download):**
+  - `test_select_tools_returns_top_k_by_similarity`: 20 registered tools, request similar to tool `t07` → 8 tools returned and `t07` is first.
+  - `test_select_tools_success_weight_breaks_ties`: Two tools with equal similarity, one with 4 calls and 4 successes, one with 4 calls and 0 successes → the successful one ranks higher.
+  - `test_select_tools_below_threshold_returns_all_no_embed`: 10 tools → all 10 returned, `embed` never called.
+  - `test_select_tools_guest_returns_empty`: `requester_role="guest"` with 20 tools → `[]`.
+  - `test_select_tools_offline_tool_never_returned`: An `offline` tool is never returned.
+  - `test_select_tools_embedding_failure_falls_back_to_name_order`: Embedding fails → returns first `top_k` by name and logs warning.
+- **"Done when" verified:**
+  - All 6 new tests pass.
+  - Full suite passes (227 passed).
+  - `grep -n "tool_selection_" src/aura/config.py` prints the three fields (lines 647, 653, 659).
+- **Do not checks respected:** Nothing stored in the database. `select_tools` is not called from the coordinator (W2-35 will do that).
+- **Unsure about:** Nothing. The implementation matches the card's step-by-step instructions exactly. The cosine similarity assumes normalized vectors (the local embedding model normalizes by default, and the test's deterministic embedder also normalizes).

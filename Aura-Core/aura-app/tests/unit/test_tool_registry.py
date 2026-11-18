@@ -6,6 +6,8 @@ loading, skill-row conversion, schema sanitising, registry bookkeeping and
 """
 
 import importlib
+import logging
+import math
 import sys
 import types
 from typing import Any, Dict
@@ -15,6 +17,7 @@ import pytest
 from aura.executor.tool_registry import (
     BUILTIN_MODULES,
     BUILTIN_RISK,
+    ToolHealth,
     ToolRecord,
     ToolRegistry,
     get_tool_registry,
@@ -505,3 +508,175 @@ async def test_mark_mcp_skill_offline_updates_health():
         assert health.last_check == clock.now()
     finally:
         set_clock(Clock())
+
+
+# ---------------------------------------------------------------------------
+# W2-30: Tool selection by similarity and recent success
+# ---------------------------------------------------------------------------
+
+
+class DeterministicEmbedder:
+    """Fake embedder that returns deterministic vectors for testing.
+
+    Each unique input text gets a unique but deterministic vector.
+    """
+
+    def __init__(self):
+        self._cache: dict[str, list[float]] = {}
+        self.call_count = 0
+
+    async def embed(self, text: str) -> list[float] | None:
+        self.call_count += 1
+        if not text or not text.strip():
+            return None
+        if text not in self._cache:
+            # Generate a deterministic vector based on the hash of the text
+            import hashlib
+
+            h = hashlib.md5(text.encode()).hexdigest()
+            # Convert to 768-dimensional vector (normalized)
+            vec = []
+            for i in range(0, len(h), 2):
+                byte_val = int(h[i : i + 2], 16)
+                vec.append((byte_val - 127.5) / 127.5)
+            # Pad or truncate to 768
+            while len(vec) < 768:
+                vec.extend(vec[: min(len(vec), 768 - len(vec))])
+            vec = vec[:768]
+            # Normalize
+            norm = math.sqrt(sum(x * x for x in vec))
+            if norm > 0:
+                vec = [x / norm for x in vec]
+            self._cache[text] = vec
+        return self._cache[text]
+
+
+def _make_tool_record(name: str, description: str, calls: int = 0, successes: int = 0) -> ToolRecord:
+    """Create a tool record with optional call stats."""
+    record = ToolRecord(
+        name=name,
+        description=description,
+        input_schema={"type": "object", "properties": {}},
+        transport="builtin",
+        risk="read",
+        health=ToolHealth(status="online"),
+    )
+    record.stats.calls = calls
+    record.stats.successes = successes
+    return record
+
+
+@pytest.mark.asyncio
+async def test_select_tools_returns_top_k_by_similarity():
+    """20 registered tools, request similar to tool t07: 8 tools returned and t07 is first."""
+    registry = ToolRegistry()
+    embedder = DeterministicEmbedder()
+
+    # Register 20 tools: t00 through t19
+    for i in range(20):
+        desc = f"tool number {i:02d} does something specific"
+        registry.register(_make_tool_record(f"t{i:02d}", desc))
+
+    # Make t07's description_embedding identical to the request embedding
+    # by pre-setting it before select_tools is called
+    request = "find the user's lost file in the home directory"
+    request_embedding = await embedder.embed(request)
+    registry.get("t07").description_embedding = request_embedding
+
+    selected = await registry.select_tools(request, requester_role="owner", embed=embedder.embed)
+
+    # Should return top 8
+    assert len(selected) == 8
+    # t07 should be first (most similar - identical embedding)
+    assert selected[0].name == "t07"
+
+
+@pytest.mark.asyncio
+async def test_select_tools_success_weight_breaks_ties():
+    """Two tools with equal similarity, one with 4/4 success, one with 0/4: successful ranks higher."""
+    registry = ToolRegistry()
+    embedder = DeterministicEmbedder()
+
+    # Two tools with identical descriptions (same similarity to request)
+    registry.register(_make_tool_record("tool_a", "search for files in the project", calls=4, successes=4))
+    registry.register(_make_tool_record("tool_b", "search for files in the project", calls=4, successes=0))
+
+    request = "search for files in the project"
+    selected = await registry.select_tools(request, requester_role="owner", embed=embedder.embed)
+
+    # Both should be returned (only 2 tools, threshold is 15)
+    assert len(selected) == 2
+    # tool_a (successful) should rank higher than tool_b
+    assert selected[0].name == "tool_a"
+    assert selected[1].name == "tool_b"
+
+
+@pytest.mark.asyncio
+async def test_select_tools_below_threshold_returns_all_no_embed():
+    """10 tools (below threshold 15): all 10 returned, embed never called."""
+    registry = ToolRegistry()
+    embedder = DeterministicEmbedder()
+
+    for i in range(10):
+        registry.register(_make_tool_record(f"t{i}", f"tool {i} description"))
+
+    selected = await registry.select_tools("any request", requester_role="owner", embed=embedder.embed)
+
+    assert len(selected) == 10
+    assert embedder.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_select_tools_guest_returns_empty():
+    """requester_role='guest' with 20 tools: [] returned."""
+    registry = ToolRegistry()
+
+    for i in range(20):
+        registry.register(_make_tool_record(f"t{i}", f"tool {i} description"))
+
+    selected = await registry.select_tools("any request", requester_role="guest")
+
+    assert selected == []
+
+
+@pytest.mark.asyncio
+async def test_select_tools_offline_tool_never_returned():
+    """An offline tool is never returned regardless of similarity."""
+    registry = ToolRegistry()
+    embedder = DeterministicEmbedder()
+
+    # Online tool
+    registry.register(_make_tool_record("online_tool", "find the user's lost file"))
+    # Offline tool with same description
+    offline_tool = _make_tool_record("offline_tool", "find the user's lost file")
+    offline_tool.health.status = "offline"
+    registry.register(offline_tool)
+
+    request = "find the user's lost file"
+    selected = await registry.select_tools(request, requester_role="owner", embed=embedder.embed)
+
+    assert len(selected) == 1
+    assert selected[0].name == "online_tool"
+
+
+@pytest.mark.asyncio
+async def test_select_tools_embedding_failure_falls_back_to_name_order(caplog):
+    """If embedding fails, return first top_k by name and log warning."""
+    registry = ToolRegistry()
+
+    for i in range(20):
+        registry.register(_make_tool_record(f"t{i:02d}", f"tool {i} description"))
+
+    # Embedder that raises
+    async def failing_embed(text: str) -> None:
+        raise RuntimeError("embedding service down")
+
+    # Capture logs with caplog
+    with caplog.at_level(logging.WARNING):
+        selected = await registry.select_tools("any request", requester_role="owner", embed=failing_embed)
+
+    # Should return first 8 by name (t00 through t07)
+    assert len(selected) == 8
+    assert [r.name for r in selected] == [f"t{i:02d}" for i in range(8)]
+    # Check warning was logged
+    assert any("Tool selection: request embedding failed" in record.message for record in caplog.records)

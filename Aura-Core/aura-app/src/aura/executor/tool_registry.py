@@ -9,13 +9,16 @@ sanitised so no approval field can travel to a model or a tool call
 
 import importlib
 import logging
+import math
 import statistics
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Callable, Literal, Optional
 
 from aura.clock import get_clock
+from aura.config import settings
+from aura.llm.embeddings import get_embeddings_client
 
 logger = logging.getLogger(__name__)
 
@@ -273,6 +276,84 @@ class ToolRegistry:
         if record is None:
             return
         record.health = ToolHealth(status=status, last_check=get_clock().now(), error=error)
+
+    async def select_tools(
+        self,
+        request_text: str,
+        *,
+        requester_role: str,
+        embed: Optional[Callable[[str], Any]] = None,
+    ) -> list[ToolRecord]:
+        """Select the top tools by embedding similarity and recent success.
+
+        Returns an empty list for non-owner requesters (the executor refuses
+        every non-owner call, so offering tools to them would be a lie).
+        If the number of online candidates is at or below the threshold,
+        returns all of them. Otherwise embeds the request and scores each
+        candidate by cosine similarity plus a success-weight term.
+
+        Args:
+            request_text: The user's request text.
+            requester_role: The role of the requester ("owner", "trusted", "guest").
+            embed: Async function to generate embeddings. Defaults to
+                `get_embeddings_client().embed`.
+
+        Returns:
+            List of up to `tool_selection_top_k` ToolRecords, sorted by score.
+        """
+        if requester_role != "owner":
+            return []
+
+        candidates = [r for r in self.all() if r.health.status != "offline"]
+
+        if len(candidates) <= settings.tool_selection_threshold:
+            return candidates
+
+        # Use the provided embed function or default to the embeddings client
+        if embed is None:
+            embeddings_client = get_embeddings_client()
+            embed = embeddings_client.embed
+
+        try:
+            request_embedding = await embed(request_text)
+        except Exception:
+            logger.warning("Tool selection: request embedding failed, falling back to first %d by name", settings.tool_selection_top_k)
+            return candidates[: settings.tool_selection_top_k]
+
+        if request_embedding is None:
+            logger.warning("Tool selection: request embedding returned None, falling back to first %d by name", settings.tool_selection_top_k)
+            return candidates[: settings.tool_selection_top_k]
+
+        # Ensure each candidate has a description embedding
+        for record in candidates:
+            if record.description_embedding is None:
+                try:
+                    desc_embedding = await embed(f"{record.name}: {record.description}")
+                    record.description_embedding = desc_embedding
+                except Exception:
+                    logger.warning("Tool selection: failed to embed description for %s", record.name)
+                    record.description_embedding = None
+
+        # Score each candidate
+        scored: list[tuple[float, ToolRecord]] = []
+        for record in candidates:
+            if record.description_embedding is None:
+                continue
+            # Cosine similarity (both vectors are normalized)
+            sim = sum(a * b for a, b in zip(request_embedding, record.description_embedding))
+            # Success rate component
+            if record.stats.calls >= 3:
+                success_rate = record.stats.success_rate or 0.0
+            else:
+                success_rate = 0.5
+            score = sim + settings.tool_selection_success_weight * success_rate
+            scored.append((score, record))
+
+        # Sort by score descending, then by name ascending for ties
+        scored.sort(key=lambda x: (-x[0], x[1].name))
+
+        top_k = settings.tool_selection_top_k
+        return [record for _, record in scored[:top_k]]
 
     async def refresh(self, db: Any) -> None:
         """Rebuild the registry: builtins first, then `skill` rows.

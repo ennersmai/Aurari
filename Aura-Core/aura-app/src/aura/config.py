@@ -642,6 +642,29 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # TOOL SELECTION Configuration (W2-30)
+    # =========================================================================
+    tool_selection_threshold: int = Field(
+        default=15,
+        validation_alias="AURA_TOOL_SELECTION_THRESHOLD",
+        description="Number of available tools above which selection by similarity runs",
+        ge=1,
+    )
+    tool_selection_top_k: int = Field(
+        default=8,
+        validation_alias="AURA_TOOL_SELECTION_TOP_K",
+        description="Number of top tools to return when selection runs",
+        ge=1,
+    )
+    tool_selection_success_weight: float = Field(
+        default=0.2,
+        validation_alias="AURA_TOOL_SELECTION_SUCCESS_WEIGHT",
+        description="Weight of recent success rate in the tool selection score",
+        ge=0.0,
+        le=1.0,
+    )
+
+    # =========================================================================
     # IDE / CODE EXECUTION Configuration
     # =========================================================================
     aura_workspace_path: str = Field(
