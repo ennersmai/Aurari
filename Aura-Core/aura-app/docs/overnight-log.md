@@ -1,9 +1,9 @@
 # Overnight Build Log
 
 ## Summary
-- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08
+- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09
 - **Stopped at:** None yet (in progress)
-- **Current card:** W1-08
+- **Current card:** W1-09
 
 ---
 
@@ -75,3 +75,10 @@
 - **Test result:** 26 passed (full suite)
 - **Notes:** In `DreamingEngine._tiered_pruning`, removed the "Tier 3" block that fetched non-core, non-ephemeral memories older than the 7-day cutoff and merged `deprecated = true` onto any whose computed decay fell below `_DECAY_THRESHOLD` (0.05). Tiers 1 and 2 (which hard-delete *ephemeral* memories) are unchanged. Updated the `_tiered_pruning` docstring: dropped the "Non-core, decay_factor < 0.05 → soft delete" rule line and added a note that non-ephemeral memories are never deleted by age here; retrieval ranking still uses decay. Left `_compute_decay` and the `_DECAY_THRESHOLD` constant in place per the card's "Do not remove `_compute_decay`" — `_compute_decay` is now unused inside `_tiered_pruning` but is retained (retrieval ranking still uses decay; the card forbids removing it). Wrote two tests in `tests/unit/test_dreaming_no_age_prune.py`: (1) a non-ephemeral memory 60 days old with no recalls is still `deprecated = false` after `_tiered_pruning` (built a `DreamingEngine` via `__new__` to avoid `__init__` opening a real DB, and wired in `FakeDatabaseClient`, inserting the row directly into the `memory` table because the fake's `create` keys on the full record id); (2) `_tiered_pruning` no longer emits the Tier 3 query (no sent SQL contains both `core_memory = false` and `ephemeral = false`), and `DreamingEngine._compute_decay` still exists. The W0-04/W0-05 recording tests rewrote `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.
 - **Unsure about:** Nothing. The change is scoped to the Tier 3 block and the docstring only.
+
+## W1-09: Semantic memories do not fade
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/memory/manager.py`, `src/aura/engines/dreaming/engine.py`, `tests/unit/test_semantic_no_fade.py`
+- **Test result:** 31 passed (full suite)
+- **Notes:** In `MemoryManager._compute_decay_factor`, added a `return 1.0` for `memory_type == "semantic"` immediately after the existing `core_memory` early return (the "same place the core check returns 1.0"). In `DreamingEngine._compute_decay`, `return 1.0` for `memory_type == "semantic"` at the very top of the function — `_compute_decay` has no core check of its own, so the semantic short-circuit is placed where a core check would go (before the timestamp handling). In `_tiered_pruning`, added `AND memory_type != 'semantic'` to both the tier 1 (ephemeral, >24h, 0 recalls) and tier 2 (ephemeral, >7 days) hard-delete queries. Both decay functions were confirmed against the W0-05 recording test: it passes rows without a `memory_type` field, so the new short-circuit does not fire for those and the frozen `memory_before.json` baseline is unaffected. Did not set `core_memory` on semantic memories (the card forbids it). Did not change the `_tiered_pruning` docstring — the card's "Change" lists only the two decay functions and the tier 1/tier 2 queries, so per rule 3 I left the docstring alone. Wrote five tests in `tests/unit/test_semantic_no_fade.py`: (1) `MemoryManager._compute_decay_factor` returns 1.0 for a 90-day-old semantic memory; (2) `DreamingEngine._compute_decay` returns 1.0 for the same; (3) an episodic memory of the same age still decays below 0.05 (sanity check that the short-circuit only fires on semantic); (4) a semantic memory 90 days old survives `_tiered_pruning` still present and `deprecated = false` (engine built via `__new__`, `FakeDatabaseClient` wired in, row inserted directly into the `memory` table); (5) every ephemeral-pruning query sent by `_tiered_pruning` contains `memory_type != 'semantic'`. The W0-04/W0-05 recording tests rewrote the frozen baselines during the full-suite run; per the build-plan note I restored both with `git checkout --` before committing, so no baseline files are in this commit.
+- **Unsure about:** Nothing. The change is scoped to the two decay functions and the two tier queries only.

@@ -213,6 +213,7 @@ class DreamingEngine(BaseEngine):
                   AND timestamp < $cutoff
                   AND recall_count = 0
                   AND deprecated = false
+                  AND memory_type != 'semantic'
                 LIMIT 200
                 """,
                 {"cutoff": cutoff_24h},
@@ -233,6 +234,7 @@ class DreamingEngine(BaseEngine):
                 WHERE ephemeral = true
                   AND timestamp < $cutoff
                   AND deprecated = false
+                  AND memory_type != 'semantic'
                 LIMIT 200
                 """,
                 {"cutoff": cutoff_7d},
@@ -252,6 +254,9 @@ class DreamingEngine(BaseEngine):
     @staticmethod
     def _compute_decay(row: dict[str, Any]) -> float:
         """Lightweight decay computation for pruning decisions."""
+        # Semantic memories never fade (memory PRD F4)
+        if row.get("memory_type") == "semantic":
+            return 1.0
         ts = row.get("timestamp")
         if not ts:
             return 0.0

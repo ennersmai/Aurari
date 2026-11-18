@@ -451,6 +451,10 @@ class MemoryManager:
         if row.get("core_memory"):
             return 1.0
 
+        # Semantic memories never fade (memory PRD F4)
+        if row.get("memory_type") == "semantic":
+            return 1.0
+
         ts = _parse_ts(row.get("timestamp"))
         if ts is None:
             return 0.0
