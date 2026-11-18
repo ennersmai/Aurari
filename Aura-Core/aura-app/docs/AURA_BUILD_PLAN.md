@@ -391,6 +391,279 @@ Written after the wave 0-1 review, against the code as it stands on overnight-wa
 
 ---
 
+**W2-02 Test harness and characterisation tests for `process_query`**
+- **PRD:** behaviour B0 (B6, section 4.4). Safety net before the merge.
+- **Tier:** frontier
+- **Files:** `tests/conftest.py` (add a fixture), new `tests/unit/test_turn_process_query.py`. Read `src/aura/orchestrator/coordinator.py` (`Orchestrator.__init__`, `process_query`, `_compute_resonance_score`, `_post_response_chain` signature), `src/aura/llm/layers.py` (`SynthesisContext`), `src/aura/models/emotion.py`, `src/aura/models/learning.py`, `src/aura/models/identity.py`, `src/aura/models/goal.py`.
+- **Change:**
+  1. In `tests/conftest.py` add a fixture `turn_orchestrator(monkeypatch)` that builds `Orchestrator.__new__(Orchestrator)`, so `__init__` does not run (it calls `get_db_client()`, builds a `ToolExecutor` and starts the idle loop). Set these attributes:
+     - `logger`
+     - `critique_buffer = {}`, `_last_system_prompt = {}`, `_state_lock = asyncio.Lock()`
+     - `emotion_engine`: `get_current_state` is an `AsyncMock` that returns a real `EmotionState(timestamp=<fixed datetime>, vector=EmotionVector(), dominant=("neutral", 0.0), description="Neutral")`, and `config.baseline = EmotionVector()` (needed by `_compute_resonance_score`).
+     - `learning_engine`: `AsyncMock`. `get_learning_context` returns `LearningContext()`. `log_experience`, `ingest_mcp_server`, `ingest_local_tool_module` and `get_skill` are `AsyncMock`s. `db.select` and `db.query` are `AsyncMock`s that return `[]`.
+     - `identity_engine.get_identity_context`: returns `IdentityContext(core_identity="Aura", tone_and_style="Helpful")`.
+     - `goal_engine.get_goal_context`: returns `GoalContext()`. `goal_engine.check_goals_needing_autonomous_pursuit`: returns `[]`.
+     - `llm_layers`: a `MagicMock`. `l1_classify_intent`, `l3_synthesis` and `l3_tool_call_mode` are `AsyncMock`s. `build_l3_system_prompt` returns `"PROMPT"`. `stream_l3_synthesis` is a plain function that records `(context, kwargs)` and returns an async generator over the next scripted list of chunks.
+     - `tool_executor`: `extract_tool_calls` is a `MagicMock` and `execute_and_feedback` is an `AsyncMock`.
+     - Replace these methods on the instance: `_sleep_gate = AsyncMock(return_value=(True, None))`, `_record_user_interaction = AsyncMock()`, `_publish_trace = MagicMock()`, `_post_response_chain = AsyncMock()`.
+     - Use `monkeypatch.setattr` on `aura.engines.memory.manager.get_memory_manager` to return a fake with `retrieve_memories = AsyncMock(return_value=[])` and `get_cold_start_context = AsyncMock(return_value=SimpleNamespace(xml_block=None, core_memories=[], recent_memories=[]))`. Use it on `aura.engines.latent.engine.get_latent_engine` to return a fake whose `get_intuition_context` returns `None`. Both functions are imported inside the method, so patching the module attribute is enough.
+     - Return the orchestrator.
+  2. In `test_turn_process_query.py`, pin today's observable behaviour of `process_query`. Each item is one test:
+     - (a) If `_sleep_gate` returns `(False, "asleep")`, the result is `"asleep"` and `l1_classify_intent` is not called. If it returns `(False, None)`, the result is `"System unavailable."`.
+     - (b) `"System: Connect MCP foo"` with no target never matches the regex (it needs `\s+(.+)`), so it reaches L1. `"System: Connect MCP foo http://x/sse"` calls `ingest_mcp_server("foo", {"transport": "sse", "url": "http://x/sse", "timeout_s": 15, "server": "foo"})` and returns `"✅ " + result`.
+     - (c) `"System: ingest tool bar"` calls `ingest_local_tool_module("bar")` and returns the `✅ ... semantic triggers will be ready shortly).` string.
+     - (d) `"Aura learn: the sky is blue"` calls `log_experience` with `task_type="direct_instruction"` and `forced_insight.content="the sky is blue"`, and returns the "committed this to memory as a Fact" string. `"learn:"` with nothing after it returns the "didn’t find any content" string.
+     - (e) L1 returning `{"intent": "TEACHING"}` calls `log_experience` with `task_type="instruction"` and returns the teaching string. `l3_synthesis` is not called.
+     - (f) Plain CHAT (L1 returns `{"intent": "CHAT"}`, input "hello"):
+       - `_publish_trace` is called first with `("L1", "intent_classified", {"intent": "CHAT", "confidence": 0.0, "model": settings.l1_model})`. The dict has no `"mode"` key.
+       - The engines are called in this order: `emotion get_current_state`, `get_learning_context(context="hello", user_id=...)`, `get_identity_context(conversation_topic="hello", overlay=None)`, `get_goal_context`, `check_goals_needing_autonomous_pursuit`.
+       - `retrieve_memories(query="hello", limit=3, importance_min=0.5, namespace=None)` is called.
+       - `get_cold_start_context(user_id)` is called because there is no history.
+       - `_last_system_prompt[user_id] == "PROMPT"`.
+       - `l3_synthesis` is called once with `max_history_messages=20` and `reasoning_enabled=False`. Its context has `user_input == "hello"`, `user_id == "default"` (today the loop context omits `user_id`, so pin that), `recent_critique is None`, `resonance_score is None` and `cold_start_xml is None`.
+       - The return value is the L3 text with tool calls stripped.
+     - (g) `context_limit=7` gives `max_history_messages=7`.
+     - (h) `critique_buffer[user_id] = ["c1", "c2"]` gives `recent_critique == "c1\n\nc2"` on the loop context, and the buffer entry is removed.
+     - (i) Tool loop. `extract_tool_calls` returns `[call]` then `[]`, and `execute_and_feedback` returns `"R1"`. Expect two `l3_synthesis` calls, the second with `user_input == "hello\n\n[Tool Execution Results]\n[Round 1]\nR1"`. Every `execute_and_feedback` call has `requester_role` equal to the argument passed in (test `"owner"` and `"guest"`).
+     - (j) Tool calls on every round give 5 `l3_synthesis` calls, and the result ends with `"\n\n(Stopped after max tool rounds; ask me to continue if needed.)"`.
+     - (k) Keyword fallback. L1 returns CHAT and the input contains "weather". Expect `intent_data` to be routed as TOOL_USE (the `"[MAG] Intent detection result"` path runs) and no forced mode, because `detected_tool` is unset for "weather".
+     - (l) Forced seed. L1 returns `{"intent": "TOOL_USE", "target_action": "skill:x"}`, `get_skill` returns an object with `.name`, and `db.select` returns `[{"definition": {"name": "t"}}]`. Expect `l3_tool_call_mode(query=..., tool_schema=json.dumps({"name": "t"}, indent=2))`. Seed results land in the first loop input as `"[Seed]\n..."`.
+     - (m) `_post_response_chain` is called once, with keyword arguments `user_input`, `response`, `emotional_before`, `user_id`, `conversation_id`, `goal_context`, `learning_context`, `enable_l2`, `l2_reasoning_enabled` and `resonance_score`. Expect `enable_l2 == deep_analysis_enabled` when `enable_l2_analysis is None`, and `enable_l2 == enable_l2_analysis` otherwise.
+     - (n) `llm_layers.context_mode` equals the `context_mode` argument after the call.
+- **Tests:** the file above. Run the full suite with `.venv\Scripts\python.exe -m pytest` from `aura-app`.
+- **Done when:** the new tests pass against unchanged `src/`, the full suite passes, and `git diff --stat src/` is empty.
+- **Do not:** change any file under `src/`. Do not assert log text. Do not use a real database, LLM or network. If a test shows that the code does not do what this card says, pin what the code does and report the difference. Do not fix it.
+
+---
+
+**W2-03 Characterisation tests for `stream_query`**
+- **PRD:** behaviour B0
+- **Tier:** bulk
+- **Depends on:** W2-02 (`turn_orchestrator` fixture)
+- **Files:** new `tests/unit/test_turn_stream_query.py`. Read `stream_query` in `src/aura/orchestrator/coordinator.py` and the fixture in `tests/conftest.py`.
+- **Change:** collect `[c async for c in orch.stream_query(...)]` and pin these behaviours. Each item is one test:
+  - (a) Sleep gate blocked: `(False, "zz")` yields `["z", "z"]`, one item per character.
+  - (b) Each early reply (MCP connect, ingest tool, learn, empty learn, TEACHING) yields the same text as in W2-02, one item per character, and calls the same learning-engine method with the same arguments.
+  - (c) Plain CHAT:
+    - The trace dict has `"mode": "stream"`.
+    - The four engine calls are made with the same arguments as in W2-02 (order is not pinned, because they run under `asyncio.gather`).
+    - `check_goals_needing_autonomous_pursuit` is not called.
+    - `get_cold_start_context` is not called.
+    - `retrieve_memories(query=..., limit=3, importance_min=0.5, namespace=None)` is called.
+    - `stream_l3_synthesis` is called with `reasoning_enabled=<arg>` and a context that has `user_id == "default"` and `recent_critique is None`.
+    - The yielded chunks equal the scripted chunks, unmodified. Tool calls are not stripped.
+  - (d) A critique in `critique_buffer` is left in place.
+  - (e) Multi-round loop. Round 1 chunks contain a tool call, `execute_and_feedback` returns `"R1"`, and round 2 has none. The output is round-1 chunks, then `"\n\n"`, then round-2 chunks. The second context's `user_input` equals `"hello\n\n[Tool Execution Results]\n[Round 1]\nR1"`. `requester_role` is passed through.
+  - (f) After 5 rounds that all have tool calls, there is no "Stopped after max tool rounds" text.
+  - (g) Forced mode, as in W2-02 (l). When the forced call yields tool calls, the single `stream_l3_synthesis` context's `user_input` starts with `"I executed a tool for you."` and ends with `"Original user query: <input>"`.
+  - (h) Forced mode where `extract_tool_calls` returns `[]` for the raw call. Expect a regular stream. If tool calls are then found in the streamed text, expect `"\n\n"` followed by a follow-up stream whose `user_input` is `"<input>\n\n[Tool Execution Results]\n<results>"`.
+  - (i) `get_learning_context` raises. The stream still completes, and `_post_response_chain` gets a `LearningContext()`.
+  - (j) `_post_response_chain` kwargs are the same as in W2-02 (m), with `response == "".join(chunks)` and `enable_l2 == deep_analysis_enabled`.
+  - (k) It is called only after the generator is exhausted.
+- **Tests:** the file above, then the full suite.
+- **Done when:** the new tests pass, the full suite passes, and `git diff --stat src/` is empty.
+- **Do not:** change `src/` or the W2-02 fixture's behaviour. You may add optional knobs to the fixture. Do not test the 10 s timeout by sleeping.
+
+---
+
+**W2-04 Extract session resolution and pre-intent commands**
+- **PRD:** behaviour B0
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Add `async def _resolve_session(self, session_id: str | None) -> None`. It sets `self._current_session_namespace` and `self._current_identity_overlay` exactly as `process_query` does today (lines starting `session_namespace: str | None = None` through `self._current_identity_overlay = session_overlay`).
+  2. Add `async def _pre_intent_reply(self, user_input: str, user_id: str) -> str | None`. Move into it, verbatim from `process_query`:
+     - the `_sleep_gate` check (return `blocked_msg or "System unavailable."`)
+     - `_record_user_interaction`
+     - the `connect_match`, `ingest_match` and `learn_match` blocks, with each `return "<text>"` kept as is
+     - `return None` at the end
+  3. In `process_query`, replace the moved code with `await self._resolve_session(session_id)`, then `reply = await self._pre_intent_reply(user_input, user_id)` and `if reply is not None: return reply`.
+  4. In `stream_query`, replace its session block and everything from the `_sleep_gate` call to the end of the `learn_match` block with the same two calls. If `reply is not None`, run `for char in reply: yield char` and then `return`.
+- **Tests:** full suite, including W2-02 and W2-03 unchanged.
+- **Done when:** the suite passes, `grep -c "connect\\\\s+mcp" src/aura/orchestrator/coordinator.py` prints `1`, and `grep -c "_sleep_gate(user_input" src/aura/orchestrator/coordinator.py` prints `1`.
+- **Do not:** change the reply strings, the regexes or the connection-config dicts. Do not touch the L1 or teaching code yet. Log lines may keep `process_query`'s wording, without the `(streaming)` suffix.
+
+---
+
+**W2-05 Extract intent classification and the teaching lane**
+- **PRD:** behaviour B0
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Add `async def _classify_intent(self, user_input: str, user_id: str, stream: bool) -> tuple[dict[str, Any], str, str | None]`, returning `(intent_data, intent, teaching_reply)`. Move into it, from `process_query`:
+     - the `l1_classify_intent` call
+     - the `_publish_trace("L1", "intent_classified", {...})` call. Add `"mode": "stream"` to the dict only when `stream` is true, to keep both paths' payloads.
+     - the keyword fallback block
+     - the TEACHING block. It calls `log_experience(experience_data)` exactly as now and returns the teaching string as `teaching_reply`. Otherwise `teaching_reply` is `None`.
+  2. In both entry points, replace the moved code with a call to `_classify_intent` (`stream=False` in `process_query`, `stream=True` in `stream_query`). If `teaching_reply is not None`, `process_query` returns it and `stream_query` yields it one character at a time, then returns.
+- **Tests:** full suite.
+- **Done when:** the suite passes, and `grep -c "l1_classify_intent(user_input)" src/aura/orchestrator/coordinator.py` prints `1`.
+- **Do not:** move the tool-reflex (`target_skill_id`) block in this card. Do not change `tool_keywords`.
+
+---
+
+**W2-06 Extract forced-tool resolution**
+- **PRD:** behaviour B0
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Add `async def _resolve_forced_tool(self, intent: str, intent_data: dict[str, Any]) -> tuple[bool, str | None]`, returning `(use_forced_tool_mode, tool_schema_str)`. Move into it, verbatim from `process_query`, everything from `target_skill_id = intent_data.get("target_action")` through the end of the `if intent == "TOOL_USE":` block, including the `[MAG] Intent detection result` log line. This covers the three lookups: by `target_skill_id`, by name with the three parameterised `SELECT * FROM skill ...` queries, and the file fallback using `importlib.util` and `ingest_local_tool_module`.
+  2. Replace the block in both entry points with `use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)`.
+  3. The file-fallback path uses `os.path.dirname(os.path.abspath(__file__))`. It still works because the helper stays in `coordinator.py`.
+- **Tests:** full suite. Add one test to `test_turn_process_query.py` for the by-name lookup. `get_skill` returns `None`, `intent_data` has `detected_tool="web_search"`, the first `db.query` returns `[{"id": "skill:ws", "name": "web_search"}]`, and `db.select` returns `[{"definition": {"name": "web_search"}}]`. Assert that `l3_tool_call_mode` is called. Add the same test to the stream file, asserting the forced streaming branch.
+- **Done when:** the suite passes, and `grep -c "SELECT \* FROM skill WHERE name = \$name" src/aura/orchestrator/coordinator.py` prints `1`.
+- **Do not:** change the SQL or the parameter names (`$name`, `$normalized`, `$alt1`, `$alt2`). Do not "fix" the duplicated `has_definition` expression.
+
+---
+
+**W2-07 Extract prompt caching and post-response scheduling**
+- **PRD:** behaviour B0
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Add `async def _cache_system_prompt(self, synthesis_context: SynthesisContext, user_input: str, user_id: str) -> None`. It contains the identical `try:` block from both paths: `retrieve_memories(query=user_input, limit=3, importance_min=0.5, namespace=getattr(self, "_current_session_namespace", None))`, `build_l3_system_prompt`, and `self._last_system_prompt[user_id] = system_prompt`, with both warning handlers.
+  2. Add `def _schedule_post_response(self, *, user_input, response, emotional_before, user_id, conversation_id, goal_context, learning_context, enable_l2, l2_reasoning_enabled, resonance_score) -> None`. It calls `asyncio.create_task(self._post_response_chain(...))` with the same keyword arguments.
+  3. Replace both copies of each block with calls to the helpers. `process_query` still computes `final_l2_enabled = deep_analysis_enabled if enable_l2_analysis is None else enable_l2_analysis` and passes that. `stream_query` passes `deep_analysis_enabled`.
+  4. Remove the function-local `import asyncio` lines that were only there for `create_task`. `asyncio` is imported at module level (line 9).
+- **Tests:** full suite.
+- **Done when:** the suite passes, `grep -c "_last_system_prompt\[user_id\] = " src/aura/orchestrator/coordinator.py` prints `1`, and `grep -c "create_task(self._post_response_chain" src/aura/orchestrator/coordinator.py` prints `1`.
+- **Do not:** change the `limit=3` or `importance_min=0.5` values. Do not await the post-response chain.
+
+---
+
+**W2-08 Extract context gathering into a `TurnContext`**
+- **PRD:** behaviour B0. This is also the seam M2 will replace.
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Near the top of the module, add a dataclass `TurnContext` with these fields: `emotional_state`, `learning_context`, `identity_context`, `goal_context`, `resonance_score: float`, `recent_critique: str | None`, `cold_start_xml: str | None`, `latent_intuition_xml: str | None`, `synthesis_context: SynthesisContext`.
+  2. Add `async def _gather_turn_context(self, user_input: str, user_id: str, conversation_history: list[dict[str, str]] | None, stream: bool) -> TurnContext`.
+     - **If `stream` is false**, move `process_query`'s steps verbatim, from `emotional_state = await self.emotion_engine.get_current_state()` through `synthesis_context = SynthesisContext(...)`:
+       - the sequential engine calls
+       - the pursuit suggestions. Replace `datetime.now(timezone.utc)` with `get_clock().now()` from `aura.clock` (rule 7). It returns the same timezone-aware UTC value.
+       - the resonance score and the history debug logs
+       - the critique pop under `_state_lock`
+       - the cold start context and the latent intuition
+     - **If `stream` is true**, move `stream_query`'s steps verbatim:
+       - the `asyncio.wait_for(asyncio.gather(..., return_exceptions=True), timeout=10.0)` call. Keep the literal `10.0`: this card authorises it.
+       - the timeout and per-result fallbacks. Replace each `datetime.utcnow()` in the fallback `EmotionState` with `get_clock().now().replace(tzinfo=None)` so the value stays naive, as today.
+       - the resonance score and the latent intuition
+       - its smaller `SynthesisContext`. `recent_critique` and `cold_start_xml` stay `None`, and `check_goals_needing_autonomous_pursuit` is not called.
+  3. In both entry points, replace the moved code with `ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=<False|True>)`. Then use `ctx.<field>` where the old local variables were used, including in `_cache_system_prompt(ctx.synthesis_context, ...)` and `_schedule_post_response(...)`.
+- **Tests:** full suite, including W2-03 (i) (an exception in learning context gives `LearningContext()`).
+- **Done when:** the suite passes, `grep -c "self.goal_engine.get_goal_context()" src/aura/orchestrator/coordinator.py` prints `2` (one per branch, inside `_gather_turn_context` only), and `grep -n "get_goal_context()" src/aura/orchestrator/coordinator.py` shows no hit inside `process_query` or `stream_query`.
+- **Do not:** make the non-stream path parallel, or the stream path pop critiques. Those are behaviour changes. Do not move the timeout into config in this card.
+
+---
+
+**W2-09 Extract the two generation stages**
+- **PRD:** behaviour B0. This is also the seam G1 will replace.
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Add `async def _generate_blocking(self, user_input, conversation_history, ctx: TurnContext, context_limit: int | None, reasoning_enabled: bool, use_forced_tool_mode: bool, tool_schema_str: str | None, requester_role: str) -> str`.
+     - Move `process_query`'s generation code verbatim into it: `context_window_size = context_limit if context_limit is not None else 20`, the `[MAG] Tool mode check` log, `max_tool_rounds = 5`, `_build_loop_input`, the forced seed, the `for round_idx ...` / `else` loop with `_remove_tool_calls_from_text` and the max-rounds suffix, and the `L3 synthesis_complete` trace.
+     - Return `response`.
+     - Loop contexts keep exactly today's fields: `user_input`, `conversation_history`, `emotional_state`, `learning_context`, `identity_context`, `goal_context` and `recent_critique`, with no `user_id`.
+  2. Add `async def _generate_streaming(self, user_input, conversation_history, ctx: TurnContext, reasoning_enabled: bool, use_forced_tool_mode: bool, tool_schema_str: str | None, requester_role: str)`. This is an async generator that yields text chunks. Move `stream_query`'s code verbatim into it, from `full_response = ""` through the end of the `else:` multi-round loop:
+     - the forced branch, with the `"I executed a tool for you. ..."` prompt kept byte for byte, which mutates `ctx.synthesis_context.user_input`
+     - the fallback follow-up
+     - every `yield "\n\n"`
+  3. `process_query` calls `response = await self._generate_blocking(...)`.
+  4. `stream_query` runs `full_response = ""`, then `async for chunk in self._generate_streaming(...): full_response += chunk; yield chunk`, then schedules the post-response chain with `response=full_response`. Check that this equals today's `full_response`. Today every yielded chunk is also added to `full_response`, except the `"\n\n"` separators. So accumulate separately: have `_generate_streaming` yield `(chunk, counts: bool)` tuples, where `counts` is false for the `"\n\n"` separators, or use an equivalent you document in a comment. W2-03 (j) must still pass.
+  5. Pass `requester_role` through to every `execute_and_feedback(..., requester_role=requester_role)` call.
+- **Tests:** full suite.
+- **Done when:** the suite passes, `grep -c "max_tool_rounds = 5" src/aura/orchestrator/coordinator.py` prints `2` (one in each helper), and `grep -c "requester_role=requester_role" src/aura/orchestrator/coordinator.py` is unchanged from before the card.
+- **Do not:** unify the two tool loops. They behave differently today (stripping, max-rounds suffix, separators, the forced prompt), and G1 replaces them. Do not change `llm/layers.py`. The `depth=2` / `depth=1` difference between `l3_synthesis` and `stream_l3_synthesis` stays.
+
+---
+
+**W2-10 One turn pipeline**
+- **PRD:** behaviour B0, section 4.4
+- **Tier:** frontier
+- **Files:** `src/aura/orchestrator/coordinator.py`, new `tests/unit/test_turn_pipeline.py`
+- **Change:**
+  1. Add a dataclass `TurnEvent` with `kind: Literal["delta", "done"]` and `text: str`.
+  2. Add `async def _turn_pipeline(self, user_input, user_id, conversation_history, *, stream: bool, context_limit, enable_l2, conversation_id, reasoning_enabled, l2_reasoning_enabled, session_id, context_mode, requester_role)`, an async generator of `TurnEvent`. It runs these stages in order, each with a one-line comment naming the stage:
+     1. set `self.llm_layers.context_mode`
+     2. `_resolve_session`
+     3. `_pre_intent_reply`
+     4. `_classify_intent(stream=stream)`
+     5. `_resolve_forced_tool`
+     6. `_gather_turn_context(stream=stream)`
+     7. `_cache_system_prompt`
+     8. generation: `_generate_streaming` if `stream`, else `_generate_blocking`
+     9. `_schedule_post_response(enable_l2=enable_l2, ...)`
+     10. yield `TurnEvent("done", response)`
+
+     For an early reply (stage 3 or the teaching reply from stage 4): when `stream` is true, yield one `delta` per character, then `done` with the full reply. When `stream` is false, yield only `done`. Then return, without scheduling the post-response chain (as today).
+
+     During streaming generation, yield a `delta` for every chunk, separators included. The `done` text is the accumulated response from W2-09. Schedule the post-response chain before yielding `done`, so it still runs only after the last delta has been consumed, as today.
+  3. Rewrite `process_query` (signature unchanged) as follows. Compute `final_l2_enabled` as today, iterate `_turn_pipeline(..., stream=False, enable_l2=final_l2_enabled, ...)`, and return the `done` text. Keep the opening `self.logger.info("Processing query from user ...")`.
+  4. Rewrite `stream_query` (signature unchanged) to iterate `_turn_pipeline(..., stream=True, context_limit=None, enable_l2=deep_analysis_enabled, ...)` and yield `ev.text` for each `delta`. It ignores `done`.
+  5. `requester_role` must reach `_turn_pipeline` from both entry points.
+- **Tests:** W2-02 and W2-03 unchanged. In `test_turn_pipeline.py`:
+  - (a) `_turn_pipeline(stream=False)` yields exactly one event, of kind `done`.
+  - (b) `stream=True` yields deltas whose joined text equals what `stream_query` yields, then one `done`.
+  - (c) With `stream=True` and a guest `requester_role`, the role reaches `execute_and_feedback`.
+- **Done when:** the full suite passes, `process_query` and `stream_query` each contain no `await self.llm_layers` call (check with grep inside their line ranges), and each body is under 40 lines.
+- **Do not:** change the callers in `api/routes/chat.py` or `discord/bot.py`. Do not change either public signature. Do not add behaviour hooks.
+
+---
+
+**W2-11 Remove what the merge left behind**
+- **PRD:** behaviour B0 (closes B6)
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py`
+- **Change:**
+  1. Delete any locals, function-local imports (`re`, `os`, `shlex`, `importlib.util`, `asyncio`) or comments in `process_query` and `stream_query` that are now unused. The helpers keep the ones they need.
+  2. Update the docstrings of `process_query` and `stream_query` to say each one is an entry point over `_turn_pipeline`. Keep the `Args` / `Returns` sections accurate.
+  3. Run `ruff check src/aura/orchestrator/coordinator.py` if ruff is installed, and fix only unused-name warnings that this wave introduced.
+- **Tests:** full suite.
+- **Done when:**
+  - The suite passes.
+  - `grep -c "I've processed that instruction" src/aura/orchestrator/coordinator.py` prints `1`.
+  - `grep -c "Failed to cache system prompt" src/aura/orchestrator/coordinator.py` prints `1`.
+  - `git diff` for this card touches only `coordinator.py`.
+- **Do not:** rename the helpers or the public methods, or change any behaviour. Do not touch the rest of the file.
+
+---
+
+**W2-12 Bind a record id in `boost_on_recall`**
+- **PRD:** memory (W1-13 follow-up). Found by the scenario runner (W2-01, see `docs/overnight-log.md`).
+- **Tier:** bulk
+- **Files:** `src/aura/db/query_utils.py`, `src/aura/engines/memory/manager.py` (`boost_on_recall`), new `tests/scenarios/test_boost_on_recall_embedded.py`. Read `tests/scenarios/runner.py` (`_to_record_id`, `EmbeddedSurrealDB`, `_build_manager`) and `src/aura/api/routes/learning.py` (the `skill_ref` conversion near the comment "Ensure we query with a proper RecordID when possible").
+- **Change:**
+  1. `src/` has no shared helper for this. The existing pattern is the inline conversion in `api/routes/learning.py`: `from surrealdb import RecordID`, then if `":" in id`, `table, rid = id.split(":", 1)` and `RecordID(table, rid)`. Add `def to_record_id(thing: Any) -> Any` to `src/aura/db/query_utils.py`, which does that conversion. A `"table:id"` string with a non-empty table and id becomes a `RecordID`. Anything else, including a value that is already a `RecordID`, is returned unchanged.
+  2. In `MemoryManager.boost_on_recall`, change the bound parameter from `{"mid": memory_id, ...}` to `{"mid": to_record_id(memory_id), ...}`. Keep the query text and the other parameters exactly as they are.
+- **Tests:** `test_boost_on_recall_embedded.py`:
+  - Connect an `EmbeddedSurrealDB` and build a manager with `_build_manager`, both imported from `tests/scenarios/runner.py`.
+  - Store one memory with `store_memory`.
+  - Read its `recall_count` with a parameterised `SELECT recall_count FROM $rid`, binding a `RecordID`.
+  - Call `boost_on_recall(<the string id>)` twice and assert that `recall_count` went up by 2.
+  - Add a unit test for `to_record_id`: `"memory:abc"` gives `RecordID("memory", "abc")`, `"memory"` is returned unchanged, and a `RecordID` is returned unchanged.
+  - Run the full suite.
+- **Done when:** the new tests pass offline on the embedded engine, and the full suite passes.
+- **Do not:** change the other string-id call sites in `manager.py` in this card (list them in the log for a later card). Do not change `tests/scenarios/runner.py` or the `UPDATE` statement's text.
+
+---
+
+**W2-13 Fix the clause order in the spreading-activation edge query**
+- **PRD:** memory (retrieval). Found by the scenario runner (W2-01, see `docs/overnight-log.md`).
+- **Tier:** bulk
+- **Files:** `src/aura/engines/memory/manager.py` (`retrieve_with_spreading_activation`, the `all_edges = await self.db.query(...)` call around line 1029), new `tests/scenarios/test_spreading_edge_query_embedded.py`. Read `tests/scenarios/runner.py`.
+- **Change:** in the query `SELECT in, out, similarity FROM related_to WHERE in IN $sids OR out IN $sids FETCH in, out LIMIT 50`, move `LIMIT 50` before `FETCH in, out`. The SurrealQL `SELECT` clause order is `WHERE`, `SPLIT`, `GROUP`, `ORDER`, `LIMIT`, `START`, `FETCH`, `TIMEOUT`, `PARALLEL`, `EXPLAIN`, so `FETCH` comes after `LIMIT`. The query becomes `... WHERE in IN $sids OR out IN $sids LIMIT 50 FETCH in, out`. Keep `$sids` and the binding `{"sids": seed_ids}` unchanged.
+- **Tests:** `test_spreading_edge_query_embedded.py`:
+  - Connect an `EmbeddedSurrealDB` from the runner.
+  - Run the exact new query string through the adapter's `query` with `{"sids": []}`, and assert that it returns without raising (an empty list is fine).
+  - Run the old string the same way and assert that it raises or returns an error. This proves the test detects the bug. If the adapter swallows parse errors, call the underlying embedded client directly instead.
+  - Run the full suite.
+- **Done when:** the new test passes offline, `grep -n "FETCH in, out" src/aura/engines/memory/manager.py` shows the line after `LIMIT 50`, and the full suite passes.
+- **Do not:** change the other `FETCH in` queries (around lines 773, 838, 1506 and 1568) unless they have the same wrong order. If any of them do, report it rather than fixing it. Do not convert `seed_ids` to record ids in this card.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
