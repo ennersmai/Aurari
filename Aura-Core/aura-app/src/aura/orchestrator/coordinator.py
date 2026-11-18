@@ -7,11 +7,13 @@ Coordinates all engines, handles conflicts, maintains coherence.
 import json
 import logging
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from aura.clock import get_clock
 from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.emotion.engine import EmotionEngine
@@ -28,6 +30,26 @@ from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TurnContext:
+    """Gathered context for a single turn (W2-08).
+
+    Holds the engine outputs, resonance score, critique/cold-start/latent-xml
+    strings, and the assembled ``SynthesisContext`` produced by
+    :meth:`Orchestrator._gather_turn_context`.
+    """
+
+    emotional_state: Any
+    learning_context: Any
+    identity_context: Any
+    goal_context: Any
+    resonance_score: float
+    recent_critique: str | None
+    cold_start_xml: str | None
+    latent_intuition_xml: str | None
+    synthesis_context: SynthesisContext
 
 
 class SystemState(str, Enum):
@@ -1017,6 +1039,235 @@ Constraints:
             resonance_score=resonance_score,
         ))
 
+    async def _gather_turn_context(
+        self,
+        user_input: str,
+        user_id: str,
+        conversation_history: list[dict[str, str]] | None,
+        stream: bool,
+    ) -> TurnContext:
+        """Gather engine context and assemble the L3 ``SynthesisContext`` (W2-08).
+
+        ``stream=False`` mirrors ``process_query``'s sequential context
+        gathering; ``stream=True`` mirrors ``stream_query``'s parallel
+        ``asyncio.gather`` with a 10 s timeout and per-result fallbacks.
+        """
+        if not stream:
+            # Step 1: Parallel engine queries
+            emotional_state = await self.emotion_engine.get_current_state()
+
+            learning_context = await self.learning_engine.get_learning_context(
+                context=user_input,
+                user_id=user_id,
+            )
+
+            identity_context = await self.identity_engine.get_identity_context(
+                conversation_topic=user_input,
+                overlay=getattr(self, "_current_identity_overlay", None),
+            )
+
+            goal_context = await self.goal_engine.get_goal_context()
+
+            # Check if any goals would benefit from autonomous pursuit
+            goals_needing_pursuit = await self.goal_engine.check_goals_needing_autonomous_pursuit()
+
+            # If there are goals that need pursuit, add a hint to the goal context
+            if goals_needing_pursuit:
+                # Add pursuit suggestions to goal context
+                pursuit_suggestions = []
+                for goal in goals_needing_pursuit:
+                    goal_created = goal.created
+                    if goal_created.tzinfo is None:
+                        goal_created = goal_created.replace(tzinfo=timezone.utc)
+                    age_hours = (get_clock().now() - goal_created).total_seconds() / 3600
+
+                    pursuit_suggestions.append({
+                        "goal_id": goal.goal_id,
+                        "goal_name": goal.name,
+                        "reason": f"Priority: {goal.priority:.2f}, Progress: {goal.progress:.1%}, Age: {age_hours:.1f}h"
+                    })
+
+                # Update goal context with pursuit suggestions
+                goal_context.pursuit_suggestions = pursuit_suggestions
+
+            # Step 1.5: Compute Resonance Score (Emotion-Learning Bridge)
+            resonance_score = self._compute_resonance_score(emotional_state)
+            self.logger.info(f"[WAVE] Resonance score: {resonance_score:.2f}")
+
+            # Step 2 & 3: Detect and resolve conflicts
+            # For now, skip conflict detection (no competing signals yet)
+
+            # Step 4: Synthesize context for L3
+            history_count = len(conversation_history) if conversation_history else 0
+            self.logger.info(f"[MEMO] Conversation history: {history_count} messages")
+            if conversation_history and len(conversation_history) > 0:
+                # Log last few messages for debugging
+                last_messages = conversation_history[-3:]
+                for i, msg in enumerate(last_messages):
+                    role = msg.get('role', 'unknown')
+                    content_preview = msg.get('content', '')[:60]
+                    self.logger.debug(f"  [{i+1}] {role}: {content_preview}...")
+
+            # Check buffer for recent critique (under lock to avoid race with L2 background task)
+            async with self._state_lock:
+                recent_critiques = self.critique_buffer.pop(user_id, [])
+            recent_critique = "\n\n".join(recent_critiques) if recent_critiques else None
+
+            # Cold start context (Session 5): inject when no conversation history exists
+            cold_start_xml: str | None = None
+            if not conversation_history or len(conversation_history) == 0:
+                try:
+                    from aura.engines.memory.manager import get_memory_manager
+                    mm = get_memory_manager()
+                    cold_ctx = await mm.get_cold_start_context(user_id)
+                    if cold_ctx.xml_block:
+                        cold_start_xml = cold_ctx.xml_block
+                        self.logger.info(
+                            f"[ICE] Cold start context loaded: {len(cold_ctx.core_memories)} core, "
+                            f"{len(cold_ctx.recent_memories)} recent"
+                        )
+                except Exception as e:
+                    self.logger.debug(f"Cold start context failed (non-critical): {e}")
+
+            # Session 7: TITANS Latent Intuition (MAC — Memory as Context)
+            # Zero-latency cached read — no DB query, pure in-memory access.
+            latent_intuition_xml: str | None = None
+            try:
+                from aura.engines.latent.engine import get_latent_engine
+                latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
+                if latent_intuition_xml:
+                    self.logger.debug(f"[BRAIN] MAC injected ({len(latent_intuition_xml)} chars)")
+            except Exception as e:
+                self.logger.debug(f"Latent intuition fetch failed (non-critical): {e}")
+
+            synthesis_context = SynthesisContext(
+                user_input=user_input,
+                user_id=user_id,
+                conversation_history=conversation_history or [],
+                emotional_state=emotional_state,
+                learning_context=learning_context,
+                identity_context=identity_context,
+                goal_context=goal_context,
+                recent_critique=recent_critique,
+                resonance_score=resonance_score,
+                cold_start_xml=cold_start_xml,
+                latent_intuition_xml=latent_intuition_xml,
+            )
+
+            return TurnContext(
+                emotional_state=emotional_state,
+                learning_context=learning_context,
+                identity_context=identity_context,
+                goal_context=goal_context,
+                resonance_score=resonance_score,
+                recent_critique=recent_critique,
+                cold_start_xml=cold_start_xml,
+                latent_intuition_xml=latent_intuition_xml,
+                synthesis_context=synthesis_context,
+            )
+
+        # stream == True
+        # Parallel engine queries with timeout protection
+        import asyncio
+
+        # Execute context retrievals in parallel with 10s timeout per engine
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    self.emotion_engine.get_current_state(),
+                    self.learning_engine.get_learning_context(context=user_input, user_id=user_id),
+                    self.identity_engine.get_identity_context(
+                        conversation_topic=user_input,
+                        overlay=getattr(self, "_current_identity_overlay", None),
+                    ),
+                    self.goal_engine.get_goal_context(),
+                    return_exceptions=True
+                ),
+                timeout=10.0  # 10 second total timeout for all parallel queries
+            )
+        except asyncio.TimeoutError:
+            self.logger.error("Context retrieval timed out! Using fallback empty contexts.")
+            # Use fallback empty contexts
+            from aura.models.emotion import EmotionState, EmotionVector
+            from aura.models.learning import LearningContext
+            from aura.models.identity import IdentityContext
+            from aura.models.goal import GoalContext
+
+            results = [
+                EmotionState(timestamp=get_clock().now().replace(tzinfo=None), vector=EmotionVector(), dominant=("neutral", 0.0), description="Neutral"),
+                LearningContext(),
+                IdentityContext(core_identity="Aura", tone_and_style="Helpful"),
+                GoalContext()
+            ]
+
+        # Unpack results, handling potential errors gracefully
+        emotional_state = results[0] if not isinstance(results[0], Exception) else await self.emotion_engine.get_current_state() # fallback/retry?
+        if isinstance(emotional_state, Exception): # Should not happen with get_current_state
+             # Absolute fallback if emotion engine fails
+             from aura.models.emotion import EmotionState, EmotionVector
+             emotional_state = EmotionState(
+                 timestamp=get_clock().now().replace(tzinfo=None),
+                 vector=EmotionVector(),
+                 dominant=("neutral", 0.0),
+                 description="Neutral"
+             )
+
+        learning_context = results[1]
+        if isinstance(learning_context, Exception):
+            self.logger.error(f"Failed to get learning context: {learning_context}")
+            # Fallback empty context
+            from aura.models.learning import LearningContext
+            learning_context = LearningContext()
+
+        identity_context = results[2]
+        if isinstance(identity_context, Exception):
+            self.logger.error(f"Failed to get identity context: {identity_context}")
+            from aura.models.identity import IdentityContext
+            identity_context = IdentityContext(core_identity="Aura", tone_and_style="Helpful")
+
+        goal_context = results[3]
+        if isinstance(goal_context, Exception):
+            self.logger.error(f"Failed to get goal context: {goal_context}")
+            from aura.models.goal import GoalContext
+            goal_context = GoalContext()
+
+        # Note: interaction time is tracked in the orchestrator state machine.
+
+        # Compute Resonance Score (Emotion-Learning Bridge) for streaming path
+        resonance_score = self._compute_resonance_score(emotional_state)
+        self.logger.info(f"[WAVE] Resonance score (stream): {resonance_score:.2f}")
+
+        # Session 7: TITANS Latent Intuition (MAC) for streaming path
+        latent_intuition_xml: str | None = None
+        try:
+            from aura.engines.latent.engine import get_latent_engine
+            latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
+        except Exception:
+            pass
+
+        # Synthesis context
+        synthesis_context = SynthesisContext(
+            user_input=user_input,
+            conversation_history=conversation_history or [],
+            emotional_state=emotional_state,
+            learning_context=learning_context,
+            identity_context=identity_context,
+            goal_context=goal_context,
+            latent_intuition_xml=latent_intuition_xml,
+        )
+
+        return TurnContext(
+            emotional_state=emotional_state,
+            learning_context=learning_context,
+            identity_context=identity_context,
+            goal_context=goal_context,
+            resonance_score=resonance_score,
+            recent_critique=None,
+            cold_start_xml=None,
+            latent_intuition_xml=latent_intuition_xml,
+            synthesis_context=synthesis_context,
+        )
+
     async def process_query(
         self,
         user_input: str,
@@ -1076,113 +1327,14 @@ Constraints:
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
         use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
-        # Step 1: Parallel engine queries
-        emotional_state = await self.emotion_engine.get_current_state()
-
-        learning_context = await self.learning_engine.get_learning_context(
-            context=user_input,
-            user_id=user_id,
-        )
-
-        identity_context = await self.identity_engine.get_identity_context(
-            conversation_topic=user_input,
-            overlay=getattr(self, "_current_identity_overlay", None),
-        )
-
-        goal_context = await self.goal_engine.get_goal_context()
-        
-        # Check if any goals would benefit from autonomous pursuit
-        goals_needing_pursuit = await self.goal_engine.check_goals_needing_autonomous_pursuit()
-        
-        # If there are goals that need pursuit, add a hint to the goal context
-        if goals_needing_pursuit:
-            # Add pursuit suggestions to goal context
-            pursuit_suggestions = []
-            for goal in goals_needing_pursuit:
-                goal_created = goal.created
-                if goal_created.tzinfo is None:
-                    goal_created = goal_created.replace(tzinfo=timezone.utc)
-                age_hours = (datetime.now(timezone.utc) - goal_created).total_seconds() / 3600
-                
-                pursuit_suggestions.append({
-                    "goal_id": goal.goal_id,
-                    "goal_name": goal.name,
-                    "reason": f"Priority: {goal.priority:.2f}, Progress: {goal.progress:.1%}, Age: {age_hours:.1f}h"
-                })
-            
-            # Update goal context with pursuit suggestions
-            goal_context.pursuit_suggestions = pursuit_suggestions
-
-        # Step 1.5: Compute Resonance Score (Emotion-Learning Bridge)
-        resonance_score = self._compute_resonance_score(emotional_state)
-        self.logger.info(f"[WAVE] Resonance score: {resonance_score:.2f}")
-
-        # Step 2 & 3: Detect and resolve conflicts
-        # For now, skip conflict detection (no competing signals yet)
-
-        # Step 4: Synthesize context for L3
-        history_count = len(conversation_history) if conversation_history else 0
-        self.logger.info(f"[MEMO] Conversation history: {history_count} messages")
-        if conversation_history and len(conversation_history) > 0:
-            # Log last few messages for debugging
-            last_messages = conversation_history[-3:]
-            for i, msg in enumerate(last_messages):
-                role = msg.get('role', 'unknown')
-                content_preview = msg.get('content', '')[:60]
-                self.logger.debug(f"  [{i+1}] {role}: {content_preview}...")
-        
-        # Check buffer for recent critique (under lock to avoid race with L2 background task)
-        async with self._state_lock:
-            recent_critiques = self.critique_buffer.pop(user_id, [])
-        recent_critique = "\n\n".join(recent_critiques) if recent_critiques else None
-
-        # Cold start context (Session 5): inject when no conversation history exists
-        cold_start_xml: str | None = None
-        if not conversation_history or len(conversation_history) == 0:
-            try:
-                from aura.engines.memory.manager import get_memory_manager
-                mm = get_memory_manager()
-                cold_ctx = await mm.get_cold_start_context(user_id)
-                if cold_ctx.xml_block:
-                    cold_start_xml = cold_ctx.xml_block
-                    self.logger.info(
-                        f"[ICE] Cold start context loaded: {len(cold_ctx.core_memories)} core, "
-                        f"{len(cold_ctx.recent_memories)} recent"
-                    )
-            except Exception as e:
-                self.logger.debug(f"Cold start context failed (non-critical): {e}")
-
-        # Session 7: TITANS Latent Intuition (MAC — Memory as Context)
-        # Zero-latency cached read — no DB query, pure in-memory access.
-        latent_intuition_xml: str | None = None
-        try:
-            from aura.engines.latent.engine import get_latent_engine
-            latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
-            if latent_intuition_xml:
-                self.logger.debug(f"[BRAIN] MAC injected ({len(latent_intuition_xml)} chars)")
-        except Exception as e:
-            self.logger.debug(f"Latent intuition fetch failed (non-critical): {e}")
-
-        synthesis_context = SynthesisContext(
-            user_input=user_input,
-            user_id=user_id,
-            conversation_history=conversation_history or [],
-            emotional_state=emotional_state,
-            learning_context=learning_context,
-            identity_context=identity_context,
-            goal_context=goal_context,
-            recent_critique=recent_critique,
-            resonance_score=resonance_score,
-            cold_start_xml=cold_start_xml,
-            latent_intuition_xml=latent_intuition_xml,
-        )
+        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=False)
 
         # Step 5: Generate response (L3)
         context_window_size = context_limit if context_limit is not None else 20
         self.logger.info(f"[TARGET] Using context window size: {context_window_size} messages")
-        
+
         # Cache the system prompt for debugging (before calling synthesis)
-        await self._cache_system_prompt(synthesis_context, user_input, user_id)
+        await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)
         
         # Step 5: Generate response (L3) with a bounded tool-execution loop.
         # This enables multi-step tool plans (read -> write -> verify) safely.
@@ -1216,11 +1368,11 @@ Constraints:
             loop_context = SynthesisContext(
                 user_input=_build_loop_input(),
                 conversation_history=conversation_history or [],
-                emotional_state=emotional_state,
-                learning_context=learning_context,
-                identity_context=identity_context,
-                goal_context=goal_context,
-                recent_critique=recent_critique,
+                emotional_state=ctx.emotional_state,
+                learning_context=ctx.learning_context,
+                identity_context=ctx.identity_context,
+                goal_context=ctx.goal_context,
+                recent_critique=ctx.recent_critique,
             )
 
             response = await self.llm_layers.l3_synthesis(
@@ -1262,14 +1414,14 @@ Constraints:
         self._schedule_post_response(
             user_input=user_input,
             response=response,
-            emotional_before=emotional_state,
+            emotional_before=ctx.emotional_state,
             user_id=user_id,
             conversation_id=conversation_id,
-            goal_context=goal_context,
-            learning_context=learning_context,
+            goal_context=ctx.goal_context,
+            learning_context=ctx.learning_context,
             enable_l2=final_l2_enabled,
             l2_reasoning_enabled=l2_reasoning_enabled,
-            resonance_score=resonance_score,
+            resonance_score=ctx.resonance_score,
         )
 
         return response
@@ -1885,97 +2037,10 @@ Constraints:
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
         use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
-        # Parallel engine queries with timeout protection
-        import asyncio
-        
-        # Execute context retrievals in parallel with 10s timeout per engine
-        try:
-            results = await asyncio.wait_for(
-                asyncio.gather(
-                    self.emotion_engine.get_current_state(),
-                    self.learning_engine.get_learning_context(context=user_input, user_id=user_id),
-                    self.identity_engine.get_identity_context(
-                        conversation_topic=user_input,
-                        overlay=getattr(self, "_current_identity_overlay", None),
-                    ),
-                    self.goal_engine.get_goal_context(),
-                    return_exceptions=True
-                ),
-                timeout=10.0  # 10 second total timeout for all parallel queries
-            )
-        except asyncio.TimeoutError:
-            self.logger.error("Context retrieval timed out! Using fallback empty contexts.")
-            # Use fallback empty contexts
-            from aura.models.emotion import EmotionState, EmotionVector
-            from aura.models.learning import LearningContext
-            from aura.models.identity import IdentityContext
-            from aura.models.goal import GoalContext
-            
-            results = [
-                EmotionState(timestamp=datetime.utcnow(), vector=EmotionVector(), dominant=("neutral", 0.0), description="Neutral"),
-                LearningContext(),
-                IdentityContext(core_identity="Aura", tone_and_style="Helpful"),
-                GoalContext()
-            ]
-        
-        # Unpack results, handling potential errors gracefully
-        emotional_state = results[0] if not isinstance(results[0], Exception) else await self.emotion_engine.get_current_state() # fallback/retry?
-        if isinstance(emotional_state, Exception): # Should not happen with get_current_state
-             # Absolute fallback if emotion engine fails
-             from aura.models.emotion import EmotionState, EmotionVector
-             emotional_state = EmotionState(
-                 timestamp=datetime.utcnow(), 
-                 vector=EmotionVector(), 
-                 dominant=("neutral", 0.0), 
-                 description="Neutral"
-             )
-
-        learning_context = results[1]
-        if isinstance(learning_context, Exception):
-            self.logger.error(f"Failed to get learning context: {learning_context}")
-            # Fallback empty context
-            from aura.models.learning import LearningContext
-            learning_context = LearningContext()
-
-        identity_context = results[2]
-        if isinstance(identity_context, Exception):
-            self.logger.error(f"Failed to get identity context: {identity_context}")
-            from aura.models.identity import IdentityContext
-            identity_context = IdentityContext(core_identity="Aura", tone_and_style="Helpful")
-
-        goal_context = results[3]
-        if isinstance(goal_context, Exception):
-            self.logger.error(f"Failed to get goal context: {goal_context}")
-            from aura.models.goal import GoalContext
-            goal_context = GoalContext()
-
-        # Note: interaction time is tracked in the orchestrator state machine.
-
-        # Compute Resonance Score (Emotion-Learning Bridge) for streaming path
-        resonance_score = self._compute_resonance_score(emotional_state)
-        self.logger.info(f"[WAVE] Resonance score (stream): {resonance_score:.2f}")
-
-        # Session 7: TITANS Latent Intuition (MAC) for streaming path
-        latent_intuition_xml: str | None = None
-        try:
-            from aura.engines.latent.engine import get_latent_engine
-            latent_intuition_xml = get_latent_engine().get_intuition_context(user_id)
-        except Exception:
-            pass
-
-        # Synthesis context
-        synthesis_context = SynthesisContext(
-            user_input=user_input,
-            conversation_history=conversation_history or [],
-            emotional_state=emotional_state,
-            learning_context=learning_context,
-            identity_context=identity_context,
-            goal_context=goal_context,
-            latent_intuition_xml=latent_intuition_xml,
-        )
+        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=True)
 
         # Cache the system prompt for debugging (before calling synthesis)
-        await self._cache_system_prompt(synthesis_context, user_input, user_id)
+        await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)
 
         # Stream L3 generation - WITH FORCED TOOL MODE SUPPORT
         full_response = ""
@@ -2008,7 +2073,7 @@ Constraints:
                 
                 # FINAL L3 SYNTHESIS - Now pass the tool output back to L3 (Grok) to synthesize the persona response
                 # CRITICAL: Use explicit instructions so L3 knows to use the tool output, not generate its own
-                synthesis_context.user_input = f"""I executed a tool for you. Here are the REAL results from the tool execution:
+                ctx.synthesis_context.user_input = f"""I executed a tool for you. Here are the REAL results from the tool execution:
 
 {tool_output}
 
@@ -2016,17 +2081,17 @@ Your task: Synthesize a natural, persona-driven response based on these ACTUAL t
 
 Original user query: {user_input}"""
                 
-                self.logger.info(f"[WRENCH] Passing tool output to L3 synthesis. Updated user_input length: {len(synthesis_context.user_input)} chars")
+                self.logger.info(f"[WRENCH] Passing tool output to L3 synthesis. Updated user_input length: {len(ctx.synthesis_context.user_input)} chars")
                 self.logger.debug(f"[WRENCH] Tool output being passed to L3 (first 300 chars): {tool_output[:300] if tool_output else 'EMPTY'}")
                 
                 # Stream the final persona-driven response with tool results
-                async for chunk in self.llm_layers.stream_l3_synthesis(synthesis_context, reasoning_enabled=reasoning_enabled):
+                async for chunk in self.llm_layers.stream_l3_synthesis(ctx.synthesis_context, reasoning_enabled=reasoning_enabled):
                     full_response += chunk
                     yield chunk
             else:
                 # Fallback: if forced mode failed, try regular streaming
                 self.logger.warning("⚠️ Forced tool call mode failed to generate valid JSON, falling back to regular L3 streaming")
-                async for chunk in self.llm_layers.stream_l3_synthesis(synthesis_context, reasoning_enabled=reasoning_enabled):
+                async for chunk in self.llm_layers.stream_l3_synthesis(ctx.synthesis_context, reasoning_enabled=reasoning_enabled):
                     full_response += chunk
                     yield chunk
                 
@@ -2041,10 +2106,10 @@ Original user query: {user_input}"""
                         follow_up_context = SynthesisContext(
                             user_input=follow_up_input,
                             conversation_history=conversation_history or [],
-                            emotional_state=emotional_state,
-                            learning_context=learning_context,
-                            identity_context=identity_context,
-                            goal_context=goal_context,
+                            emotional_state=ctx.emotional_state,
+                            learning_context=ctx.learning_context,
+                            identity_context=ctx.identity_context,
+                            goal_context=ctx.goal_context,
                         )
                         
                         yield "\n\n"
@@ -2065,10 +2130,10 @@ Original user query: {user_input}"""
                 loop_context = SynthesisContext(
                     user_input=_build_loop_input(),
                     conversation_history=conversation_history or [],
-                    emotional_state=emotional_state,
-                    learning_context=learning_context,
-                    identity_context=identity_context,
-                    goal_context=goal_context,
+                    emotional_state=ctx.emotional_state,
+                    learning_context=ctx.learning_context,
+                    identity_context=ctx.identity_context,
+                    goal_context=ctx.goal_context,
                 )
 
                 round_response = ""
@@ -2098,14 +2163,14 @@ Original user query: {user_input}"""
         self._schedule_post_response(
             user_input=user_input,
             response=full_response,
-            emotional_before=emotional_state,
+            emotional_before=ctx.emotional_state,
             user_id=user_id,
             conversation_id=conversation_id,
-            goal_context=goal_context,
-            learning_context=learning_context,
+            goal_context=ctx.goal_context,
+            learning_context=ctx.learning_context,
             enable_l2=deep_analysis_enabled,
             l2_reasoning_enabled=l2_reasoning_enabled,
-            resonance_score=resonance_score,
+            resonance_score=ctx.resonance_score,
         )
 
     async def _apply_l4_emotion_analysis(
