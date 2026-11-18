@@ -30,3 +30,9 @@
 - **Files changed:** `tests/scenarios/test_emotion_baseline_record.py`
 - **Test result:** 1 passed
 - **Notes:** Recorded baseline to docs/metrics/emotion_before.json. After 600 ticks from baseline, several emotions drift up due to relationship amplification. Half-life from 0.7: sadness=100000 (capped), anger=23, joy=18, love=100000 (capped - persistent emotion).
+
+## W0-05: Record today's memory horizon
+- **Status:** DONE
+- **Files changed:** `tests/scenarios/test_memory_horizon_record.py`
+- **Test result:** 1 passed
+- **Notes:** Recorded baseline to docs/metrics/memory_before.json. Emotional intensity: 3@0.8=0.2665, 9@0.7=0.4038, 14@1.0=0.7195. Decay at 1/5/9/15/30 days: MM and DE match closely. At 30 days decay ~3e-5.
