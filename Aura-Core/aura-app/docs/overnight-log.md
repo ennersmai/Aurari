@@ -1,9 +1,9 @@
 # Overnight Build Log
 
 ## Summary
-- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09, W1-10, W1-11, W1-12, W1-13
+- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09, W1-10, W1-11, W1-12, W1-13, W1-16
 - **Stopped at:** None yet (in progress)
-- **Current card:** W1-13
+- **Current card:** W1-16
 
 ---
 
@@ -113,3 +113,11 @@
   Wrote three tests in `tests/unit/test_boost_atomic.py`. The card lists one ("two concurrent boosts on one memory raise `recall_count` by exactly two"); the other two lock in the rewrite's contract. The test uses a local `_AtomicBoostFakeDB` whose `query` recognises the boost `UPDATE`, pulls `$mid`/`$boost` from the params dict, and mutates the stored row in place under an `asyncio.Lock` — mirroring how SurrealDB applies a single `UPDATE ... SET` atomically (it parses the record id and applies the SET expressions against the pre-image). Any non-boost query raises `NotImplementedError` so the test cannot silently pass. (1) Two `boost_on_recall` coroutines awaited via `asyncio.gather` on one memory leave `recall_count == 2` and `importance == 0.5 + 0.05 + 0.05` (the card's test); (2) importance is capped at 1.0 after two `0.2` boosts on a `0.9` memory, matching `math::min([1.0, ...])`; (3) `boost_on_recall` issues exactly one query, it is an `UPDATE $mid SET ...` containing `math::min([1.0, importance + $boost])`, `recall_count += 1` and `last_recalled_at = $now` with `mid`/`boost`/`now` in the params, and it contains no `SELECT` and no `MERGE` (the old read-then-write is gone).
   The W0-04/W0-05 recording tests rewrote the frozen `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.
 - **Unsure about:** Nothing. The change is scoped to `boost_on_recall` (the body, the docstring addition, and the `get_clock` import) only. `_batch_boost_on_recall` and its caller in `retrieve_for_l3` are untouched.
+
+## W1-16: Remove the undefined emotion name
+- **Status:** DONE
+- **Files changed:** `src/aura/orchestrator/coordinator.py`
+- **Test result:** 47 passed (full suite)
+- **Notes:** The card has no "Tests" line, so no test was written for it; ran the full existing suite to confirm nothing broke. In the memory-storage-failure handler (the `except Exception as mem_error:` block in `process_query`), the `EmotionInfluence` used `emotions={"confusion": 0.3, "concern": 0.2}`. `concern` is not one of the 27 dimensions on `EmotionVector` (verified in `src/aura/models/emotion.py`: the cognitive cluster is `curiosity`, `confusion`, `certainty`, `doubt`, `fascination`, `boredom`), so it was an undefined emotion name being silently dropped. Replaced `concern` with `doubt` on line 1639, so the influence is now `{"confusion": 0.3, "doubt": 0.2}` — both keys are valid `EmotionVector` fields. No other line touched. The `source="system_error"` on the same `EmotionInfluence` is also not in the `source` Literal list (valid: `conversation`, `memory`, `goal`, `tool`, `learning`, `internal_critique`, `orchestrator`), but that is pre-existing and outside the card's "Change", so per rule 3 / the card's "Do not change the surrounding logic" I left it alone.
+- **Unsure about:** The card's "Done when" is `grep -n '"concern"' src/aura/orchestrator/coordinator.py` returns nothing. After my change, that grep still matches **line 1529**, a pre-existing *comment* in a *different* handler (the internal-critique handler ~110 lines earlier): `# Aura should feel "concern" or "determination" based on critique`. That comment is natural-language prose describing the critique handler, whose actual emotion dict is `{"interest": 0.1, "determination": 0.1}` — `concern` is not used as an emotion name there. The card's "Change" is explicitly scoped to "the handler that runs when memory storage fails" and the card's "Do not" says "Do not change the surrounding logic"; rule 3 forbids "while I am here" fixes. So I deliberately did **not** edit the comment, and the "Done when" grep has a false-positive on it. Flagging this so the reviewer can decide whether the comment should also be reworded (which would be outside this card's stated scope) — the memory failure handler itself now uses `doubt` exactly as the card's "Change" requires.
+  The W0-04/W0-05 recording tests rewrote the frozen `docs/metrics/memory_before.json` during the full-suite run; per the build-plan note I restored both frozen baselines with `git checkout --` before committing, so no baseline files are in this commit.

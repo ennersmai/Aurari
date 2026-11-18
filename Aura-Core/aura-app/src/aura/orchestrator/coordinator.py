@@ -1636,7 +1636,7 @@ Constraints:
                     await self.emotion_engine.apply_influence(
                         EmotionInfluence(
                             source="system_error",
-                            emotions={"confusion": 0.3, "concern": 0.2},
+                            emotions={"confusion": 0.3, "doubt": 0.2},
                             reason="Memory storage failure (cognitive distress)"
                         )
                     )
