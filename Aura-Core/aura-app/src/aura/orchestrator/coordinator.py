@@ -750,6 +750,214 @@ Constraints:
 
         return intent_data, intent, None
 
+    async def _resolve_forced_tool(
+        self, intent: str, intent_data: dict[str, Any]
+    ) -> tuple[bool, str | None]:
+        """
+        Tool-reflex fast lane: resolve a TOOL_USE intent to a forced tool
+        schema. Returns ``(use_forced_tool_mode, tool_schema_str)``.
+
+        Looks the skill up by ``target_skill_id`` first, then by
+        ``detected_tool`` name (three parameterised ``SELECT * FROM skill``
+        queries), then falls back to loading the tool definition from a file
+        and registering it via ``ingest_local_tool_module``.
+        """
+        target_skill_id = intent_data.get("target_action")
+        # L1/L5 sometimes returns a descriptive label here (e.g. "stock_price_analysis")
+        # instead of an actual Surreal record id. Only treat it as an id if it looks like one.
+        if isinstance(target_skill_id, str) and ":" not in target_skill_id:
+            target_skill_id = None
+
+        # Track if we need to use forced tool call mode
+        use_forced_tool_mode = False
+        tool_schema_str = None
+
+        self.logger.info(f"[MAG] Intent detection result: intent={intent}, target_skill_id={target_skill_id}, detected_tool={intent_data.get('detected_tool')}, confidence={intent_data.get('confidence', 'N/A')}")
+
+        if intent == "TOOL_USE":
+            # Try target_skill_id first, but if it fails or doesn't exist, use detected_tool
+            skill_found = False
+
+            if target_skill_id:
+                self.logger.info(f"⚡ L1 detected TOOL_USE intent with target_skill_id: {target_skill_id}")
+
+                # Fetch the specific skill definition for forced tool call mode
+                try:
+                    skill_record = await self.learning_engine.get_skill(target_skill_id)
+                    if skill_record:
+                        self.logger.info(f"[CLIPBOARD] Found skill record: {skill_record.name}")
+                        # Get the full skill record from database
+                        skill_data = await self.learning_engine.db.select(target_skill_id)
+                        if skill_data and len(skill_data) > 0:
+                            skill_full = skill_data[0]
+
+                            # Build tool definition for forced JSON mode
+                            tool_definition = skill_full.get("definition")
+
+                            # Check if definition exists and is not empty
+                            has_definition = tool_definition is not None and (
+                                (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
+                                (isinstance(tool_definition, list) and len(tool_definition) > 0) or
+                                (not isinstance(tool_definition, (dict, list)) and tool_definition)
+                            )
+
+                            if has_definition:
+                                # Format as JSON string for tool schema
+                                tool_schema_str = json.dumps(tool_definition, indent=2)
+
+                                use_forced_tool_mode = True
+                                skill_found = True
+                                self.logger.info(f"✅ Prepared forced tool call mode for {skill_record.name}")
+                                self.logger.debug(f"Tool schema: {tool_schema_str[:200]}...")
+                            else:
+                                self.logger.warning(
+                                    f"⚠️ Skill {target_skill_id} has no valid definition field "
+                                    f"(got: {type(tool_definition).__name__}, value: {tool_definition})"
+                                )
+                        else:
+                            self.logger.warning(f"⚠️ Skill {target_skill_id} found but no full data available in database")
+                    else:
+                        self.logger.warning(f"⚠️ Skill record not found for ID: {target_skill_id}")
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to fetch skill by ID '{target_skill_id}': {e}")
+
+            # FALLBACK: If target_skill_id lookup failed or doesn't exist, try detected_tool
+            if not skill_found:
+                detected_tool = intent_data.get("detected_tool")
+                if detected_tool:
+                    self.logger.info(f"[MAG] Fallback: Attempting to find skill by name: {detected_tool}")
+                    try:
+                        # Try to find skill by name (case-insensitive, handle spaces/underscores)
+                        # Normalize: "web_search" -> "web search", "Web Search" -> "web search"
+                        normalized_tool = detected_tool.replace("_", " ").lower()
+
+                        # Try exact match first
+                        skill_query = await self.learning_engine.db.query(
+                            "SELECT * FROM skill WHERE name = $name LIMIT 1",
+                            {"name": detected_tool}
+                        )
+
+                        # If not found, try case-insensitive match
+                        if not skill_query or len(skill_query) == 0:
+                            skill_query = await self.learning_engine.db.query(
+                                "SELECT * FROM skill WHERE string::lowercase(name) = $normalized LIMIT 1",
+                                {"normalized": normalized_tool}
+                            )
+
+                        # If still not found, try matching with spaces/underscores normalized
+                        if not skill_query or len(skill_query) == 0:
+                            # Try replacing spaces with underscores and vice versa
+                            alt_name1 = detected_tool.replace("_", " ")
+                            alt_name2 = detected_tool.replace(" ", "_")
+                            skill_query = await self.learning_engine.db.query(
+                                "SELECT * FROM skill WHERE string::lowercase(name) = string::lowercase($alt1) OR string::lowercase(name) = string::lowercase($alt2) LIMIT 1",
+                                {"alt1": alt_name1, "alt2": alt_name2}
+                            )
+                        if skill_query and len(skill_query) > 0:
+                            skill_record = skill_query[0]
+                            target_skill_id = skill_record.get("id")
+                            skill_name = skill_record.get("name", "unknown")
+                            self.logger.info(f"✅ Found skill by name: '{detected_tool}' matched '{skill_name}' -> {target_skill_id}")
+
+                            if len(skill_query) > 1:
+                                self.logger.warning(f"⚠️ Multiple skills found for '{detected_tool}', using first match: {skill_name}")
+
+                            # Now fetch full skill data
+                            skill_data = await self.learning_engine.db.select(target_skill_id)
+                            if skill_data and len(skill_data) > 0:
+                                skill_full = skill_data[0]
+                                tool_definition = skill_full.get("definition")
+
+                                # Check if definition exists and is not empty (could be dict, list, or other truthy value)
+                                # An empty dict {} is falsy, so we need to check explicitly
+                                has_definition = tool_definition is not None and (
+                                    (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
+                                    (isinstance(tool_definition, list) and len(tool_definition) > 0) or
+                                    (not isinstance(tool_definition, (dict, list)) and tool_definition)
+                                )
+
+                                if has_definition:
+                                    tool_schema_str = json.dumps(tool_definition, indent=2)
+                                    use_forced_tool_mode = True
+                                    skill_found = True  # CRITICAL: Mark as found so we don't try file fallback
+                                    self.logger.info(f"✅ Prepared forced tool call mode for {detected_tool} (found by name, has definition)")
+                                else:
+                                    # Skill exists but has no definition - might be abstract skill
+                                    # Log what we actually got for debugging
+                                    self.logger.warning(
+                                        f"⚠️ Skill '{detected_tool}' found but has no valid definition field "
+                                        f"(got: {type(tool_definition).__name__}, value: {tool_definition}) - will try file fallback"
+                                    )
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Failed to find skill by name '{detected_tool}': {e}")
+
+                # FINAL FALLBACK: If skill not in DB, try to load tool definition directly from file
+                if not skill_found and detected_tool:
+                    self.logger.info(f"[WRENCH] Final fallback: Loading tool definition directly from file: {detected_tool}")
+                    try:
+                        import importlib.util
+                        import os
+
+                        # Find the tool file - try multiple paths
+                        # In Docker: /app/src/aura/tools/web_search.py
+                        # Local dev: relative from coordinator.py
+                        possible_paths = [
+                            os.path.join("/app", "src", "aura", "tools", f"{detected_tool}.py"),  # Docker path
+                        ]
+
+                        # Also try relative path
+                        current_file_dir = os.path.dirname(os.path.abspath(__file__))
+                        aura_root = os.path.dirname(os.path.dirname(current_file_dir))
+                        tools_dir = os.path.join(aura_root, "tools")
+                        possible_paths.append(os.path.join(tools_dir, f"{detected_tool}.py"))
+
+                        file_path = None
+                        for path in possible_paths:
+                            if os.path.exists(path):
+                                file_path = path
+                                self.logger.info(f"✅ Found tool file at: {file_path}")
+                                break
+
+                        if file_path and os.path.exists(file_path):
+                            spec = importlib.util.spec_from_file_location(
+                                f"aura.tools.{detected_tool}",
+                                file_path
+                            )
+                            module = importlib.util.module_from_spec(spec)
+                            spec.loader.exec_module(module)
+
+                            if hasattr(module, "TOOL_DEFINITION"):
+                                tool_def = module.TOOL_DEFINITION
+                                # Convert to the format expected by forced tool mode
+                                tool_definition = {
+                                    "name": tool_def.get("name"),
+                                    "description": tool_def.get("description"),
+                                    "parameters": tool_def.get("parameters", {})
+                                }
+
+                                tool_schema_str = json.dumps(tool_definition, indent=2)
+                                use_forced_tool_mode = True
+                                skill_found = True
+                                self.logger.info(f"✅ Loaded tool definition directly from file: {detected_tool}")
+
+                                # Optionally register it as a skill for future use (async, non-blocking)
+                                try:
+                                    await self.learning_engine.ingest_local_tool_module(detected_tool)
+                                    self.logger.info(f"✅ Registered {detected_tool} as skill for future use")
+                                except Exception as reg_error:
+                                    self.logger.warning(f"⚠️ Failed to register {detected_tool} as skill (non-critical): {reg_error}")
+                            else:
+                                self.logger.warning(f"⚠️ Tool file {file_path} exists but has no TOOL_DEFINITION")
+                        else:
+                            self.logger.warning(f"⚠️ Tool file not found: {file_path}")
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to load tool definition from file '{detected_tool}': {e}", exc_info=True)
+                elif not detected_tool:
+                    # Only warn when detected_tool is actually missing; don't warn when we already found a skill.
+                    self.logger.warning(f"⚠️ TOOL_USE intent detected but no detected_tool provided. Intent data: {intent_data}")
+
+        return use_forced_tool_mode, tool_schema_str
+
     async def process_query(
         self,
         user_input: str,
@@ -807,200 +1015,7 @@ Constraints:
 
         # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
-        target_skill_id = intent_data.get("target_action")
-        # L1/L5 sometimes returns a descriptive label here (e.g. "stock_price_analysis")
-        # instead of an actual Surreal record id. Only treat it as an id if it looks like one.
-        if isinstance(target_skill_id, str) and ":" not in target_skill_id:
-            target_skill_id = None
-        
-        # Track if we need to use forced tool call mode
-        use_forced_tool_mode = False
-        tool_schema_str = None
-        
-        self.logger.info(f"[MAG] Intent detection result: intent={intent}, target_skill_id={target_skill_id}, detected_tool={intent_data.get('detected_tool')}, confidence={intent_data.get('confidence', 'N/A')}")
-        
-        if intent == "TOOL_USE":
-            # Try target_skill_id first, but if it fails or doesn't exist, use detected_tool
-            skill_found = False
-            
-            if target_skill_id:
-                self.logger.info(f"⚡ L1 detected TOOL_USE intent with target_skill_id: {target_skill_id}")
-                
-                # Fetch the specific skill definition for forced tool call mode
-                try:
-                    skill_record = await self.learning_engine.get_skill(target_skill_id)
-                    if skill_record:
-                        self.logger.info(f"[CLIPBOARD] Found skill record: {skill_record.name}")
-                        # Get the full skill record from database
-                        skill_data = await self.learning_engine.db.select(target_skill_id)
-                        if skill_data and len(skill_data) > 0:
-                            skill_full = skill_data[0]
-                            
-                            # Build tool definition for forced JSON mode
-                            tool_definition = skill_full.get("definition")
-                            
-                            # Check if definition exists and is not empty
-                            has_definition = tool_definition is not None and (
-                                (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
-                                (isinstance(tool_definition, list) and len(tool_definition) > 0) or
-                                (not isinstance(tool_definition, (dict, list)) and tool_definition)
-                            )
-                            
-                            if has_definition:
-                                # Format as JSON string for tool schema
-                                tool_schema_str = json.dumps(tool_definition, indent=2)
-                                
-                                use_forced_tool_mode = True
-                                skill_found = True
-                                self.logger.info(f"✅ Prepared forced tool call mode for {skill_record.name}")
-                                self.logger.debug(f"Tool schema: {tool_schema_str[:200]}...")
-                            else:
-                                self.logger.warning(
-                                    f"⚠️ Skill {target_skill_id} has no valid definition field "
-                                    f"(got: {type(tool_definition).__name__}, value: {tool_definition})"
-                                )
-                        else:
-                            self.logger.warning(f"⚠️ Skill {target_skill_id} found but no full data available in database")
-                    else:
-                        self.logger.warning(f"⚠️ Skill record not found for ID: {target_skill_id}")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to fetch skill by ID '{target_skill_id}': {e}")
-            
-            # FALLBACK: If target_skill_id lookup failed or doesn't exist, try detected_tool
-            if not skill_found:
-                detected_tool = intent_data.get("detected_tool")
-                if detected_tool:
-                    self.logger.info(f"[MAG] Fallback: Attempting to find skill by name: {detected_tool}")
-                    try:
-                        # Try to find skill by name (case-insensitive, handle spaces/underscores)
-                        # Normalize: "web_search" -> "web search", "Web Search" -> "web search"
-                        normalized_tool = detected_tool.replace("_", " ").lower()
-                        
-                        # Try exact match first
-                        skill_query = await self.learning_engine.db.query(
-                            "SELECT * FROM skill WHERE name = $name LIMIT 1",
-                            {"name": detected_tool}
-                        )
-                        
-                        # If not found, try case-insensitive match
-                        if not skill_query or len(skill_query) == 0:
-                            skill_query = await self.learning_engine.db.query(
-                                "SELECT * FROM skill WHERE string::lowercase(name) = $normalized LIMIT 1",
-                                {"normalized": normalized_tool}
-                            )
-                        
-                        # If still not found, try matching with spaces/underscores normalized
-                        if not skill_query or len(skill_query) == 0:
-                            # Try replacing spaces with underscores and vice versa
-                            alt_name1 = detected_tool.replace("_", " ")
-                            alt_name2 = detected_tool.replace(" ", "_")
-                            skill_query = await self.learning_engine.db.query(
-                                "SELECT * FROM skill WHERE string::lowercase(name) = string::lowercase($alt1) OR string::lowercase(name) = string::lowercase($alt2) LIMIT 1",
-                                {"alt1": alt_name1, "alt2": alt_name2}
-                            )
-                        if skill_query and len(skill_query) > 0:
-                            skill_record = skill_query[0]
-                            target_skill_id = skill_record.get("id")
-                            skill_name = skill_record.get("name", "unknown")
-                            self.logger.info(f"✅ Found skill by name: '{detected_tool}' matched '{skill_name}' -> {target_skill_id}")
-                            
-                            if len(skill_query) > 1:
-                                self.logger.warning(f"⚠️ Multiple skills found for '{detected_tool}', using first match: {skill_name}")
-                            
-                            # Now fetch full skill data
-                            skill_data = await self.learning_engine.db.select(target_skill_id)
-                            if skill_data and len(skill_data) > 0:
-                                skill_full = skill_data[0]
-                                tool_definition = skill_full.get("definition")
-                                
-                                # Check if definition exists and is not empty (could be dict, list, or other truthy value)
-                                # An empty dict {} is falsy, so we need to check explicitly
-                                has_definition = tool_definition is not None and (
-                                    (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
-                                    (isinstance(tool_definition, list) and len(tool_definition) > 0) or
-                                    (not isinstance(tool_definition, (dict, list)) and tool_definition)
-                                )
-                                
-                                if has_definition:
-                                    tool_schema_str = json.dumps(tool_definition, indent=2)
-                                    use_forced_tool_mode = True
-                                    skill_found = True  # CRITICAL: Mark as found so we don't try file fallback
-                                    self.logger.info(f"✅ Prepared forced tool call mode for {detected_tool} (found by name, has definition)")
-                                else:
-                                    # Skill exists but has no definition - might be abstract skill
-                                    # Log what we actually got for debugging
-                                    self.logger.warning(
-                                        f"⚠️ Skill '{detected_tool}' found but has no valid definition field "
-                                        f"(got: {type(tool_definition).__name__}, value: {tool_definition}) - will try file fallback"
-                                    )
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to find skill by name '{detected_tool}': {e}")
-                
-                # FINAL FALLBACK: If skill not in DB, try to load tool definition directly from file
-                if not skill_found and detected_tool:
-                    self.logger.info(f"[WRENCH] Final fallback: Loading tool definition directly from file: {detected_tool}")
-                    try:
-                        import importlib.util
-                        import os
-                        
-                        # Find the tool file - try multiple paths
-                        # In Docker: /app/src/aura/tools/web_search.py
-                        # Local dev: relative from coordinator.py
-                        possible_paths = [
-                            os.path.join("/app", "src", "aura", "tools", f"{detected_tool}.py"),  # Docker path
-                        ]
-                        
-                        # Also try relative path
-                        current_file_dir = os.path.dirname(os.path.abspath(__file__))
-                        aura_root = os.path.dirname(os.path.dirname(current_file_dir))
-                        tools_dir = os.path.join(aura_root, "tools")
-                        possible_paths.append(os.path.join(tools_dir, f"{detected_tool}.py"))
-                        
-                        file_path = None
-                        for path in possible_paths:
-                            if os.path.exists(path):
-                                file_path = path
-                                self.logger.info(f"✅ Found tool file at: {file_path}")
-                                break
-                        
-                        if file_path and os.path.exists(file_path):
-                            spec = importlib.util.spec_from_file_location(
-                                f"aura.tools.{detected_tool}",
-                                file_path
-                            )
-                            module = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(module)
-                            
-                            if hasattr(module, "TOOL_DEFINITION"):
-                                tool_def = module.TOOL_DEFINITION
-                                # Convert to the format expected by forced tool mode
-                                tool_definition = {
-                                    "name": tool_def.get("name"),
-                                    "description": tool_def.get("description"),
-                                    "parameters": tool_def.get("parameters", {})
-                                }
-                                
-                                tool_schema_str = json.dumps(tool_definition, indent=2)
-                                use_forced_tool_mode = True
-                                skill_found = True
-                                self.logger.info(f"✅ Loaded tool definition directly from file: {detected_tool}")
-                                
-                                # Optionally register it as a skill for future use (async, non-blocking)
-                                try:
-                                    await self.learning_engine.ingest_local_tool_module(detected_tool)
-                                    self.logger.info(f"✅ Registered {detected_tool} as skill for future use")
-                                except Exception as reg_error:
-                                    self.logger.warning(f"⚠️ Failed to register {detected_tool} as skill (non-critical): {reg_error}")
-                            else:
-                                self.logger.warning(f"⚠️ Tool file {file_path} exists but has no TOOL_DEFINITION")
-                        else:
-                            self.logger.warning(f"⚠️ Tool file not found: {file_path}")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to load tool definition from file '{detected_tool}': {e}", exc_info=True)
-                elif not detected_tool:
-                    # Only warn when detected_tool is actually missing; don't warn when we already found a skill.
-                    self.logger.warning(f"⚠️ TOOL_USE intent detected but no detected_tool provided. Intent data: {intent_data}")
-        # -------------------------------
+        use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
         # Step 1: Parallel engine queries
         emotional_state = await self.emotion_engine.get_current_state()
@@ -1832,197 +1847,7 @@ Constraints:
 
         # 2. TOOL REFLEX FAST LANE (New) - FORCED JSON MODE
         # If Vector Search found a direct hit (>0.95 confidence) or LLM detected TOOL_USE
-        target_skill_id = intent_data.get("target_action")
-        # L1/L5 sometimes returns a descriptive label here (e.g. "stock_price_analysis")
-        # instead of an actual Surreal record id. Only treat it as an id if it looks like one.
-        if isinstance(target_skill_id, str) and ":" not in target_skill_id:
-            target_skill_id = None
-        
-        # Track if we need to use forced tool call mode
-        use_forced_tool_mode = False
-        tool_schema_str = None
-        
-        if intent == "TOOL_USE":
-            # Try target_skill_id first, but if it fails or doesn't exist, use detected_tool
-            skill_found = False
-            
-            if target_skill_id:
-                self.logger.info(f"⚡ L1 detected TOOL_USE intent with target_skill_id: {target_skill_id} (streaming)")
-                
-                # Fetch the specific skill definition for forced tool call mode
-                try:
-                    skill_record = await self.learning_engine.get_skill(target_skill_id)
-                    if skill_record:
-                        self.logger.info(f"[CLIPBOARD] Found skill record: {skill_record.name} (streaming)")
-                        # Get the full skill record from database
-                        skill_data = await self.learning_engine.db.select(target_skill_id)
-                        if skill_data and len(skill_data) > 0:
-                            skill_full = skill_data[0]
-                            
-                            # Build tool definition for forced JSON mode
-                            tool_definition = skill_full.get("definition")
-                            
-                            # Check if definition exists and is not empty
-                            has_definition = tool_definition is not None and (
-                                (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
-                                (isinstance(tool_definition, list) and len(tool_definition) > 0) or
-                                (not isinstance(tool_definition, (dict, list)) and tool_definition)
-                            )
-                            
-                            if has_definition:
-                                # Format as JSON string for tool schema
-                                tool_schema_str = json.dumps(tool_definition, indent=2)
-                                
-                                use_forced_tool_mode = True
-                                skill_found = True
-                                self.logger.info(f"✅ Prepared forced tool call mode for {skill_record.name} (streaming)")
-                            else:
-                                self.logger.warning(
-                                    f"⚠️ Skill {target_skill_id} has no valid definition field "
-                                    f"(got: {type(tool_definition).__name__}, value: {tool_definition}) (streaming)"
-                                )
-                        else:
-                            self.logger.warning(f"⚠️ Skill {target_skill_id} found but no full data available (streaming)")
-                    else:
-                        self.logger.warning(f"⚠️ Skill record not found for ID: {target_skill_id} (streaming)")
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to fetch skill by ID '{target_skill_id}' (streaming): {e}")
-            
-            # FALLBACK: If target_skill_id lookup failed or doesn't exist, try detected_tool
-            if not skill_found:
-                detected_tool = intent_data.get("detected_tool")
-                if detected_tool:
-                    self.logger.info(f"[MAG] Fallback: Attempting to find skill by name: {detected_tool} (streaming)")
-                    try:
-                        # Try to find skill by name (case-insensitive, handle spaces/underscores)
-                        # Normalize: "web_search" -> "web search", "Web Search" -> "web search"
-                        normalized_tool = detected_tool.replace("_", " ").lower()
-                        
-                        # Try exact match first
-                        skill_query = await self.learning_engine.db.query(
-                            "SELECT * FROM skill WHERE name = $name LIMIT 1",
-                            {"name": detected_tool}
-                        )
-                        
-                        # If not found, try case-insensitive match
-                        if not skill_query or len(skill_query) == 0:
-                            skill_query = await self.learning_engine.db.query(
-                                "SELECT * FROM skill WHERE string::lowercase(name) = $normalized LIMIT 1",
-                                {"normalized": normalized_tool}
-                            )
-                        
-                        # If still not found, try matching with spaces/underscores normalized
-                        if not skill_query or len(skill_query) == 0:
-                            # Try replacing spaces with underscores and vice versa
-                            alt_name1 = detected_tool.replace("_", " ")
-                            alt_name2 = detected_tool.replace(" ", "_")
-                            skill_query = await self.learning_engine.db.query(
-                                "SELECT * FROM skill WHERE string::lowercase(name) = string::lowercase($alt1) OR string::lowercase(name) = string::lowercase($alt2) LIMIT 1",
-                                {"alt1": alt_name1, "alt2": alt_name2}
-                            )
-                        if skill_query and len(skill_query) > 0:
-                            skill_record = skill_query[0]
-                            target_skill_id = skill_record.get("id")
-                            skill_name = skill_record.get("name", "unknown")
-                            self.logger.info(f"✅ Found skill by name (streaming): '{detected_tool}' matched '{skill_name}' -> {target_skill_id}")
-                            
-                            if len(skill_query) > 1:
-                                self.logger.warning(f"⚠️ Multiple skills found for '{detected_tool}' (streaming), using first match: {skill_name}")
-                            
-                            # Now fetch full skill data
-                            skill_data = await self.learning_engine.db.select(target_skill_id)
-                            if skill_data and len(skill_data) > 0:
-                                skill_full = skill_data[0]
-                                tool_definition = skill_full.get("definition")
-                                
-                                # Check if definition exists and is not empty (could be dict, list, or other truthy value)
-                                # An empty dict {} is falsy, so we need to check explicitly
-                                has_definition = tool_definition is not None and (
-                                    (isinstance(tool_definition, dict) and len(tool_definition) > 0) or
-                                    (isinstance(tool_definition, list) and len(tool_definition) > 0) or
-                                    (not isinstance(tool_definition, (dict, list)) and tool_definition)
-                                )
-                                
-                                if has_definition:
-                                    tool_schema_str = json.dumps(tool_definition, indent=2)
-                                    use_forced_tool_mode = True
-                                    skill_found = True  # CRITICAL: Mark as found so we don't try file fallback
-                                    self.logger.info(f"✅ Prepared forced tool call mode for {detected_tool} (found by name, has definition, streaming)")
-                                else:
-                                    # Skill exists but has no definition - might be abstract skill
-                                    # Log what we actually got for debugging
-                                    self.logger.warning(
-                                        f"⚠️ Skill '{detected_tool}' found but has no valid definition field "
-                                        f"(got: {type(tool_definition).__name__}, value: {tool_definition}) - will try file fallback (streaming)"
-                                    )
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to find skill by name '{detected_tool}' (streaming): {e}")
-                
-                # FINAL FALLBACK: If skill not in DB, try to load tool definition directly from file
-                if not skill_found and detected_tool:
-                    self.logger.info(f"[WRENCH] Final fallback: Loading tool definition directly from file: {detected_tool} (streaming)")
-                    try:
-                        import importlib.util
-                        import os
-                        
-                        # Find the tool file - try multiple paths
-                        # In Docker: /app/src/aura/tools/web_search.py
-                        # Local dev: relative from coordinator.py
-                        possible_paths = [
-                            os.path.join("/app", "src", "aura", "tools", f"{detected_tool}.py"),  # Docker path
-                        ]
-                        
-                        # Also try relative path
-                        current_file_dir = os.path.dirname(os.path.abspath(__file__))
-                        aura_root = os.path.dirname(os.path.dirname(current_file_dir))
-                        tools_dir = os.path.join(aura_root, "tools")
-                        possible_paths.append(os.path.join(tools_dir, f"{detected_tool}.py"))
-                        
-                        file_path = None
-                        for path in possible_paths:
-                            if os.path.exists(path):
-                                file_path = path
-                                self.logger.info(f"✅ Found tool file at: {file_path} (streaming)")
-                                break
-                        
-                        if file_path and os.path.exists(file_path):
-                            spec = importlib.util.spec_from_file_location(
-                                f"aura.tools.{detected_tool}",
-                                file_path
-                            )
-                            module = importlib.util.module_from_spec(spec)
-                            spec.loader.exec_module(module)
-                            
-                            if hasattr(module, "TOOL_DEFINITION"):
-                                tool_def = module.TOOL_DEFINITION
-                                # Convert to the format expected by forced tool mode
-                                tool_definition = {
-                                    "name": tool_def.get("name"),
-                                    "description": tool_def.get("description"),
-                                    "parameters": tool_def.get("parameters", {})
-                                }
-                                
-                                tool_schema_str = json.dumps(tool_definition, indent=2)
-                                use_forced_tool_mode = True
-                                skill_found = True
-                                self.logger.info(f"✅ Loaded tool definition directly from file: {detected_tool} (streaming)")
-                                
-                                # Optionally register it as a skill for future use (async, non-blocking)
-                                try:
-                                    await self.learning_engine.ingest_local_tool_module(detected_tool)
-                                    self.logger.info(f"✅ Registered {detected_tool} as skill for future use (streaming)")
-                                except Exception as reg_error:
-                                    self.logger.warning(f"⚠️ Failed to register {detected_tool} as skill (non-critical, streaming): {reg_error}")
-                            else:
-                                self.logger.warning(f"⚠️ Tool file {file_path} exists but has no TOOL_DEFINITION (streaming)")
-                        else:
-                            self.logger.warning(f"⚠️ Tool file not found: {file_path} (streaming)")
-                    except Exception as e:
-                        self.logger.error(f"❌ Failed to load tool definition from file '{detected_tool}' (streaming): {e}", exc_info=True)
-                elif not detected_tool:
-                    # Only warn when detected_tool is actually missing; don't warn when we already found a skill.
-                    self.logger.warning(f"⚠️ TOOL_USE intent detected but no detected_tool provided (streaming). Intent data: {intent_data}")
-        # -------------------------------
+        use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
         # Parallel engine queries with timeout protection
         import asyncio

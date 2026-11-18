@@ -437,3 +437,53 @@ async def test_k_post_response_chain_only_after_generator_exhausted(turn_orchest
 
     assert rest == ["b"]
     orch._post_response_chain.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# (W2-06) forced tool resolution by detected_tool name lookup (streaming)
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
+    """W2-06: in the streaming path, ``_resolve_forced_tool`` resolves a tool
+    by ``detected_tool`` name via the parameterised
+    ``SELECT * FROM skill WHERE name = $name`` query when there is no
+    ``target_skill_id``. ``get_skill`` returns ``None``, the first ``db.query``
+    returns a skill row, and ``db.select`` returns its definition; forced tool
+    call mode is engaged, so the forced streaming branch runs (the single
+    ``stream_l3_synthesis`` context's user_input starts with the forced
+    prompt and ends with the original query).
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(
+        return_value={"intent": "TOOL_USE", "detected_tool": "web_search"}
+    )
+    # No target_skill_id path: get_skill returns None.
+    orch.learning_engine.get_skill = AsyncMock(return_value=None)
+    # First db.query (exact name match) returns a skill row.
+    orch.learning_engine.db.query = AsyncMock(
+        return_value=[{"id": "skill:ws", "name": "web_search"}]
+    )
+    # db.select returns the full skill record with a definition.
+    orch.learning_engine.db.select = AsyncMock(
+        return_value=[{"definition": {"name": "web_search"}}]
+    )
+    # forced tool call yields a JSON tool call -> the forced streaming branch.
+    orch.llm_layers.l3_tool_call_mode = AsyncMock(return_value='{"tool":"t"}')
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=["call"])
+    orch.tool_executor.execute_and_feedback = AsyncMock(return_value="OUT")
+    # the single follow-up stream.
+    orch.llm_layers._stream_chunks_queue.append(["per", "sona"])
+
+    chunks = await _collect(orch.stream_query("hello", user_id="u1"))
+    await _drain()
+
+    expected_schema = json.dumps({"name": "web_search"}, indent=2)
+    orch.llm_layers.l3_tool_call_mode.assert_awaited_once_with(
+        query="hello", tool_schema=expected_schema
+    )
+    # Only one stream_l3_synthesis call (the forced-tool path).
+    assert len(orch.llm_layers._stream_calls) == 1
+    ctx, _ = orch.llm_layers._stream_calls[0]
+    assert ctx.user_input.startswith("I executed a tool for you.")
+    assert ctx.user_input.endswith("Original user query: hello")
+    assert chunks == ["per", "sona"]

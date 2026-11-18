@@ -510,3 +510,49 @@ async def test_n_context_mode_is_set_on_llm_layers(turn_orchestrator):
     # llm_layers is a MagicMock, so the assignment stores the value verbatim.
     assert orch.llm_layers.context_mode == "deep_work"
     await _drain()
+
+
+# ---------------------------------------------------------------------------
+# (W2-06) forced tool resolution by detected_tool name lookup
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_w2_06_forced_tool_by_name_lookup(turn_orchestrator):
+    """W2-06: ``_resolve_forced_tool`` resolves a tool by ``detected_tool``
+    name via the parameterised ``SELECT * FROM skill WHERE name = $name`` query
+    when there is no ``target_skill_id``. ``get_skill`` returns ``None`` (no
+    record-id hit), the first ``db.query`` returns a skill row, and
+    ``db.select`` returns its definition; forced tool call mode is engaged and
+    ``l3_tool_call_mode`` is called with that definition as JSON.
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(
+        return_value={"intent": "TOOL_USE", "detected_tool": "web_search"}
+    )
+    # No target_skill_id path: get_skill returns None.
+    orch.learning_engine.get_skill = AsyncMock(return_value=None)
+    # First db.query (exact name match) returns a skill row.
+    orch.learning_engine.db.query = AsyncMock(
+        return_value=[{"id": "skill:ws", "name": "web_search"}]
+    )
+    # db.select returns the full skill record with a definition.
+    orch.learning_engine.db.select = AsyncMock(
+        return_value=[{"definition": {"name": "web_search"}}]
+    )
+    # forced seed: l3_tool_call_mode returns text with a tool call; the seed
+    # execute_and_feedback returns "SEED"; the loop's l3_synthesis returns a
+    # final response with no further tool calls.
+    orch.llm_layers.l3_tool_call_mode = AsyncMock(return_value='{"tool":"t"}')
+    orch.tool_executor.extract_tool_calls = MagicMock(
+        side_effect=[["seed_call"], []]
+    )
+    orch.tool_executor.execute_and_feedback = AsyncMock(return_value="SEED")
+    orch.llm_layers.l3_synthesis = AsyncMock(return_value="final answer")
+
+    result = await orch.process_query("hello", user_id="u1")
+
+    expected_schema = json.dumps({"name": "web_search"}, indent=2)
+    orch.llm_layers.l3_tool_call_mode.assert_awaited_once_with(
+        query="hello", tool_schema=expected_schema
+    )
+    assert result == "final answer"
+    await _drain()
