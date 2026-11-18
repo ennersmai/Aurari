@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
+from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.config import settings
 from aura.llm.embeddings import get_embeddings_client
@@ -1194,20 +1195,18 @@ class MemoryManager:
 
         Also increments recall_count and updates last_recalled_at so the
         nuanced decay engine can extend this memory's effective half-life.
+
+        Done as a single UPDATE so concurrent boosts on the same memory cannot
+        read the same importance and lose one of the increments.
         """
         try:
-            result = await self.db.query(
-                "SELECT importance, recall_count FROM memory WHERE id = $mid LIMIT 1",
-                {"mid": memory_id},
+            await self.db.query(
+                "UPDATE $mid SET "
+                "importance = math::min([1.0, importance + $boost]), "
+                "recall_count += 1, "
+                "last_recalled_at = $now",
+                {"mid": memory_id, "boost": boost, "now": get_clock().now()},
             )
-            if result:
-                old_imp = float(result[0].get("importance", 0.5))
-                old_count = int(result[0].get("recall_count", 0))
-                await self.db.merge(memory_id, {
-                    "importance": min(1.0, old_imp + boost),
-                    "recall_count": old_count + 1,
-                    "last_recalled_at": datetime.now(timezone.utc),
-                })
         except Exception as e:
             logger.error(f"boost_on_recall failed: {e}")
 
