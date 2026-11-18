@@ -1032,8 +1032,8 @@ class MemoryManager:
                 SELECT in, out, similarity
                 FROM related_to
                 WHERE in IN $sids OR out IN $sids
-                FETCH in, out
                 LIMIT 50
+                FETCH in, out
                 """,
                 {"sids": seed_ids},
             )
