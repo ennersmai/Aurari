@@ -771,8 +771,8 @@ class MemoryManager:
                 SELECT in.content AS content, in.timestamp AS timestamp
                 FROM abstracted_into
                 WHERE out = $mid
-                FETCH in
                 LIMIT 5
+                FETCH in
                 """,
                 {"mid": memory_id},
             )
@@ -836,8 +836,8 @@ class MemoryManager:
                                        in.timestamp AS timestamp
                                 FROM next_experience
                                 WHERE out = $eid
-                                FETCH in
                                 LIMIT 2
+                                FETCH in
                                 """,
                                 {"eid": exp_id},
                             )
@@ -1504,8 +1504,8 @@ class MemoryManager:
                                elapsed_ms
                         FROM next_experience
                         WHERE out = $eid
-                        FETCH in
                         LIMIT 1
+                        FETCH in
                         """,
                         {"eid": current_id},
                     )
@@ -1566,8 +1566,8 @@ class MemoryManager:
                            in.importance AS importance
                     FROM abstracted_into
                     WHERE out = $iid
-                    FETCH in
                     LIMIT 10
+                    FETCH in
                     """,
                     {"iid": insight_id},
                 )
