@@ -48,3 +48,9 @@
 - **Files changed:** `src/aura/llm/layers.py`
 - **Test result:** 14 passed (full suite)
 - **Notes:** Added user_id=context.user_id to both retrieve_for_l3 calls (standard L3 and streaming L3).
+
+## W1-05: Parameterise memory queries
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/memory/manager.py`
+- **Test result:** 14 passed (full suite)
+- **Notes:** Changed _compute_formation_score (novelty and surprise queries), _create_related_edges, and _fetch_candidates to use parameterized queries instead of f-string interpolation for user_id, memory_id, importance_min, and id lists.

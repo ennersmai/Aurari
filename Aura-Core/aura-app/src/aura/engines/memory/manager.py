@@ -205,8 +205,10 @@ class MemoryManager:
         novelty = 1.0
         try:
             conditions = ["deprecated = false"]
+            params: dict[str, Any] = {}
             if user_id:
-                conditions.append(f"user_id = '{user_id}'")
+                conditions.append("user_id = $user_id")
+                params["user_id"] = user_id
             where = " AND ".join(conditions)
             recent = await self.db.query(
                 f"""
@@ -215,7 +217,8 @@ class MemoryManager:
                 WHERE {where}
                 ORDER BY timestamp DESC
                 LIMIT 5
-                """
+                """,
+                params,
             )
             if recent and embedding:
                 for row in recent:
@@ -244,9 +247,12 @@ class MemoryManager:
         if pre_retrieval_ids and embedding:
             try:
                 # Fetch embeddings of pre-retrieval memories
-                id_list = ", ".join(f"'{rid}'" for rid in pre_retrieval_ids[:5])
+                id_list = pre_retrieval_ids[:5]
+                placeholders = ", ".join(f"$id{i}" for i in range(len(id_list)))
+                params = {f"id{i}": rid for i, rid in enumerate(id_list)}
                 pre_mems = await self.db.query(
-                    f"SELECT embedding FROM memory WHERE id IN [{id_list}]"
+                    f"SELECT embedding FROM memory WHERE id IN [{placeholders}]",
+                    params,
                 )
                 if pre_mems:
                     # Average cosine similarity of pre-retrieval set to new content
@@ -387,9 +393,11 @@ class MemoryManager:
     ) -> None:
         """Create ->related_to-> edges to semantically similar memories at formation time."""
         try:
-            conditions = [f"id != '{memory_id}'", "deprecated = false"]
+            conditions = ["id != $memory_id", "deprecated = false"]
+            params: dict[str, Any] = {"memory_id": memory_id, "emb": embedding}
             if user_id:
-                conditions.append(f"user_id = '{user_id}'")
+                conditions.append("user_id = $user_id")
+                params["user_id"] = user_id
             where = " AND ".join(conditions)
 
             neighbors = await self.db.query(
@@ -401,7 +409,7 @@ class MemoryManager:
                 ORDER BY sim DESC
                 LIMIT 5
                 """,
-                {"emb": embedding},
+                params,
             )
             for row in (neighbors or []):
                 sim = float(row.get("sim", 0.0))
@@ -565,14 +573,15 @@ class MemoryManager:
                 own memories *and* global ones, never another session's memories.
         """
         conditions = [
-            f"importance >= {importance_min}",
+            "importance >= $importance_min",
             "deprecated = false",
             "ephemeral = false",
         ]
+        params: dict[str, Any] = {"importance_min": importance_min}
         if user_id:
-            conditions.append(f"user_id = '{user_id}'")
+            conditions.append("user_id = $user_id")
+            params["user_id"] = user_id
 
-        params: dict[str, Any] = {}
         # "global" / None / "" all mean "no scope filter — read everything"
         if namespace and namespace != "global":
             conditions.append('(namespace = $ns OR namespace = "global" OR namespace IS NONE)')
