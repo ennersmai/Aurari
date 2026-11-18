@@ -1,0 +1,66 @@
+# Aura launcher config (sibling of Aura.exe).
+# Rename to `aura.config.toml` and edit. The launcher reads this on startup;
+# changes here do NOT require rebuilding the launcher.
+#
+# Sovereign-Native Mode: No Docker, no containers. The launcher spawns
+# SurrealDB and Uvicorn as native OS child processes with visible terminal
+# windows for real-time stdout/stderr monitoring.
+
+config_version = 2
+
+# Absolute path to the aura-app directory (contains pyproject.toml + .env).
+# If omitted, the launcher searches a few sibling/parent folders automatically.
+aura_app_path = "C:\\Aura\\aura-app"
+
+[services]
+database = "aura-database"
+backend = "aura-backend"
+frontend = "aura-frontend"
+
+[ports]
+database = 8000
+backend  = 8080
+frontend = 3000
+
+[health]
+backend_path     = "/health"
+frontend_path    = "/"
+poll_interval_ms = 1500
+boot_timeout_secs = 180
+probe_timeout_secs = 3
+
+# SurrealDB native config.
+[surrealdb]
+user = "root"
+pass = "root"
+# Optional override path to the surreal binary.
+# binary_path = "C:\\Users\\Mai\\.scoop\\shims\\surreal.exe"
+# Extra args passed to `surreal start`.
+# extra_args = ["--log", "debug"]
+
+[advanced]
+allow_alt_ports = false
+headless_persist_on_quit = false
+
+# Bare-metal Qwen3-TTS — launched via a standard Python venv.
+# Run setup-env.ps1 inside the TTS directory first to create the venv
+# and install the pre-compiled wheel.
+[tts]
+enabled = false
+# Absolute path to the TTS directory (contains server.py + venv/).
+tts_path = "C:\\Users\\Mai\\Desktop\\Aura\\Aura-Core\\Qwen3-TTS"
+# TCP port the TTS server listens on.
+port = 50000
+# Model path passed as --model_dir to the server.
+model_dir = "./Qwen3-TTS"
+# Relative path to the server script inside tts_path.
+server_script = "server.py"
+
+# SGLang inference server — local LLM with RadixAttention for long-context RP.
+# Only spawned if enabled = true.  Requires `pip install "sglang[all]"` and
+# a downloaded model at model_path.  CUDA Toolkit + MSVC are required on
+# native Windows for FlashInfer compilation.
+[inference]
+enabled = false
+# Path to the model directory (HuggingFace format, not GGUF).
+model_path = "./models/gemma2-27b"

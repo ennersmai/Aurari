@@ -1,0 +1,32 @@
+{
+  "productName": "Aura",
+  "version": "0.1.0",
+  "identifier": "com.aura.launcher",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "publisher": "Aura",
+    "windows": {
+      "wix": {
+        "language": ["en-US"]
+      }
+    }
+  },
+  "plugins": {}
+}

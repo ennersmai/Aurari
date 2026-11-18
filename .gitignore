@@ -1,0 +1,72 @@
+# Environments
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.next/
+out/
+build/
+
+# Docker
+.docker
+# Python venv
+venv/
+# Logs
+logs
+*.log
+output*.txt
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+Aura-Core/Qwen3-TTS/model.safetensors
+Aura-Core/Qwen3-TTS/speech_tokenizer/model.safetensors
+# Qwen3-TTS generated outputs
+Aura-Core/Qwen3-TTS/output/
+Aura-Core/Qwen3-TTS/audio/
+# Aura-app env files (keep only examples)
+Aura-Core/aura-app/.env
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+
+# Python virtual environment
+.venv/
+# Local database (W0-01): never committed
+Aura-Core/aura-app/.aura/
