@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from aura.config import settings
+from aura.engines.recall.models import ContextPacket
 from aura.engines.recall.render import render_insights
 from aura.llm.provider import OpenRouterClient
 from aura.llm.unified_provider import UnifiedLLMClient
@@ -35,6 +36,7 @@ class SynthesisContext:
         resonance_score: float | None = None,
         cold_start_xml: str | None = None,
         latent_intuition_xml: str | None = None,
+        packet: "ContextPacket | None" = None,
     ):
         """Initialize synthesis context."""
         self.user_input = user_input
@@ -48,6 +50,7 @@ class SynthesisContext:
         self.resonance_score = resonance_score
         self.cold_start_xml = cold_start_xml
         self.latent_intuition_xml = latent_intuition_xml
+        self.packet = packet
 
 
 class LLMLayers:
@@ -972,7 +975,12 @@ Your output must be parseable JSON only.""",
 """
         
         # 1.1 Knowledge / Insights (Elevated Priority)
-        if context.learning_context and context.learning_context.insights:
+        packet = getattr(context, "packet", None)
+        if packet is not None:
+            text = packet.block_text("insights")
+            if text:
+                prompt += text
+        elif context.learning_context and context.learning_context.insights:
             prompt += render_insights(context.learning_context.insights[:8], context.learning_context.mastery_level)
 
         # Identity context
@@ -1000,11 +1008,19 @@ Your output must be parseable JSON only.""",
         # 1.6 TITANS Latent Intuition (Session 7 — MAC: Memory as Context)
         # Injected immediately after Identity per TITANS architecture spec.
         # This is Aura's holistic "intuition" about the user — zero-latency cached state.
-        if hasattr(context, 'latent_intuition_xml') and context.latent_intuition_xml:
+        if packet is not None:
+            text = packet.block_text("latent")
+            if text:
+                prompt += text + "\n"
+        elif hasattr(context, 'latent_intuition_xml') and context.latent_intuition_xml:
             prompt += context.latent_intuition_xml + "\n"
 
         # 1.5 Cold Start Context (Session 5) — injected before any per-query retrieval
-        if hasattr(context, 'cold_start_xml') and context.cold_start_xml:
+        if packet is not None:
+            text = packet.block_text("cold_start")
+            if text:
+                prompt += text + "\n"
+        elif hasattr(context, 'cold_start_xml') and context.cold_start_xml:
             prompt += context.cold_start_xml + "\n"
 
         # 2. Emotional State
@@ -1161,26 +1177,29 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
         """
         # JIT memory retrieval with emotional resonance scoring
         memory_xml = ""
-        try:
-            from aura.engines.memory.manager import get_memory_manager
-            memory_manager = get_memory_manager()
+        if context.packet is not None:
+            memory_xml = context.packet.block_text("memories") or ""
+        else:
+            try:
+                from aura.engines.memory.manager import get_memory_manager
+                memory_manager = get_memory_manager()
 
-            # Pass current emotions so the scorer can do mood-congruent recall
-            current_emo = (
-                context.emotional_state.vector.model_dump()
-                if context.emotional_state and hasattr(context.emotional_state, 'vector')
-                else None
-            )
+                # Pass current emotions so the scorer can do mood-congruent recall
+                current_emo = (
+                    context.emotional_state.vector.model_dump()
+                    if context.emotional_state and hasattr(context.emotional_state, 'vector')
+                    else None
+                )
 
-            _memories, memory_xml = await memory_manager.retrieve_for_l3(
-                query=context.user_input,
-                current_emotions=current_emo,
-                user_id=context.user_id,
-                limit=5,
-                depth=2,  # Session 5: use spreading activation for rich L3 context
-            )
-        except Exception as e:
-            logger.warning(f"Failed to retrieve memories: {e}")
+                _memories, memory_xml = await memory_manager.retrieve_for_l3(
+                    query=context.user_input,
+                    current_emotions=current_emo,
+                    user_id=context.user_id,
+                    limit=5,
+                    depth=2,  # Session 5: use spreading activation for rich L3 context
+                )
+            except Exception as e:
+                logger.warning(f"Failed to retrieve memories: {e}")
         
         # Calculate current time based on configured timezone
         try:
@@ -1396,25 +1415,28 @@ If you include any text before or after the JSON, the system will fail."""
         """
         # JIT memory retrieval with emotional resonance scoring (same as standard L3)
         memory_xml = ""
-        try:
-            from aura.engines.memory.manager import get_memory_manager
-            memory_manager = get_memory_manager()
+        if context.packet is not None:
+            memory_xml = context.packet.block_text("memories") or ""
+        else:
+            try:
+                from aura.engines.memory.manager import get_memory_manager
+                memory_manager = get_memory_manager()
 
-            current_emo = (
-                context.emotional_state.vector.model_dump()
-                if context.emotional_state and hasattr(context.emotional_state, 'vector')
-                else None
-            )
+                current_emo = (
+                    context.emotional_state.vector.model_dump()
+                    if context.emotional_state and hasattr(context.emotional_state, 'vector')
+                    else None
+                )
 
-            _memories, memory_xml = await memory_manager.retrieve_for_l3(
-                query=context.user_input,
-                current_emotions=current_emo,
-                user_id=context.user_id,
-                limit=5,
-                depth=1,  # Streaming uses depth=1 for faster response time
-            )
-        except Exception as e:
-            logger.warning(f"Failed to retrieve memories for stream: {e}")
+                _memories, memory_xml = await memory_manager.retrieve_for_l3(
+                    query=context.user_input,
+                    current_emotions=current_emo,
+                    user_id=context.user_id,
+                    limit=5,
+                    depth=1,  # Streaming uses depth=1 for faster response time
+                )
+            except Exception as e:
+                logger.warning(f"Failed to retrieve memories for stream: {e}")
         
         # Calculate current time based on configured timezone
         try:
