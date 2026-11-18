@@ -1,9 +1,11 @@
 # Overnight Build Log
 
 ## Summary
-- **Done:** W0-01, W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09, W1-10, W1-11, W1-12, W1-13, W1-16
-- **Stopped at:** None yet (in progress)
-- **Current card:** W1-16
+- **Done (17/17 listed cards):** W0-01 (by setup), W0-02, W0-03, W0-04, W0-05, W1-03, W1-04, W1-05, W1-06, W1-07, W1-08, W1-09, W1-10, W1-11, W1-12, W1-13, W1-16
+- **Not done, by instruction:** W1-01, W1-02, W1-14, W1-15
+- **Stopped at:** none. Every listed card passed its tests and the supervisor review.
+- **Wave 0-1 review:** see docs/metrics/wave-1.md. Full suite 47 passed.
+- **Wave 2:** only the bulk work that does not depend on B0 is carded tonight (W2-01, scenario runner). B0, M2, G1, the probe set and V0 are listed for Mai in docs/metrics/wave-1.md.
 
 ---
 
