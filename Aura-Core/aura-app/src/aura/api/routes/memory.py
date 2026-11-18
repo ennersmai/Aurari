@@ -334,6 +334,38 @@ async def trigger_dream_cycle() -> dict[str, Any]:
         )
 
 
+@router.post("/{memory_id}/pin")
+async def pin_memory(memory_id: str) -> dict[str, Any]:
+    """Pin a memory as a core memory.
+
+    Marks the memory as core and ensures it is no longer ephemeral so it
+    persists across dreaming/pruning passes.
+    """
+    try:
+        memory_manager = get_memory_manager()
+        await memory_manager.set_core(memory_id, True)
+        return {"success": True, "memory_id": memory_id, "core_memory": True}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to pin memory: {str(e)}",
+        )
+
+
+@router.post("/{memory_id}/unpin")
+async def unpin_memory(memory_id: str) -> dict[str, Any]:
+    """Remove the core-memory pin from a memory."""
+    try:
+        memory_manager = get_memory_manager()
+        await memory_manager.set_core(memory_id, False)
+        return {"success": True, "memory_id": memory_id, "core_memory": False}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to unpin memory: {str(e)}",
+        )
+
+
 @router.get("/{memory_id}", response_model=MemoryResponse)
 async def get_memory_by_id(memory_id: str) -> MemoryResponse:
     """

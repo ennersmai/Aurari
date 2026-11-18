@@ -1217,6 +1217,21 @@ class MemoryManager:
         except Exception as e:
             logger.error(f"Failed to mark memory as learned: {e}")
 
+    async def set_core(self, memory_id: str, core: bool) -> None:
+        """Pin a memory as core, or unpin it.
+
+        When ``core`` is true the memory is marked core and is no longer
+        ephemeral (core memories must persist). When false only the core flag
+        is cleared.
+        """
+        try:
+            if core:
+                await self.db.merge(memory_id, {"core_memory": True, "ephemeral": False})
+            else:
+                await self.db.merge(memory_id, {"core_memory": False})
+        except Exception as e:
+            logger.error(f"Failed to set core flag: {e}")
+
     # =========================================================================
     # COLD START — First Impression on Every Conversation
     # =========================================================================
