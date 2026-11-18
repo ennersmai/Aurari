@@ -992,3 +992,19 @@
   6. Verified the fix: ran each recording test individually with `RECORD_BASELINE` unset, and the full suite — `git status --short docs/metrics/` showed no changes in all cases.
   7. Verified that when `RECORD_BASELINE=1` is set, the tests write the files correctly (files appeared with updated content, confirmed by `git status` showing modifications, then restored with `git checkout --`).
 - **Unsure about:** Nothing. The change is scoped to the four test files and the new test file. The frozen baselines `docs/metrics/emotion_before.json`, `docs/metrics/memory_before.json`, and `docs/metrics/emotion_after.json` are not modified in this commit (they were restored with `git checkout --` after verifying the RECORD_BASELINE=1 behavior). The helper function is in `conftest.py` so it's available to all tests.
+
+## BF-04: A valid IdentityContext in the stream fallback
+- **Status:** DONE
+- **PRD:** behaviour B0 follow-up.
+- **Tier:** bulk
+- **Files changed:** `src/aura/orchestrator/coordinator.py`, `tests/unit/test_turn_stream_query.py`
+- **Test result:** 194 passed (full suite: 192 prior + 2 new in `test_turn_stream_query.py`; 114 warnings, 46.87s)
+- **What I did, step by step:**
+  1. Found two places in `src/aura/orchestrator/coordinator.py` where `IdentityContext(core_identity="Aura", tone_and_style="Helpful")` was constructed in the streaming branch of `_gather_turn_context`: (a) the timeout fallback (when `asyncio.wait_for` raises `TimeoutError`) at line ~1228, and (b) the per-result fallback (when `identity_engine.get_identity_context` raises an exception) at line ~1255.
+  2. The `IdentityContext` model (in `src/aura/models/identity.py`) requires `narrative: str` and `core_values: dict[str, float]` — it has no `core_identity` or `tone_and_style` fields, so the fallback code would raise a validation error if ever reached.
+  3. Replaced both occurrences with `IdentityContext(narrative="I am Aura.", core_values={})` — a minimal valid `IdentityContext`.
+  4. Added two tests to `tests/unit/test_turn_stream_query.py`:
+     - `test_bf_04_identity_fallback_per_result_raises`: forces the identity engine to raise an exception, verifies the stream completes and the loop context's `identity_context.narrative == "I am Aura."`.
+     - `test_bf_04_identity_fallback_timeout`: patches `asyncio.wait_for` to immediately raise `TimeoutError`, verifies the stream completes and the loop context's `identity_context.narrative == "I am Aura."`.
+  5. Verified the fix: `grep -nE "IdentityContext\(core_identity=" src/aura/orchestrator/coordinator.py` returns no matches.
+- **Unsure about:** Nothing. The change is scoped to the two fallback constructions and the two new tests. The non-stream path (which correctly returns a valid `IdentityContext` from the identity engine) is untouched. The timeout value (10.0) is untouched per the card's "Do not" instruction.

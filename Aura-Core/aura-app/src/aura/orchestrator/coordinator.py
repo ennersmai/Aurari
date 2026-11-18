@@ -1225,7 +1225,7 @@ Constraints:
             results = [
                 EmotionState(timestamp=get_clock().now().replace(tzinfo=None), vector=EmotionVector(), dominant=("neutral", 0.0), description="Neutral"),
                 LearningContext(),
-                IdentityContext(core_identity="Aura", tone_and_style="Helpful"),
+                IdentityContext(narrative="I am Aura.", core_values={}),
                 GoalContext()
             ]
 
@@ -1252,7 +1252,7 @@ Constraints:
         if isinstance(identity_context, Exception):
             self.logger.error(f"Failed to get identity context: {identity_context}")
             from aura.models.identity import IdentityContext
-            identity_context = IdentityContext(core_identity="Aura", tone_and_style="Helpful")
+            identity_context = IdentityContext(narrative="I am Aura.", core_values={})
 
         goal_context = results[3]
         if isinstance(goal_context, Exception):

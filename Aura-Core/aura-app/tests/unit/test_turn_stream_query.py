@@ -538,3 +538,83 @@ async def test_loop_context_carries_packet_streaming(turn_orchestrator):
     loop_ctx, _ = orch.llm_layers._stream_calls[0]
     assert loop_ctx.packet is packet
     assert chunks == ["ab", "cd"]
+
+
+# ---------------------------------------------------------------------------
+# (BF-04) IdentityContext fallback fixes
+# ---------------------------------------------------------------------------
+# BF-04: the streaming branch builds IdentityContext in two fallback places
+# (timeout fallback and per-result fallback). Both previously used invalid
+# fields (core_identity, tone_and_style). The fix replaces them with the
+# valid fields (narrative, core_values). These tests force each fallback
+# and verify the L3 context gets a valid IdentityContext with the expected
+# narrative.
+
+@pytest.mark.asyncio
+async def test_bf_04_identity_fallback_per_result_raises(turn_orchestrator):
+    """BF-04(a): identity_engine.get_identity_context raises -> per-result
+    fallback constructs IdentityContext(narrative="I am Aura.", core_values={}).
+    The stream completes and the loop context's identity_context has the
+    expected narrative.
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+    orch.llm_layers._stream_chunks_queue.append(["ok"])
+
+    # Make identity_engine.get_identity_context raise an exception
+    async def _raise_identity(*a, **k):
+        raise RuntimeError("identity engine down")
+
+    orch.identity_engine.get_identity_context.side_effect = _raise_identity
+
+    chunks = await _collect(orch.stream_query("hello", user_id="u1"))
+    await _drain()
+
+    # Stream completes
+    assert chunks == ["ok"]
+
+    # The loop context passed to stream_l3_synthesis has a valid
+    # IdentityContext with the expected narrative.
+    assert len(orch.llm_layers._stream_calls) == 1
+    loop_ctx, _ = orch.llm_layers._stream_calls[0]
+    assert loop_ctx.identity_context.narrative == "I am Aura."
+    assert loop_ctx.identity_context.core_values == {}
+
+
+@pytest.mark.asyncio
+async def test_bf_04_identity_fallback_timeout(turn_orchestrator, monkeypatch):
+    """BF-04(b): context gathering times out (asyncio.wait_for raises
+    TimeoutError) -> timeout fallback constructs IdentityContext(narrative="I am Aura.", core_values={}).
+    The stream completes and the loop context's identity_context has the
+    expected narrative.
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+    orch.llm_layers._stream_chunks_queue.append(["ok"])
+
+    # Patch asyncio.wait_for to immediately raise TimeoutError
+    original_wait_for = asyncio.wait_for
+
+    async def _timeout_wait_for(coro, timeout):
+        raise asyncio.TimeoutError("forced timeout for test")
+
+    monkeypatch.setattr(asyncio, "wait_for", _timeout_wait_for)
+
+    try:
+        chunks = await _collect(orch.stream_query("hello", user_id="u1"))
+        await _drain()
+
+        # Stream completes
+        assert chunks == ["ok"]
+
+        # The loop context passed to stream_l3_synthesis has a valid
+        # IdentityContext with the expected narrative.
+        assert len(orch.llm_layers._stream_calls) == 1
+        loop_ctx, _ = orch.llm_layers._stream_calls[0]
+        assert loop_ctx.identity_context.narrative == "I am Aura."
+        assert loop_ctx.identity_context.core_values == {}
+    finally:
+        # Restore original wait_for
+        monkeypatch.setattr(asyncio, "wait_for", original_wait_for)
