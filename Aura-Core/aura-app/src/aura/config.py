@@ -665,6 +665,17 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # TOOL LOOP Configuration (W2-31)
+    # =========================================================================
+    tool_loop_max_rounds: int = Field(
+        default=5,
+        validation_alias="AURA_TOOL_LOOP_MAX_ROUNDS",
+        description="Maximum tool loop rounds before stopping and asking the user to continue",
+        ge=1,
+        le=20,
+    )
+
+    # =========================================================================
     # IDE / CODE EXECUTION Configuration
     # =========================================================================
     aura_workspace_path: str = Field(

@@ -1161,3 +1161,29 @@
   - `grep -n "tool_selection_" src/aura/config.py` prints the three fields (lines 647, 653, 659).
 - **Do not checks respected:** Nothing stored in the database. `select_tools` is not called from the coordinator (W2-35 will do that).
 - **Unsure about:** Nothing. The implementation matches the card's step-by-step instructions exactly. The cosine similarity assumes normalized vectors (the local embedding model normalizes by default, and the test's deterministic embedder also normalizes).
+
+## W2-31: The single tool loop, as a new function with its own tests
+- **Status:** DONE
+- **Files changed:** `src/aura/config.py`, `src/aura/orchestrator/tool_loop.py`, `tests/unit/test_tool_loop.py`
+- **Test result:** All 16 new tests pass; full suite passes (243 passed)
+- **What I did:**
+  1. Config: added `tool_loop_max_rounds: int = 5` (`AURA_TOOL_LOOP_MAX_ROUNDS`) to `Settings` in `config.py`.
+  2. Created new module `src/aura/orchestrator/tool_loop.py` with:
+     - Constants `MAX_ROUNDS_SUFFIX` and `ROUND_SEPARATOR`
+     - `LoopEvent` dataclass (kind: "delta" | "separator" | "done", text: str)
+     - `RoundFn` type alias
+     - `strip_tool_calls(text)` copied verbatim from `Orchestrator._remove_tool_calls_from_text`
+     - `build_loop_input(user_input, blocks)` helper
+     - `run_tool_loop(...)` async generator implementing exactly the behaviour specified in the card
+  3. Wrote `tests/unit/test_tool_loop.py` with 16 tests covering all required cases:
+     - `strip_tool_calls` unit tests (3)
+     - `build_loop_input` unit tests (3)
+     - `run_tool_loop` integration tests (7): no tool calls, one tool round then none, max rounds with suffix, seed_results, empty execute_and_feedback, tool call stripped in done
+     - T1/T2 through real executor: parametrised guest/owner role tests with fake DB from test_requester_role.py pattern
+- **"Done when" verified:**
+  - All 16 new tests pass
+  - Full suite passes (243 passed)
+  - `grep -n "approved" src/aura/orchestrator/tool_loop.py` prints nothing
+  - `grep -n "execute_tool_call" src/aura/orchestrator/tool_loop.py` prints only a docstring comment (line 7), no actual calls
+- **Do not checks respected:** Did not touch `coordinator.py`. Did not add native function calling (W2-37). Did not import the registry. The loop does not check roles, does not call `execute_tool_call`, never passes `approved` — role and approval checks stay in the executor's single gate (rule 4).
+- **Unsure about:** Nothing. The implementation matches the card's step-by-step instructions exactly.
