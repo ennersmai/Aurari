@@ -1901,3 +1901,23 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes.
 - **Do-not checks respected:** Did not change the frontend. Did not remove any existing field.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-25: The prompt names the main cause
+- **Status:** DONE
+- **PRD:** emotion 5.7 ("the emotion block in her prompt names the main cause alongside the state"), E3
+- **Tier:** bulk
+- **Depends on:** W3-24
+- **Files changed:**
+  - `src/aura/engines/emotion/describe.py` (new)
+  - `src/aura/llm/layers.py` (import and emotional_state block)
+  - new `tests/unit/test_emotion_prompt_cause.py`
+- **Test result:** 502 passed (full suite: 487 prior + 15 new)
+- **What I did, step by step:**
+  1. **Created `describe.py` (step 1):** Added `cause_phrase(cause: EmotionCause, now: datetime) -> str` that builds a short plain phrase from `kind`, `source`, `person_id` and age (minutes under an hour, hours otherwise). Examples: `"since a tool failed 12 minutes ago"`, `"since a message from discord_42 3 minutes ago"`. Does not reveal record IDs, appraisal numbers, or other people's message text.
+  2. **Modified `layers.py` (step 2):** Imported `cause_phrase` and `get_clock`. In `_build_l3_system_prompt`, when `context.emotional_state.top_causes` is non-empty, added a line `  <cause>{phrase for the first cause}</cause>` after `<dominant>`. Without causes, the block is byte-for-byte identical to the previous output.
+  3. **Tests (`tests/unit/test_emotion_prompt_cause.py`, 15 tests):**
+     - 12 tests for `cause_phrase` covering each kind used by W3-22 and W3-23: `message`, `task_result`, `prediction`, `memory_recall`, `memory_write_failed`, `self_critique`, `tool_succeeded`, `tool_failed`. Also tests for unknown kinds/sources, seconds, minutes, hours, and boundary cases.
+     - 3 tests for the emotional_state block: without causes (byte-for-byte unchanged), with a cause (includes the phrase), with multiple causes (uses first/largest only).
+- **Done when:** satisfied — the new tests pass and the full suite passes.
+- **Do-not checks respected:** Did not reveal record ids, appraisal numbers or other people's message text in the phrase.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.

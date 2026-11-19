@@ -15,6 +15,8 @@ from aura.llm.tool_calls import ModelTurn, to_openai_tools
 from aura.llm.unified_provider import UnifiedLLMClient
 from aura.llm.router import ContextModeRouter, ContextMode
 from aura.models.emotion import EmotionState
+from aura.engines.emotion.describe import cause_phrase
+from aura.clock import get_clock
 from aura.models.goal import GoalContext
 from aura.models.identity import IdentityContext
 from aura.models.learning import LearningContext
@@ -1220,8 +1222,13 @@ CRITICAL REQUIREMENTS:
             prompt += f"""<emotional_state>
   <description>{context.emotional_state.description}</description>
   <dominant>{context.emotional_state.dominant[0] if context.emotional_state.dominant else 'neutral'}</dominant>
-</emotional_state>
 """
+            # Add the main cause if available (W3-25)
+            if context.emotional_state.top_causes:
+                now = get_clock().now()
+                first_cause = context.emotional_state.top_causes[0]
+                prompt += f"  <cause>{cause_phrase(first_cause, now)}</cause>\n"
+            prompt += "</emotional_state>\n"
 
         # 2.5 Resonance Score (Emotion-Learning Bridge)
         if context.resonance_score is not None:
