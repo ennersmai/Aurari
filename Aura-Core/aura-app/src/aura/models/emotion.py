@@ -90,6 +90,22 @@ class EmotionalSignature(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
+class EmotionCause(BaseModel):
+    """
+    A recorded emotional event that contributed to the current state.
+
+    Based on Emotion FRD Section 9 (EmotionState gains top_causes).
+    """
+
+    at: datetime = Field(..., description="When the event occurred")
+    kind: str = Field(..., description="Event kind (e.g., message, memory, goal)")
+    source: str = Field(..., description="Source of the event (e.g., conversation, memory)")
+    ref: str | None = Field(default=None, description="Optional reference ID")
+    person_id: str | None = Field(default=None, description="Optional person ID")
+    dominant_change: str | None = Field(default=None, description="Emotion with largest deviation change")
+    size: float = Field(..., description="Largest absolute deviation change of that event")
+
+
 class EmotionInfluence(BaseModel):
     """
     External influence on emotional state.
@@ -150,6 +166,18 @@ class EmotionState(BaseModel):
     description: str = Field(default="", description="Human-readable emotional description")
     learning_influence: dict[str, float | str | bool] = Field(
         default_factory=dict, description="Learning engine influence context"
+    )
+    deviation: dict[str, float] | None = Field(
+        default=None, description="Per-dimension deviation from baseline (vector - baseline)"
+    )
+    baseline: dict[str, float] | None = Field(
+        default=None, description="Baseline (resting) emotional state"
+    )
+    mood: dict[str, float] | None = Field(
+        default=None, description="Mood state (always None until E4)"
+    )
+    top_causes: list[EmotionCause] = Field(
+        default_factory=list, description="Top 3 emotion events of the last hour by size"
     )
 
 

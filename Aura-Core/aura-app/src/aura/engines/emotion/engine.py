@@ -6,7 +6,7 @@ Implements Emotion FRD FR-EE-003 (Real-time Processing).
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from aura.config import settings
@@ -16,6 +16,7 @@ from aura.engines.base import BaseEngine
 from aura.engines.emotion.physics import EmotionPhysics
 from aura.engines.emotion.translator import EmotionTranslator
 from aura.models.emotion import (
+    EmotionCause,
     EmotionInfluence,
     EmotionalSignature,
     EmotionPhysicsConfig,
@@ -213,7 +214,7 @@ class EmotionEngine(BaseEngine):
         self.logger.info("Emotion Engine shut down")
 
     async def get_current_state(self) -> EmotionState:
-        """Get current emotional state with description."""
+        """Get current emotional state with description, deviation, baseline, and top causes."""
         dominant = self.current_vector.get_dominant()
         top_emotions = self.current_vector.get_top_n(n=3)
 
@@ -223,15 +224,114 @@ class EmotionEngine(BaseEngine):
 
         stability = self.physics.calculate_stability(self.volatility_history)
 
+        # Compute deviation from baseline
+        baseline = self.config.baseline
+        current_dict = self.current_vector.model_dump()
+        baseline_dict = baseline.model_dump()
+        deviation = {
+            emotion: current_dict.get(emotion, 0.0) - baseline_dict.get(emotion, 0.0)
+            for emotion in current_dict
+        }
+
+        # Get top 3 emotion events from the last hour by size
+        top_causes = await self._get_top_causes()
+
         return EmotionState(
-            timestamp=datetime.utcnow(),
+            timestamp=get_clock().now(),
             vector=self.current_vector,
             dominant=dominant,
             secondary=secondary,
             volatility=self.volatility_history[-1] if self.volatility_history else 0.0,
             stability=stability,
             description=description,
+            deviation=deviation,
+            baseline=baseline_dict,
+            mood=None,  # Always None until E4
+            top_causes=top_causes,
         )
+
+    async def _get_top_causes(self) -> list[EmotionCause]:
+        """Get the three largest emotion events of the last hour by size, newest first among equals."""
+        try:
+            now = get_clock().now()
+            one_hour_ago = now - timedelta(hours=1)
+            result = await self.db.query(
+                """
+                SELECT * FROM emotion_event
+                WHERE at >= $since
+                ORDER BY size DESC, at DESC
+                LIMIT 3
+                """,
+                {"since": one_hour_ago},
+            )
+            if not result:
+                return []
+            causes = []
+            for row in result:
+                cause = EmotionCause(
+                    at=row.get("at"),
+                    kind=row.get("kind", ""),
+                    source=row.get("source", ""),
+                    ref=row.get("ref"),
+                    person_id=row.get("person_id"),
+                    dominant_change=row.get("dominant_change"),
+                    size=row.get("size", 0.0),
+                )
+                causes.append(cause)
+            return causes
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch top causes: {e}")
+            return []
+
+    async def get_state(self, person_id: str | None = None) -> EmotionState:
+        """
+        Get emotional state for a person.
+
+        Per-person state is not yet implemented (E5); this returns the global state.
+        """
+        # Per-person state is E5; for now return global state
+        return await self.get_current_state()
+
+    async def explain(self, since: datetime | None = None) -> list[EmotionCause]:
+        """
+        Get emotion events since the given time (default: last hour), newest first.
+
+        Args:
+            since: Start time for filtering events. Defaults to one hour ago.
+
+        Returns:
+            List of EmotionCause objects, newest first.
+        """
+        if since is None:
+            since = get_clock().now() - timedelta(hours=1)
+
+        try:
+            result = await self.db.query(
+                """
+                SELECT * FROM emotion_event
+                WHERE at >= $since
+                ORDER BY at DESC
+                """,
+                {"since": since},
+            )
+            if not result:
+                return []
+            causes = []
+            for row in result:
+                cause = EmotionCause(
+                    at=row.get("at"),
+                    kind=row.get("kind", ""),
+                    source=row.get("source", ""),
+                    ref=row.get("ref"),
+                    person_id=row.get("person_id"),
+                    dominant_change=row.get("dominant_change"),
+                    size=row.get("size", 0.0),
+                )
+                causes.append(cause)
+            return causes
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch explanation events: {e}")
+            return []
 
     async def apply_influence(self, influence: EmotionInfluence) -> EmotionState:
         """
@@ -347,6 +447,7 @@ class EmotionEngine(BaseEngine):
                     "impulses": impulses,
                     "deviation_change": deviation_change,
                     "dominant_change": dominant_change,
+                    "size": max_change,
                 },
             )
         except Exception as e:
@@ -490,6 +591,20 @@ class EmotionEngine(BaseEngine):
             valence = (positive_emotions - negative_emotions) / 4.0
             arousal = (vector_data.get('surprise', 0) + vector_data.get('fear', 0) + vector_data.get('anger', 0) + vector_data.get('joy', 0)) / 4.0
 
+            # Convert top_causes to plain JSON-serializable dicts
+            top_causes_json = [
+                {
+                    "at": cause.at.isoformat() if cause.at else None,
+                    "kind": cause.kind,
+                    "source": cause.source,
+                    "ref": cause.ref,
+                    "person_id": cause.person_id,
+                    "dominant_change": cause.dominant_change,
+                    "size": cause.size,
+                }
+                for cause in state.top_causes
+            ]
+
             emotion_data = {
                 **vector_data,
                 "current_state": state.description,
@@ -499,6 +614,11 @@ class EmotionEngine(BaseEngine):
                 "valence": valence,
                 "arousal": arousal,
                 "entropy": state.volatility,
+                # New fields from W3-24
+                "deviation": state.deviation,
+                "baseline": state.baseline,
+                "mood": state.mood,
+                "top_causes": top_causes_json,
             }
             await broadcast_emotion_update({"data": emotion_data})
         except Exception as e:

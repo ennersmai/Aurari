@@ -1860,3 +1860,44 @@
 - **What changed:** new `engines/emotion/system_events.py` with computed appraisals for memory write failure, self-critique, tool success and tool failure; with `emotion_appraisal_enabled` on, the self-critique and memory-failure call sites call `appraise` instead of `apply_influence` (flag off: unchanged); `run_tool_loop` gains `on_tool_result(tool, success)`, and the coordinator passes a callback that appraises tool results when the flag is on. Supervisor fix from W3-22: messages are appraised only when both `emotion_appraisal_enabled` and `layer_l4_enabled` are on.
 - **Tests:** new `tests/unit/test_system_appraisal.py`, one added test in `test_message_appraisal.py`. Full suite: 475 passed.
 - **Supervisor notes:** tool success is read from the executor's joined text (`❌ Tool <name> failed`), and a failed tool is treated as not retryable because the executor does not report it; with the table as it is, a retryable failure (control 0.7) matches no row and produces no impulse. Dominant impulses checked: memory failure sadness, self-critique shame, tool success joy, tool failure sadness.
+
+## W3-24: The state interface: deviation, baseline, causes, `explain`
+- **Status:** DONE
+- **PRD:** emotion 9 (`EmotionState` gains `deviation`, `baseline`, `mood`, `top_causes`; `explain`; websocket payload), milestone E3
+- **Tier:** bulk
+- **Depends on:** W3-20
+- **Files changed:** 
+  - `src/aura/models/emotion.py` (new `EmotionCause`, `EmotionState` gains `deviation`, `baseline`, `mood`, `top_causes`)
+  - `src/aura/engines/emotion/engine.py` (`get_current_state` fills new fields, new `_get_top_causes`, `get_state`, `explain`, `_broadcast_state_update` includes new fields)
+  - new `tests/unit/test_emotion_state_interface.py`
+- **Test result:** 487 passed (full suite: 475 prior + 12 new)
+- **What I did, step by step:**
+  1. **`EmotionCause` model (step 1):** Added `EmotionCause(at, kind, source, ref, person_id, dominant_change, size)` where `size` is the largest absolute deviation change of that event. Added to `src/aura/models/emotion.py`.
+  2. **`EmotionState` gains new fields (step 2):** Added optional `deviation: dict[str, float] | None`, `baseline: dict[str, float] | None`, `mood: dict[str, float] | None` (always `None` until E4), and `top_causes: list[EmotionCause] = []` to `EmotionState`.
+  3. **`get_current_state` fills new fields (step 3):** 
+     - `deviation` computed as vector minus baseline per dimension
+     - `baseline` from `config.baseline`
+     - `top_causes` via new private `_get_top_causes()` that queries the three largest `emotion_event` rows of the last hour by `size`, newest first among equals; empty when there are none or the query fails
+     - `mood` set to `None`
+     - Uses `get_clock().now()` for timestamp per rule 7
+  4. **`get_state` and `explain` (step 4):**
+     - `get_state(person_id: str | None = None)` returns `get_current_state()` (per-person state is E5; docstring says so)
+     - `explain(since: datetime | None = None)` returns events since then (default: last hour), newest first. Filters by time with the fake clock in tests.
+  5. **`_broadcast_state_update` payload (step 5):** WebSocket payload gains `deviation`, `baseline`, `mood`, and `top_causes` (as plain JSON), keeping every existing field.
+  6. **`appraise` writes `size`:** The `emotion_event` record now includes `size: max_change` (largest absolute deviation change) so `_get_top_causes` can order by it.
+- **Tests (`tests/unit/test_emotion_state_interface.py`, 12 tests):**
+  - `test_deviation_equals_vector_minus_baseline`: verifies deviation = vector - baseline at baseline and after influence
+  - `test_top_causes_orders_and_caps_at_three`: orders by size DESC, caps at 3
+  - `test_top_causes_newest_first_among_equals`: newest first when size ties
+  - `test_top_causes_empty_when_no_events`: empty list when no events
+  - `test_top_causes_empty_when_query_fails`: empty list on query failure
+  - `test_explain_filters_by_time_with_fake_clock`: default (last hour) and custom `since` filter correctly
+  - `test_explain_empty_when_no_events`: empty when no events
+  - `test_explain_empty_when_query_fails`: empty on query failure
+  - `test_get_state_returns_current_state`: returns global state, per-person is E5
+  - `test_broadcast_payload_keeps_old_keys_and_has_new_ones`: all 27 vector dims + old meta + 4 new keys
+  - `test_mood_is_none_until_e4`: mood is None
+  - `test_baseline_contains_expected_emotions`: all 27 emotions with correct baseline values
+- **Done when:** satisfied — the new tests pass and the full suite passes.
+- **Do-not checks respected:** Did not change the frontend. Did not remove any existing field.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.
