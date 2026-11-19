@@ -49,25 +49,60 @@ async def ensure_person(db: Any, key: str, display_name: str | None) -> RecordID
 
     ``key`` is ``"owner"`` or ``"discord_<id>"``. The record id is built with
     :func:`to_record_id` and bound as a query parameter, never formatted into
-    the query itself. An existing record keeps its id; its name and alias are
-    refreshed from ``display_name`` (or ``key`` when there is no display name).
+    the query itself. An existing record keeps its id; its name and aliases are
+    merged (union) with the new values, lowercased and whitespace-collapsed.
     """
-    name = display_name or key
     record_id = to_record_id(f"entity:{key}")
+
+    # Read existing record to get current aliases (if any)
+    existing = await db.query(
+        "SELECT aliases FROM $rid",
+        {"rid": record_id},
+    )
+
+    existing_aliases: list[str] = []
+    if existing and existing[0].get("aliases"):
+        existing_aliases = existing[0]["aliases"]
+
+    # Determine the name: owner_display_name takes precedence, else "owner".
+    # The passed display_name is NOT used for the owner's canonical name.
+    if key == "owner":
+        name = settings.owner_display_name or "owner"
+    else:
+        name = display_name or key
+
+    # Build new aliases: lowercased and whitespace-collapsed
+    def normalize_alias(a: str) -> str:
+        return " ".join(a.lower().split())
+
+    new_aliases = [normalize_alias(name)]
+
+    if key == "owner":
+        # Owner always has "owner" alias, plus owner_aliases from config
+        new_aliases.append("owner")
+        for alias in settings.owner_aliases:
+            norm = normalize_alias(alias)
+            if norm:
+                new_aliases.append(norm)
+        # When owner_display_name is not configured, the passed display_name
+        # (e.g., the user_id from an app turn) is added as an alias so the
+        # owner's entity accumulates the names they use.
+        if not settings.owner_display_name and display_name:
+            new_aliases.append(normalize_alias(display_name))
+    else:
+        # For non-owner, also add the display_name if different from name
+        if display_name and normalize_alias(display_name) != normalize_alias(name):
+            new_aliases.append(normalize_alias(display_name))
+
+    # Merge: union of existing and new, deduplicated
+    merged_aliases = list(dict.fromkeys(existing_aliases + new_aliases))
+
     data = {
         "name": name,
         "type": "person",
-        "aliases": [name.lower()],
+        "aliases": merged_aliases,
     }
 
-    # ``UPSERT ... CONTENT`` replaces the whole record, which would reset
-    # ``created_at`` (and any later summary or embedding) on every turn. Merge
-    # into an existing person instead, and only supply ``created_at`` when the
-    # record is new, since the schema requires it.
-    existing = await db.query(
-        "SELECT id FROM $rid",
-        {"rid": record_id},
-    )
     if existing:
         rows = await db.query(
             "UPSERT $rid MERGE $data",
@@ -93,6 +128,7 @@ async def store_episode(
     conversation_id: str | None,
     emotional_signature: dict[str, float],
     salience: float,
+    display_name: str | None = None,
 ) -> RecordID:
     """Store one turn as an episode and return its id.
 
@@ -105,7 +141,7 @@ async def store_episode(
     Every value is bound as a query parameter.
     """
     embedding = await embeddings.embed(user_text + "\n" + aura_text[:200])
-    speaker_id = await ensure_person(db, speaker, None)
+    speaker_id = await ensure_person(db, speaker, display_name)
 
     previous = await db.query(
         "SELECT id FROM episode "

@@ -589,6 +589,18 @@ class Settings(BaseSettings):
         description="Confidence for a fact Aura inferred rather than heard stated.",
     )
 
+    # Memory v2 owner identity (W3-15a)
+    owner_display_name: str = Field(
+        default="",
+        validation_alias="AURA_OWNER_NAME",
+        description="The owner's display name (e.g., 'Mai'). Empty uses 'owner' as the name.",
+    )
+    owner_aliases: list[str] = Field(
+        default_factory=list,
+        validation_alias="AURA_OWNER_ALIASES",
+        description="Additional aliases for the owner entity (comma-separated in env).",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

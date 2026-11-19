@@ -1983,6 +1983,14 @@ Constraints:
                 )
                 depth = interaction_depth(len(response), None, None)
                 salience_value = compute_salience(intensity, None, depth)
+                # When the owner speaks in the app, pass their user_id as the display
+                # name so the owner's entity accumulates the owner's name as an alias.
+                # (The app sends the owner's name, e.g. "Mai".)
+                display_name = None
+                if speaker == "owner" and venue == "app":
+                    if user_id and user_id != "default":
+                        display_name = user_id
+
                 episode_id = await store_episode(
                     self.db,
                     get_embeddings_client(),
@@ -1993,6 +2001,7 @@ Constraints:
                     conversation_id=conversation_id,
                     emotional_signature=emotional_current.vector.model_dump(),
                     salience=salience_value,
+                    display_name=display_name,
                 )
                 # Extraction runs after the turn, in the background, never on
                 # the reply path. The task reference is kept by

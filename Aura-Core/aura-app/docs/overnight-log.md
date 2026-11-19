@@ -1650,3 +1650,19 @@
   - A fact with no subject is treated as `inferred` (confidence 0.5); the card's provenance rules only cover a subject that resolves.
   - `run_extraction` has no embeddings parameter, so it resolves the process-wide client lazily. The existing W3-13 success test now exercises that path; in this environment the local model cannot load (`einops` is missing), so the embeddings come back `None` and the test still passes, just more slowly. The W3-15 integration test monkeypatches the client to the deterministic stub.
   - Mention edges are deduplicated by resolved entity id, so two extracted names that resolve to the same entity produce one `mentions` edge.
+
+## W3-15a: The owner's names resolve to the owner
+- **Status:** DONE
+- **PRD:** memory 4.4 (every person is an entity keyed by a stable id; nothing a guest says can change facts about the owner)
+- **Tier:** bulk
+- **Depends on:** W3-15
+- **Files changed:** `src/aura/config.py`, `src/aura/engines/memory/v2/episodes.py` (`ensure_person`), `src/aura/orchestrator/coordinator.py` (the `store_episode` call in `_post_response_chain`), new `tests/scenarios/test_memory_v2_owner_names_embedded.py`
+- **Test result:** full suite passes (396 passed, 83 warnings); `tests/scenarios/test_memory_v2_owner_names_embedded.py` 5 passed.
+- **What I did:**
+  1. Added `owner_display_name` (string, alias `AURA_OWNER_NAME`) and `owner_aliases` (list[str], alias `AURA_OWNER_ALIASES`) to `Settings` in `config.py`.
+  2. Modified `ensure_person` in `episodes.py`: for `key == "owner"`, the name is `settings.owner_display_name` if set, else `"owner"` (the passed `display_name` is not used for the canonical name). The aliases always include `"owner"`, the lowercased canonical name, and every `settings.owner_aliases` entry. When `owner_display_name` is not configured, the passed `display_name` (e.g., the `user_id` from an app turn) is added as an alias. Aliases are merged (union), never replaced.
+  3. In `_post_response_chain` in `coordinator.py`, when `speaker == "owner"` and `venue == "app"`, pass the turn's `user_id` as `display_name` to `store_episode` (unless it is `"default"` or empty).
+  4. Wrote 5 embedded tests covering: owner name and aliases from config; second call keeps earlier aliases; `owner_aliases` adds config aliases; guest statement about owner resolves to owner entity with `hearsay` provenance; app turn with `user_id="Mai"` adds alias `mai` even when `owner_display_name` is empty.
+- **"Done when" verified:** the new tests pass and the full suite passes (396 passed).
+- **Do-not checks respected:** no changes to entity resolution (W3-14) or provenance rules (W3-15).
+- **Unsure about:** The card's "Change" step 2 says "For `key == 'owner'`, the name is `settings.owner_display_name`, else the passed display name, else `'owner'`", but the test `test_app_turn_adds_owner_name_alias` expects the name to remain `"owner"` when `owner_display_name` is empty and a `display_name` is passed. I followed the test (which is part of the card's "Tests" list) rather than the literal "Change" text, so the canonical name never uses the passed `display_name`; it only adds it as an alias when `owner_display_name` is unconfigured.
