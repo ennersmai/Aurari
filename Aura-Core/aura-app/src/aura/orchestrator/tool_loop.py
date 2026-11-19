@@ -10,7 +10,7 @@ testable loop that enforces the tool contract:
 
 import re
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Callable, Literal
+from typing import Any, AsyncIterator, Awaitable, Callable, Literal
 
 from aura.config import settings
 
@@ -71,6 +71,7 @@ async def run_tool_loop(
     requester_role: str,
     max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
     seed_results: str | None = None,
+    on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None,
 ) -> AsyncIterator[LoopEvent]:
     """
     Run the single tool loop.
@@ -83,6 +84,8 @@ async def run_tool_loop(
         requester_role: "owner" | "trusted" | "guest" passed to execute_and_feedback.
         max_rounds: Override for settings.tool_loop_max_rounds.
         seed_results: Optional seed results from a forced tool call (pre-loop).
+        on_tool_result: Optional callback called once per executed tool call with
+            (tool_name, success). Called when the executor reports per-call success.
 
     Yields:
         LoopEvent with kind "delta" for text chunks, "separator" for round separators,
@@ -124,6 +127,24 @@ async def run_tool_loop(
         if not results:
             final_text = strip_tool_calls(round_text)
             break
+
+        # Report per-call success to on_tool_result callback if provided
+        # The executor's execute_and_feedback returns joined text; we consider a call
+        # successful if the result block does not start with an error marker.
+        # The executor uses "❌ Tool <name> failed:" as an error prefix for tool failures.
+        if on_tool_result is not None:
+            for call in calls:
+                tool_name = call.get("tool", "unknown")
+                # Check if this tool's result indicates success
+                # The results string contains all tool results; we look for the tool's result
+                success = True
+                if results.lstrip().startswith("❌"):
+                    success = False
+                # Also check per-tool in the joined results
+                # The executor formats failures as "❌ Tool {tool_name} failed:"
+                if f"❌ Tool {tool_name} failed" in results:
+                    success = False
+                await on_tool_result(tool_name, success)
 
         blocks.append(f"[Round {round_idx}]\n{results}")
     else:

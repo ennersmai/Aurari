@@ -571,3 +571,62 @@ class TestFallbackRemovalCharacterisation:
         orch.logger.warning.assert_called()
         warning_calls = [str(call) for call in orch.logger.warning.call_args_list]
         assert any("L4 message appraisal failed" in c for c in warning_calls)
+
+
+class TestAppraisalL4Switch:
+    """Tests for the L4 switch respect in appraisal pathway (W3-22 supervisor fix)."""
+
+    @pytest.mark.asyncio
+    async def test_appraisal_enabled_l4_disabled_does_nothing(
+        self, turn_orchestrator, emotion_engine, fake_db, fake_clock
+    ):
+        """When emotion_appraisal_enabled=True but layer_l4_enabled=False, _appraise_message is not called."""
+        orch = turn_orchestrator
+
+        # Track calls to _appraise_message and _apply_l4_emotion_analysis
+        appraise_called = False
+        l4_analysis_called = False
+
+        original_appraise = orch._appraise_message
+        original_l4_analysis = orch._apply_l4_emotion_analysis
+
+        async def track_appraise(*args, **kwargs):
+            nonlocal appraise_called
+            appraise_called = True
+            return await original_appraise(*args, **kwargs)
+
+        async def track_l4_analysis(*args, **kwargs):
+            nonlocal l4_analysis_called
+            l4_analysis_called = True
+            return await original_l4_analysis(*args, **kwargs)
+
+        orch._appraise_message = track_appraise
+        orch._apply_l4_emotion_analysis = track_l4_analysis
+
+        initial_vector = emotion_engine.current_vector.model_copy()
+
+        # Enable appraisal but disable L4
+        with patch.object(settings, "emotion_appraisal_enabled", True):
+            with patch.object(settings, "layer_l4_enabled", False):
+                await orch._post_response_chain(
+                    user_input="hello",
+                    response="hi there",
+                    emotional_before=MagicMock(vector=initial_vector),
+                    user_id="u1",
+                    conversation_id="c1",
+                    goal_context=MagicMock(),
+                    learning_context=MagicMock(),
+                    enable_l2=False,
+                    l2_reasoning_enabled=False,
+                    resonance_score=0.5,
+                    conversation_history=[{"role": "user", "content": "hello"}],
+                    venue="app",
+                    speaker="owner",
+                )
+
+        # Neither _appraise_message nor _apply_l4_emotion_analysis should be called
+        assert not appraise_called, "_appraise_message should not be called when L4 is disabled"
+        assert not l4_analysis_called, "_apply_l4_emotion_analysis should not be called when L4 is disabled"
+
+        # State should be unchanged
+        assert emotion_engine.current_vector.model_dump() == initial_vector.model_dump()

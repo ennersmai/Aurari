@@ -1854,3 +1854,9 @@
 - **Done when:** satisfied — the new tests pass, the full suite passes, and `grep -rn "_apply_conversation_influence_fallback" src` prints nothing.
 - **Do-not checks respected:** Did not change the L4 model settings or `l4_emotion_analysis` itself.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-23: System events are appraised, not pushed as raw deltas (flagged)
+- **Status:** DONE (committed by the supervisor: the session finished the work and its summary but did not write this entry or commit)
+- **What changed:** new `engines/emotion/system_events.py` with computed appraisals for memory write failure, self-critique, tool success and tool failure; with `emotion_appraisal_enabled` on, the self-critique and memory-failure call sites call `appraise` instead of `apply_influence` (flag off: unchanged); `run_tool_loop` gains `on_tool_result(tool, success)`, and the coordinator passes a callback that appraises tool results when the flag is on. Supervisor fix from W3-22: messages are appraised only when both `emotion_appraisal_enabled` and `layer_l4_enabled` are on.
+- **Tests:** new `tests/unit/test_system_appraisal.py`, one added test in `test_message_appraisal.py`. Full suite: 475 passed.
+- **Supervisor notes:** tool success is read from the executor's joined text (`❌ Tool <name> failed`), and a failed tool is treated as not retryable because the executor does not report it; with the table as it is, a retryable failure (control 0.7) matches no row and produces no impulse. Dominant impulses checked: memory failure sadness, self-critique shame, tool success joy, tool failure sadness.

@@ -39,6 +39,7 @@ from aura.models.learning import LearningContext
 from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
 from aura.orchestrator.tool_loop import NativeCalls, run_tool_loop
+from aura.engines.emotion.system_events import tool_succeeded, tool_failed, self_critique_received, memory_write_failed
 
 logger = logging.getLogger(__name__)
 
@@ -1421,12 +1422,24 @@ Constraints:
                 yield round_text
 
         response = ""
+
+        # Define on_tool_result callback for emotion appraisal when enabled
+        async def _on_tool_result(tool_name: str, success: bool) -> None:
+            if settings.emotion_appraisal_enabled:
+                if success:
+                    event = tool_succeeded(tool_name)
+                else:
+                    # The executor doesn't tell us if it's retryable; assume not retryable for now
+                    event = tool_failed(tool_name, retryable=False)
+                await self.emotion_engine.appraise(event)
+
         async for event in run_tool_loop(
             user_input=user_input,
             generate_round=_round,
             tool_executor=self.tool_executor,
             requester_role=requester_role,
             seed_results=seed,
+            on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
         ):
             if event.kind == "done":
                 response = event.text
@@ -1503,12 +1516,23 @@ Constraints:
                 "mode": "stream",
             })
 
+        # Define on_tool_result callback for emotion appraisal when enabled
+        async def _on_tool_result(tool_name: str, success: bool) -> None:
+            if settings.emotion_appraisal_enabled:
+                if success:
+                    event = tool_succeeded(tool_name)
+                else:
+                    # The executor doesn't tell us if it's retryable; assume not retryable for now
+                    event = tool_failed(tool_name, retryable=False)
+                await self.emotion_engine.appraise(event)
+
         async for event in run_tool_loop(
             user_input=user_input,
             generate_round=_round,
             tool_executor=self.tool_executor,
             requester_role=requester_role,
             seed_results=seed,
+            on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
         ):
             yield event
 
@@ -1964,7 +1988,9 @@ Constraints:
 
         # 1. Apply Emotion Appraisal (when enabled) or L4 Emotion Analysis (legacy)
         # Respects layer_l4_enabled toggle from inference cockpit.
-        if settings.emotion_appraisal_enabled:
+        # Appraisal is an L4 model call, so it must respect the L4 switch:
+        # call _appraise_message only when both flags are true.
+        if settings.emotion_appraisal_enabled and settings.layer_l4_enabled:
             await self._appraise_message(
                 user_input=user_input,
                 conversation_history=conversation_history,
@@ -2114,13 +2140,16 @@ Constraints:
                 
                 # Apply emotional impact of critique - "Self-Reflection"
                 # Aura should feel "concern" or "determination" based on critique
-                await self.emotion_engine.apply_influence(
-                    EmotionInfluence(
-                        source="internal_critique",
-                        emotions={"interest": 0.1, "determination": 0.1}, 
-                        reason="Self-critique received"
+                if settings.emotion_appraisal_enabled:
+                    await self.emotion_engine.appraise(self_critique_received())
+                else:
+                    await self.emotion_engine.apply_influence(
+                        EmotionInfluence(
+                            source="internal_critique",
+                            emotions={"interest": 0.1, "determination": 0.1}, 
+                            reason="Self-critique received"
+                        )
                     )
-                )
                 
                 # Send to Learning Engine for pattern extraction/integration
                 from aura.models.messages import EngineMessage, MessagePriority, MessageType
@@ -2220,13 +2249,16 @@ Constraints:
                 # Apply emotional impact - Aura should feel "loss" or "distress"
                 # Memory failure is a significant cognitive event
                 try:
-                    await self.emotion_engine.apply_influence(
-                        EmotionInfluence(
-                            source="system_error",
-                            emotions={"confusion": 0.3, "doubt": 0.2},
-                            reason="Memory storage failure (cognitive distress)"
+                    if settings.emotion_appraisal_enabled:
+                        await self.emotion_engine.appraise(memory_write_failed())
+                    else:
+                        await self.emotion_engine.apply_influence(
+                            EmotionInfluence(
+                                source="system_error",
+                                emotions={"confusion": 0.3, "doubt": 0.2},
+                                reason="Memory storage failure (cognitive distress)"
+                            )
                         )
-                    )
                 except Exception as e:
                     self.logger.error(f"Failed to apply emotional distress for memory error: {e}")
             
