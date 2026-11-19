@@ -198,6 +198,7 @@ async def _apply_surql_file(db: AsyncSurreal, file_name: str, label: str) -> Non
 # Schema files the app applies at boot, in boot order (see aura.main.lifespan).
 _SCHEMA_FILES = [
     ("init_schema.surql", "Core schema (structural)"),
+    ("schema_v2.surql", "Memory v2 schema"),
     ("seed_emotions.surql", "Emotion + identity seeds"),
     ("register_local_tools.surql", "Local tool registrations"),
     ("seed_cultural_nodes.surql", "Cultural node seeds"),

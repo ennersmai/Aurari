@@ -1508,3 +1508,21 @@
   - Latency seeds the 200 memories with direct `CREATE memory` statements (the runner's adapter and stub embeddings) rather than 200 `store_memory` turns, so exactly 200 non-ephemeral memories exist and the timed section contains only the 50 `recall()` calls.
   - The card says to reuse `write_baseline`, which writes JSON, so `docs/metrics/m3.md` contains JSON-formatted text with an `.md` extension. It includes `card`, `date`, `calls`, `seeded_memories`, the three flags, `p50_ms`, `p95_ms`, `min_ms` and `max_ms`.
   - I did not run the full suite with `RECORD_BASELINE=1`: the other recording tests would rewrite the already-committed `emotion_before.json`, `memory_before.json` and `emotion_after.json`. I ran the new module once with `RECORD_BASELINE=1` to write `m3.md`, then the full suite without it.
+
+## W3-09: Schema v2
+- **Status:** DONE
+- **PRD:** memory 4.1 to 4.5, M4
+- **Tier:** bulk
+- **Files changed:** new `scripts/schema_v2.surql`, `src/aura/main.py`, `tests/scenarios/runner.py`, new `tests/scenarios/test_schema_v2_embedded.py`
+- **Test result:** full suite passes (340 passed, 83 warnings); `tests/scenarios/test_schema_v2_embedded.py` 5 passed
+- **What I did:**
+  1. `schema_v2.surql` defines, every statement with `IF NOT EXISTS`: the `entity`, `episode`, `fact`, `question`, `theme` and `prediction` SCHEMAFULL tables with the card's fields, defaults and ASSERTs (the entity alias list is stored lowercased with `VALUE $value.map(|$v| string::lowercase($v))`); the seven typed relations `derived_from`, `about`, `mentions`, `next`, `supersedes`, `contradicts` and `answers` as `TYPE RELATION IN ... OUT ...`; the `v2_text` analyzer (same definition as `memory_text` in W3-01); HNSW cosine F32 768 indexes on `fact.embedding`, `episode.embedding` and `entity.embedding`; `FULLTEXT ... ANALYZER v2_text BM25 HIGHLIGHTS` indexes on `fact.content`, `episode.user_text` and `entity.name`; and standard indexes on `fact.visibility`, `fact.valid_to`, `fact.provenance`, `fact.recorded_at`, `entity.aliases`, `episode.venue` and `episode.extraction_status`.
+  2. `main.py` applies `schema_v2.surql` immediately after `init_schema.surql`; the runner's `_SCHEMA_FILES` does the same.
+  3. The new embedded tests apply every v2 statement strictly twice after the runner has already applied both files, create an entity (checking lowercased aliases) plus an episode (checking extraction defaults) and a fact, link them with `derived_from` and `about`, confirm `derived_from` from an entity is rejected, confirm provenance `"guess"` is rejected, and confirm both a KNN `<|5,COSINE|>` query and an `@1,OR@` full-text query return the created fact.
+- **"Done when" verified:** the new tests pass and the full suite passes (340 passed).
+- **Do-not checks respected:** `init_schema.surql` and every existing table are unchanged; the four relations for M5 to M7 (`led_to`, `member_of`, `co_used`, `abstracted_into`) are absent.
+- **Unsure about:**
+  - The relations use the compact `DEFINE TABLE ... TYPE RELATION IN fact OUT episode SCHEMAFULL` form, which the embedded SurrealDB 3.0.0 enforces (a relation from an entity is rejected at the `in` coercion), rather than separate typed `in`/`out` field statements as `init_schema.surql` does.
+  - The full-text indexes include `HIGHLIGHTS` for parity with W3-01's `memory_content_ft`; the card asks for BM25 only.
+  - Only the startup tuple was added to `main.py`, so the numbered boot-order comment above the list still enumerates the original five files and does not mention `schema_v2.surql`.
+  - The tests call `db.select(...)` on the runner's adapter (already present) and compare `RecordID`s with `==`; helper record ids are kept as `RecordID` because the embedded engine rejects string ids bound into typed `record<...>` fields.

@@ -162,6 +162,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     for surql_file, label in [
         ("init_schema.surql",          "Core schema (structural)"),
+        ("schema_v2.surql",            "Memory v2 schema"),
         ("seed_emotions.surql",         "Emotion + identity seeds"),
         ("register_local_tools.surql",  "Local tool registrations"),
         ("seed_cultural_nodes.surql",   "Cultural node seeds"),
