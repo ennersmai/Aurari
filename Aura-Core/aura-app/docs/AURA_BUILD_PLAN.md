@@ -1757,6 +1757,191 @@ SurrealDB syntax below was checked on the installed embedded engine (surrealdb 3
 ---
 
 
+### Wave 3: cards for M4 (schema v2, extraction, entity resolution, supersession, speakers and visibility)
+
+Written by the supervisor on 2026-11-20 against the code after M3. The v2 tables live in the same database as today's tables under new names (`episode`, `fact`, `entity`, `question`, `theme`, `prediction` do not clash with any existing table), so nothing is migrated (PRD section 9: fresh start). Today's `memory` path keeps running; the old tables are deleted only after the v2 probes pass, in a later card. Everything new is behind two flags, both off: `memory_v2_write_enabled` (episodes, extraction and facts) and `memory_v2_recall_enabled` (the Recall Engine reads facts).
+
+The extraction model is PRD open item 12.1 and Mai's decision: `memory_extraction_model`, empty by default, which means "use `settings.l2_model`".
+
+SurrealDB syntax checked on the installed embedded engine on 2026-11-20: `DEFINE TABLE IF NOT EXISTS x SCHEMAFULL`; typed relations `DEFINE TABLE IF NOT EXISTS derived_from TYPE RELATION FROM fact TO episode SCHEMAFULL` (the engine rejects an edge to the wrong table); `TYPE record<entity>`, `option<datetime>`, `array<string> DEFAULT []`; `ASSERT $value IN [...]`; `RELATE a->edge->b`; `WHERE aliases CONTAINS $a`; `WHERE valid_to IS NONE`. HNSW and FULLTEXT as in the M3 notes.
+
+---
+
+**W3-09 Schema v2**
+- **PRD:** memory 4.1 to 4.5, M4
+- **Tier:** bulk
+- **Files:** new `scripts/schema_v2.surql`, `src/aura/main.py` (the startup script list), `tests/scenarios/runner.py` (apply the new file after `init_schema.surql`), new `tests/scenarios/test_schema_v2_embedded.py`
+- **Change:**
+  1. `schema_v2.surql`, every statement with `IF NOT EXISTS`:
+     - `entity` SCHEMAFULL: `name` string, `type` string ASSERT in `person, project, place, tool, concept, other`, `aliases` array<string> DEFAULT [] (stored lowercased), `summary` option<string>, `embedding` option<array<float, 768>>, `created_at` datetime.
+     - `episode` SCHEMAFULL: `user_text` string, `aura_text` string, `speaker` record<entity>, `venue` string, `conversation_id` option<string>, `embedding` option<array<float, 768>>, `emotional_signature` object FLEXIBLE DEFAULT {}, `salience` float DEFAULT 0, `ephemeral` bool DEFAULT false, `recorded_at` datetime, `extraction_status` string DEFAULT "pending" ASSERT in `pending, done, failed, skipped`, `extraction_attempts` int DEFAULT 0, `extraction_error` option<string>.
+     - `fact` SCHEMAFULL with the fields of PRD 4.2: `content`, `kind` (ASSERT in `fact, preference, pattern, decision, event`), `subject` option<string>, `predicate` option<string>, `object` option<string>, `provenance` (ASSERT in `observed, hearsay, inferred, imagined, external`), `visibility` string, `confidence` float ASSERT 0..1, `valid_from` option<datetime>, `valid_to` option<datetime>, `recorded_at` datetime, `embedding` option<array<float, 768>>, `salience` float DEFAULT 0, `pinned` bool DEFAULT false, `use_count` int DEFAULT 0, `last_used_at` option<datetime>.
+     - `question` SCHEMAFULL: `content` string, `visibility` string, `status` string DEFAULT "open", `recorded_at` datetime. `theme` and `prediction`: SCHEMAFULL with `content` string, `recorded_at` datetime and, for `prediction`, `outcome` option<string> and `error` option<float>. (Used by later milestones; defined now so the schema is complete.)
+     - Typed relations from PRD 4.3: `derived_from` fact→episode, `about` fact→entity, `mentions` episode→entity, `next` episode→episode, `supersedes` fact→fact, `contradicts` fact→fact, `answers` fact→question. `led_to`, `member_of`, `co_used` and `abstracted_into` are left for M5 to M7.
+     - Indexes (PRD 4.5): HNSW DIMENSION 768 TYPE F32 DIST COSINE on `fact.embedding`, `episode.embedding`, `entity.embedding`; one analyzer `v2_text` (as `memory_text` in W3-01) and FULLTEXT BM25 indexes on `fact.content`, `episode.user_text`, `entity.name`; standard indexes on `fact.visibility`, `fact.valid_to`, `fact.provenance`, `fact.recorded_at`, `entity.aliases`, `episode.venue`, `episode.extraction_status`.
+  2. `main.py`: add `("schema_v2.surql", "Memory v2 schema")` after `init_schema.surql`. The runner applies it the same way.
+- **Tests:** on the embedded engine with both schema files applied: applying `schema_v2.surql` twice does not raise; an `entity`, an `episode` and a `fact` can be created and related with `derived_from` and `about`; `derived_from` to an `entity` is rejected; a `fact` with provenance `"guess"` is rejected; a KNN query on `fact.embedding` and a `@1,OR@` query on `fact.content` both return the created fact. Run the full suite.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change `init_schema.surql` or any existing table.
+
+---
+
+**W3-10 Venue and speaker reach the turn**
+- **PRD:** memory 4.4, M4
+- **Tier:** bulk
+- **Files:** `src/aura/orchestrator/coordinator.py` (`process_query`, `stream_query`, `_turn_pipeline`, `TurnContext`), `src/aura/discord/bot.py` (the `process_query` call around line 630), new `src/aura/engines/memory/v2/__init__.py`, new `src/aura/engines/memory/v2/identity.py`, new `tests/unit/test_memory_v2_identity.py`
+- **Change:**
+  1. `identity.py`: `def speaker_key(user_id: str, requester_role: str) -> str` returns `"owner"` when `requester_role == "owner"`, otherwise `user_id` (Discord users are already `discord_<id>`). `def venue_for_discord(guild_id: str, channel_id: str, user_id: str) -> str` returns `f"dm:{user_id}"` when `guild_id == "dm"`, otherwise `f"guild:{guild_id}/channel:{channel_id}"`. `def visibility_for_venue(venue: str, speaker: str) -> str`: `"app"` gives `"owner"`; `"dm:<x>"` gives `"private:<x>"`; `"guild:<g>/channel:<c>"` gives `"guild:<g>"`. `def visible_in_venue(venue: str) -> list[str]` returns the visibilities that may be recalled there: `"app"` gives `["owner"]`; `"dm:<x>"` gives `["private:<x>"]`, plus `"owner"` when `x` is an owner DM (`venue == "dm:owner"`); `"guild:<g>/..."` gives `["guild:<g>"]`.
+  2. Add `venue: str = "app"` as the last keyword argument of `process_query`, `stream_query` and `_turn_pipeline`, stored on `TurnContext` (new last field `venue: str = "app"`) together with `speaker: str` from `speaker_key`.
+  3. The Discord bot passes `venue=venue_for_discord(guild_id, channel_id, user_id)` (owner DMs: when `requester_role == "owner"` and it is a DM, the venue is `"dm:owner"`). The chat routes pass nothing (default `"app"`).
+- **Tests:** each helper on its documented inputs; `process_query` with `venue="guild:1/channel:2"` puts that venue and the right speaker on the turn context (use the `turn_orchestrator` fixture and capture the context); the default is `"app"`. Characterisation tests pass unchanged.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change what the bot sends to the model, its history keys or its role logic.
+
+---
+
+**W3-11 Salience**
+- **PRD:** memory 5.4
+- **Tier:** bulk
+- **Files:** new `src/aura/engines/memory/v2/salience.py`, `src/aura/config.py`, new `tests/unit/test_memory_v2_salience.py`. Read the depth formula in `MemoryManager` (around `depth = (len_score * 0.5) ...`) and `EmotionEngine.config.baseline`.
+- **Change:**
+  1. Config: `memory_salience_active_min: float = 0.1`, `memory_salience_weights: tuple[float, float, float] = (0.4, 0.4, 0.2)`.
+  2. `def interaction_depth(response_length: int | None, reasoning_steps: int | None, tool_calls: int | None) -> float`: the same formula as `MemoryManager`'s depth, moved into a function and called from there too, so there is one copy.
+  3. `def emotional_intensity(state: dict[str, float], baseline: dict[str, float]) -> float`: for each dimension, `d = state - baseline`; keep dimensions with `abs(d) >= memory_salience_active_min`; return the root mean square of the kept `d` values, `0.0` when none are kept, capped at `1.0`. The PRD asks for a rolling baseline; the emotion engine has a fixed configured baseline today, so this uses `EmotionEngine.config.baseline` and says so in the docstring.
+  4. `def salience(intensity: float, prediction_error: float | None, depth: float) -> float` with the configured weights; `prediction_error=None` means `0.5` until predictions exist.
+- **Tests:** a resting state equal to the baseline gives intensity 0; three strong dimensions give a higher intensity than one; a hand-computed RMS example; salience with `prediction_error=None` uses 0.5; `MemoryManager`'s depth is unchanged (its existing tests pass).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change the depth formula or any formation-score weight.
+
+---
+
+**W3-12 Episodes are stored after every turn (flagged)**
+- **PRD:** memory 5.1, 5.3 (ephemeral rule), M4
+- **Tier:** bulk
+- **Depends on:** W3-09, W3-10, W3-11
+- **Files:** new `src/aura/engines/memory/v2/episodes.py`, `src/aura/orchestrator/coordinator.py` (`_post_response_chain`), `src/aura/config.py`, new `tests/scenarios/test_memory_v2_episodes_embedded.py`
+- **Change:**
+  1. Config: `memory_v2_write_enabled: bool = False` (`AURA_MEMORY_V2_WRITE_ENABLED`).
+  2. `async def ensure_person(db, key: str, display_name: str | None) -> RecordID`: upsert `entity:<key>` (`type="person"`, `name` = display name or key, alias = lowercased name) and return its id. Keys are `owner` or `discord_<id>`; build the record id with the existing `to_record_id` helper, never by string formatting into a query.
+  3. `async def store_episode(db, embeddings, *, user_text, aura_text, speaker, venue, conversation_id, emotional_signature, salience) -> RecordID`: embed `user_text + "\n" + aura_text[:200]`; create the episode with `recorded_at = get_clock().now()`; `ephemeral = not needs_recall(user_text)` (the W3-06 gate rule); relate `next` from the most recent episode with the same `venue` and `conversation_id`, if any. Returns the id. All values are query parameters.
+  4. In `_post_response_chain`, after the experience is logged and only when the flag is on: compute salience (W3-11) from the current emotional state, the configured baseline, and the depth of this reply; call `store_episode` inside `try/except` (log a warning on failure; the turn is never affected). `_post_response_chain` receives `venue` and `speaker` from the turn context (add them as last keyword arguments with defaults `"app"` and `"owner"`).
+- **Tests:** on the embedded engine with the runner: two turns in one venue create two episodes linked by `next`; a third turn in another venue starts a new chain; `"thanks!"` is stored with `ephemeral = true`; the speaker entity exists and is reused across turns; with the flag off nothing is written (ablation); a failing embed still stores nothing and does not raise into the turn.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** remove or change today's memory writes. Do not call a model.
+
+---
+
+**W3-13 Extraction after the turn (flagged)**
+- **PRD:** memory 5.2 (the structured call), 12.1
+- **Tier:** frontier
+- **Depends on:** W3-12
+- **Files:** new `src/aura/engines/memory/v2/extraction.py`, `src/aura/engines/memory/v2/episodes.py` (schedule extraction), `src/aura/config.py`, new `tests/unit/test_memory_v2_extraction.py`
+- **Change:**
+  1. Config: `memory_extraction_model: str = ""` (empty means `settings.l2_model`), `memory_extraction_max_attempts: int = 3`.
+  2. Pydantic models: `ExtractedEntity(name: str, type: str, surface: str)`, `ExtractedFact(content: str, kind: str, subject: str | None, predicate: str | None, object: str | None, about: list[str], asserted_by: Literal["user", "aura"], implied: bool = False, negates: bool = False)`, `Extraction(entities: list[ExtractedEntity], facts: list[ExtractedFact], questions: list[str], predictions: list[str])`. Unknown `type` or `kind` values are coerced to `other` / `fact` with a warning rather than failing the whole extraction.
+  3. `def build_prompt(episode, previous: list) -> list[dict]`: a system message that states the JSON shape above with one short example, the rules ("each fact is one self-contained sentence", "`asserted_by` is `aura` for anything only Aura said", "`subject` is `I` when the speaker talks about themselves", "`negates` is true when the statement denies something said before"), and a user message with the two previous episodes and this one, each as `speaker: user_text` / `Aura: aura_text`.
+  4. `async def extract(client, episode, previous) -> Extraction`: one `complete` call with the extraction model, temperature 0; parse the first JSON object in the reply (fenced or bare); validate with the models.
+  5. `async def run_extraction(db, client, episode_id)`: load the episode and the two previous ones in the same venue; on success store the `Extraction` as JSON in a new optional `episode.extraction` field (add `DEFINE FIELD IF NOT EXISTS extraction ON episode TYPE option<object> FLEXIBLE` to `schema_v2.surql`) and set `extraction_status="done"`; on any failure increment `extraction_attempts`, set `extraction_error`, and set the status to `failed` only once attempts reach the maximum (otherwise leave `pending` for the dream cycle to retry). An episode is never deleted because extraction failed.
+  6. `store_episode`'s caller schedules `run_extraction` as a background task (`asyncio.create_task`, keep a reference so it is not garbage collected) when the flag is on.
+- **Tests:** with a fake client: a bare JSON reply and a fenced one both validate; an unknown entity type becomes `other`; invalid JSON leaves the episode `pending` with attempts 1 and the error stored; the third failure sets `failed`; the prompt contains the previous two episodes and the speaker labels; the model name used is `settings.l2_model` when `memory_extraction_model` is empty.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** write facts or entities here (W3-14 to W3-16). Do not run extraction on the reply path.
+
+---
+
+**W3-14 Entity resolution**
+- **PRD:** memory 5.2 step 1
+- **Tier:** bulk
+- **Depends on:** W3-13
+- **Files:** new `src/aura/engines/memory/v2/entities.py`, `src/aura/config.py`, new `tests/scenarios/test_memory_v2_entities_embedded.py`
+- **Change:**
+  1. Config: `memory_entity_match_threshold: float = 0.92`, `memory_entity_close_margin: float = 0.02`.
+  2. `async def resolve_entity(db, embeddings, name: str, type: str, speaker: str) -> RecordID`:
+     - `"I"`, `"me"`, `"myself"` resolve to the speaker's person entity.
+     - Exact alias: the lowercased, whitespace-collapsed name matches an alias (`aliases CONTAINS $a`), preferring the same `type`.
+     - Otherwise embedding similarity over `entity.embedding` with the KNN operator (k=3): the best match at or above the threshold wins, and its aliases get the new surface form.
+     - When the top two are both above the threshold and within the margin, take the best and log the pair at INFO (the PRD's model call for close cases is left for later; say so in the docstring).
+     - Otherwise create a new entity with the name, type, lowercased alias and embedding.
+- **Tests:** on the embedded engine: an exact alias resolves without embedding; a new surface form close in embedding resolves to the existing entity and is added as an alias; an unrelated name creates a new entity; `"I"` resolves to the speaker; resolving the same name twice creates one entity.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** call a model.
+
+---
+
+**W3-15 Facts with provenance and visibility**
+- **PRD:** memory 4.4 (speakers, visibility, hearsay), 5.2 step 2, rules 5 and 6
+- **Tier:** frontier
+- **Depends on:** W3-14
+- **Files:** new `src/aura/engines/memory/v2/facts.py`, `src/aura/engines/memory/v2/extraction.py` (`run_extraction` calls it after a successful extraction), `src/aura/config.py`, new `tests/scenarios/test_memory_v2_facts_embedded.py`
+- **Change:**
+  1. Config: `memory_hearsay_confidence: float = 0.3`, `memory_observed_confidence: float = 0.8`, `memory_inferred_confidence: float = 0.5`.
+  2. `async def write_facts(db, embeddings, episode, extraction)`: resolve every extracted entity (W3-14) and relate `mentions` from the episode. For each extracted fact:
+     - `asserted_by == "aura"`: skip it. Aura's own statements are never stored as facts about the world (rule 5).
+     - Resolve `about` names and the `subject`. Provenance: `implied` gives `inferred`; a subject that resolves to the speaker, or to a non-person entity, gives `observed`; a subject that resolves to another person gives `hearsay`.
+     - Confidence from the provenance settings.
+     - `visibility = visibility_for_venue(episode.venue, episode.speaker)` (W3-10).
+     - `recorded_at = get_clock().now()`; `valid_from` the same; embedding of `content`.
+     - Hand the fact to the conflict check (W3-16; until it lands, store it as new), then relate `derived_from` to the episode and `about` to each resolved entity.
+  3. Nothing a guest (speaker not `owner`) says can create a fact whose subject resolves to the `owner` entity with provenance other than `hearsay`.
+- **Tests:** on the embedded engine with scripted extractions: the owner saying "I live in Lisbon" in the app stores an `observed` fact about `entity:owner` with visibility `owner`; a Discord guest saying "Mai lives in Porto" in a guild stores `hearsay` with confidence 0.3 and visibility `guild:<g>`; a DM fact gets `private:discord_<id>`; a fact with `asserted_by="aura"` is not stored; `derived_from`, `about` and `mentions` edges exist.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change today's `insight` or `memory` writes.
+
+---
+
+**W3-16 The conflict check: duplicate, update, contradiction, new**
+- **PRD:** memory 5.2 step 3, 5.3 (superseded facts)
+- **Tier:** frontier
+- **Depends on:** W3-15
+- **Files:** new `src/aura/engines/memory/v2/conflicts.py`, `src/aura/engines/memory/v2/facts.py`, `src/aura/config.py`, new `tests/scenarios/test_memory_v2_conflicts_embedded.py`
+- **Change:**
+  1. Config: `memory_duplicate_similarity: float = 0.95`, `memory_contradiction_similarity: float = 0.8`, `memory_duplicate_confidence_step: float = 0.1`.
+  2. `async def classify(db, new_fact, about_ids) -> tuple[str, RecordID | None]` over current facts (`valid_to IS NONE`) that are `about` any of the same entities and have the same `visibility`:
+     - **duplicate:** an existing fact with embedding similarity at or above the duplicate threshold.
+     - **update:** an existing fact with the same resolved `subject` and the same `predicate` (lowercased, whitespace-collapsed) and a different `object`, whose provenance is not stronger than the new one (`observed` > `inferred` > `hearsay`; hearsay never updates an observed fact).
+     - **contradiction:** the new fact has `negates=True` and an existing fact is at or above the contradiction threshold, or an update was blocked only by the provenance rule.
+     - **new:** otherwise.
+  3. Apply: duplicate raises the existing fact's confidence by the step (capped at 1), relates `derived_from` to the new episode and stores nothing new; update stores the new fact, sets `valid_to = get_clock().now()` on the old one and relates new `supersedes` old; contradiction stores the new fact, relates `contradicts`, and creates a `question` ("Which is true: <old> or <new>?") with the same visibility; new stores the fact.
+- **Tests:** on the embedded engine with scripted extractions and the runner's clock: "I live in Lisbon" then "I moved to Porto" (same subject and predicate `lives in`) leaves only Porto current, Lisbon with `valid_to` set and a `supersedes` edge; the same statement twice raises confidence and creates one fact; a guest's hearsay "Mai lives in Berlin" does not supersede Mai's observed fact and creates a `contradicts` edge and a question; a negation creates a contradiction; an unrelated fact is new.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** delete any fact. Do not call a model.
+
+---
+
+**W3-17 Recall reads facts, filtered by visibility (flagged)**
+- **PRD:** memory 4.4 ("filters by visibility before ranking"), 6.3 step 6 (facts with age, provenance and confidence), M4
+- **Tier:** frontier
+- **Depends on:** W3-16, W3-05
+- **Files:** `src/aura/engines/recall/channels.py`, `src/aura/engines/recall/engine.py`, `src/aura/engines/recall/models.py` (`RecallRequest`), the four `RecallRequest(...)` call sites in `coordinator.py` and `layers.py`, `src/aura/config.py`, new `tests/scenarios/test_recall_v2_facts_embedded.py`
+- **Change:**
+  1. Config: `memory_v2_recall_enabled: bool = False` (`AURA_MEMORY_V2_RECALL_ENABLED`).
+  2. `RecallRequest` gets `venue: str = "app"` (last field); the call sites pass the turn's venue.
+  3. `channels.py`: `fact_dense_channel` and `fact_lexical_channel`, like W3-02 but over `fact`, with `visibility IN $visible` (from `visible_in_venue`, W3-10) and `valid_to IS NONE`, and no `user_id` filter (visibility replaces it).
+  4. When both `recall_channels_enabled` and `memory_v2_recall_enabled` are on, the memories block uses the fact channels, fuses them (W3-04), applies abstention (W3-07) unchanged, and renders `<memories>` with one `<fact age="<n>d" provenance="<p>" confidence="<c:.2f>">content</fact>` line per fact, age from `recorded_at` and `get_clock().now()`.
+- **Tests:** on the embedded engine: a fact learned in the app is recalled in the app and not in a guild or a guest DM; a guild fact is recalled in that guild only; a guest DM fact only in that DM; a superseded fact is never recalled; the rendered line carries age, provenance and confidence; with the v2 flag off the memory-table path runs (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** remove the memory-table path. Do not turn any flag on by default.
+
+---
+
+**W3-18 M4 probes: updated facts, history, visibility, stale-fact rate**
+- **PRD:** memory M4 gate ("updated-fact, history and visibility probes pass, stale-fact rate under 2%"), 8.3
+- **Tier:** bulk
+- **Depends on:** W3-17
+- **Files:** new `tests/scenarios/test_memory_v2_m4_embedded.py`, new `docs/metrics/m4.md`. Read `tests/scenarios/runner.py`.
+- **Change:** scenario tests through the runner with all v2 and M3 flags on and a scripted extraction client (a fake that returns a fixed `Extraction` per turn, so no model is called):
+  - **Updated fact:** day 0 "I live in Lisbon", day 10 "I moved to Porto"; on day 11 "where do I live?" recalls Porto and not Lisbon.
+  - **History:** after the update, `what_changed`-style query: the `supersedes` chain from Porto leads to Lisbon (query the edge directly; the recall tool itself is M5).
+  - **Visibility:** a guest's DM fact never appears in the app or a guild; a guild fact never appears in another guild.
+  - **Hearsay:** a guest's claim about the owner never replaces the owner's own fact.
+  - **Stale-fact rate:** over a 40-turn script with 10 updates, the share of recalled facts that are superseded; assert under 2% and write the number with the date to `docs/metrics/m4.md` only when `RECORD_BASELINE=1` (use `write_baseline`).
+- **Tests:** these are the tests. Run the full suite, then once with `RECORD_BASELINE=1`, and commit `docs/metrics/m4.md`.
+- **Done when:** the new tests pass, the full suite passes, and `docs/metrics/m4.md` exists with the stale-fact rate and the date.
+- **Do not:** change any flag default or threshold to make a test pass; report failures instead.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
