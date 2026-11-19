@@ -542,6 +542,19 @@ class Settings(BaseSettings):
                     "the write path can be compared with today's memory writes.",
     )
 
+    # Memory v2 extraction (W3-13)
+    memory_extraction_model: str = Field(
+        default="",
+        validation_alias="AURA_MEMORY_EXTRACTION_MODEL",
+        description="Model used for memory v2 extraction. Empty uses settings.l2_model.",
+    )
+    memory_extraction_max_attempts: int = Field(
+        default=3,
+        validation_alias="AURA_MEMORY_EXTRACTION_MAX_ATTEMPTS",
+        description="Extraction attempts before an episode is marked failed; below "
+                    "this it stays pending for the dream cycle to retry.",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

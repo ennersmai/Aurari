@@ -1587,3 +1587,26 @@
   - The episode's `emotional_signature` is the full current emotion vector dict, matching what the existing memory write passes. Salience depth uses only the known response length; reasoning steps and tool calls are not available at this point and are passed as `None` (the W3-11 helper counts them as 0.0).
   - `conversation_id = $conversation_id` also matches an episode stored with a `NONE` conversation id; I verified this on the embedded engine rather than adding an `IS NONE` branch.
   - The coordinator uses its existing `self.db` and a function-local `get_embeddings_client()` import (as the existing latent-absorption block does) so the heavy embeddings module is not imported at coordinator import time.
+
+## W3-13: Extraction after the turn (flagged)
+- **Status:** DONE
+- **PRD:** memory 5.2 (the structured call), 12.1
+- **Tier:** frontier
+- **Files changed:** new `src/aura/engines/memory/v2/extraction.py`, `src/aura/engines/memory/v2/episodes.py`, `src/aura/config.py`, `scripts/schema_v2.surql`, `src/aura/orchestrator/coordinator.py`, new `tests/unit/test_memory_v2_extraction.py`
+- **Test result:** full suite passes (379 passed, 83 warnings); `tests/unit/test_memory_v2_extraction.py` 10 passed
+- **What I did:**
+  1. Added `memory_extraction_model` (default `""`, alias `AURA_MEMORY_EXTRACTION_MODEL`) and `memory_extraction_max_attempts` (default 3, alias `AURA_MEMORY_EXTRACTION_MAX_ATTEMPTS`) to `Settings` after the W3-12 write flag.
+  2. `extraction.py` defines `ExtractedEntity`, `ExtractedFact` and `Extraction` as carded. A `type` outside person/project/place/tool/concept/other is logged as a warning and coerced to `other`; a `kind` outside fact/preference/pattern/decision/event is coerced to `fact`. Facts take the card's defaults for `implied`/`negates` and an empty `about` list.
+  3. `build_prompt(episode, previous)` returns a system message with the JSON shape, a short example and the four rules, then a user message with the previous episodes (oldest first, at most two) followed by the current one. Each is rendered as `speaker: <user_text>` / `Aura: <aura_text>`.
+  4. `extract(client, episode, previous)` makes one `client.complete(..., temperature=0)` call with `settings.memory_extraction_model` or `settings.l2_model` when that is empty. The first JSON object in the reply is found by scanning for `{` and using `json.JSONDecoder.raw_decode`, so bare and fenced replies both work, then it is validated by `Extraction`.
+  5. `run_extraction(db, client, episode_id)` loads the episode and the two most recent earlier episodes in the same venue, calls `extract`, and on success stores `extraction.model_dump()` in the new `extraction` field with `extraction_status="done"`. On any failure it increments `extraction_attempts`, stores `extraction_error`, and sets `failed` only at the configured maximum; earlier failures stay `pending`. It never deletes the episode. The schema gained `DEFINE FIELD IF NOT EXISTS extraction ON episode TYPE option<object> FLEXIBLE`.
+  6. `episodes.schedule_extraction(db, client, episode_id)` creates the background task with `asyncio.create_task` and keeps a strong reference in a module-level set until the task finishes. `_post_response_chain` schedules it after a successful `store_episode` when `memory_v2_write_enabled` is on, using the orchestrator's LLM client; it is never on the reply path.
+  7. Tests cover bare and fenced JSON, unknown type/kind coercion, the prompt's two previous episodes and speaker labels, the empty-model fallback to `settings.l2_model`, a configured extraction model, successful storage, one invalid reply leaving `pending`/attempts 1/error stored, the third failure setting `failed`, and the venue/limit of the previous-episode query.
+- **"Done when" verified:** the new tests pass and the full suite passes (379 passed).
+- **Do-not checks respected:** no facts, entities, questions or predictions are written; extraction is scheduled in a background task after the turn, not on the reply path; earlier cards are unchanged.
+- **Unsure about:**
+  - The card's file list names `episodes.py` for scheduling but not `coordinator.py`; step 6 names "`store_episode`'s caller", which is `coordinator._post_response_chain`, so that call site had to change to capture the returned episode id and schedule the task. The scheduling helper itself lives in `episodes.py` as the file list says.
+  - The card says to add the `extraction` field to `schema_v2.surql`; the repository's file is `scripts/schema_v2.surql`, which is the one the app and tests load.
+  - The prompt renders the literal labels `speaker:` and `Aura:` as the card's wording gives them, rather than the speaker's record id or name.
+  - `run_extraction` leaves `extraction_error` populated after a later success and clears nothing; the card only asks for the extraction and the `done` status on success.
+  - `schedule_extraction` checks `memory_v2_write_enabled` itself, and the caller also only runs it inside that block, so the task is skipped cleanly when the flag is off.

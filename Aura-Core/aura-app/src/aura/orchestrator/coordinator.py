@@ -20,7 +20,7 @@ from aura.engines.emotion.engine import EmotionEngine
 from aura.engines.goal.engine import GoalEngine
 from aura.engines.identity.engine import IdentityEngine
 from aura.engines.learning.engine import LearningEngine
-from aura.engines.memory.v2.episodes import store_episode
+from aura.engines.memory.v2.episodes import schedule_extraction, store_episode
 from aura.engines.memory.v2.identity import speaker_key
 from aura.engines.memory.v2.salience import (
     emotional_intensity,
@@ -1983,7 +1983,7 @@ Constraints:
                 )
                 depth = interaction_depth(len(response), None, None)
                 salience_value = compute_salience(intensity, None, depth)
-                await store_episode(
+                episode_id = await store_episode(
                     self.db,
                     get_embeddings_client(),
                     user_text=user_input,
@@ -1994,6 +1994,12 @@ Constraints:
                     emotional_signature=emotional_current.vector.model_dump(),
                     salience=salience_value,
                 )
+                # Extraction runs after the turn, in the background, never on
+                # the reply path. The task reference is kept by
+                # ``schedule_extraction`` until it finishes.
+                client = getattr(getattr(self, "llm_layers", None), "client", None)
+                if client is not None:
+                    schedule_extraction(self.db, client, episode_id)
             except Exception as e:
                 self.logger.warning(f"Failed to store memory v2 episode: {e}")
 

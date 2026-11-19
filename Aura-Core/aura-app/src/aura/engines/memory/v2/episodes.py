@@ -13,13 +13,35 @@ acknowledgement, per the W3-06 gate) is stored with ``ephemeral = True``.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from surrealdb.types import RecordID
 
 from aura.clock import get_clock
+from aura.config import settings
 from aura.db.query_utils import to_record_id
+from aura.engines.memory.v2.extraction import run_extraction
 from aura.engines.recall.gate import needs_recall
+
+# Strong references to in-flight extraction tasks: asyncio only keeps a weak
+# reference to a task, so without this set a task could be garbage collected
+# before it completes.
+_extraction_tasks: set[asyncio.Task[Any]] = set()
+
+
+def schedule_extraction(db: Any, client: Any, episode_id: Any) -> asyncio.Task[Any] | None:
+    """Run :func:`run_extraction` in the background when the flag is on.
+
+    Returns the task (also kept in a module-level set until it finishes), or
+    ``None`` when memory v2 writes are disabled.
+    """
+    if not settings.memory_v2_write_enabled:
+        return None
+    task = asyncio.create_task(run_extraction(db, client, episode_id))
+    _extraction_tasks.add(task)
+    task.add_done_callback(_extraction_tasks.discard)
+    return task
 
 
 async def ensure_person(db: Any, key: str, display_name: str | None) -> RecordID:

@@ -39,6 +39,7 @@ DEFINE FIELD IF NOT EXISTS extraction_status ON episode TYPE string DEFAULT "pen
     ASSERT $value IN ["pending", "done", "failed", "skipped"];
 DEFINE FIELD IF NOT EXISTS extraction_attempts ON episode TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS extraction_error ON episode TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS extraction ON episode TYPE option<object> FLEXIBLE;
 
 -- One atomic statement in plain language. What gets injected most.
 DEFINE TABLE IF NOT EXISTS fact SCHEMAFULL;
