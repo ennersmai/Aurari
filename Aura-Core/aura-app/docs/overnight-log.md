@@ -2,22 +2,18 @@
 
 ## Summary (kept current by the supervisor)
 - **Wave 0-1:** all 21 cards done (W0-01..W0-05, W1-01..W1-16). Review in docs/metrics/wave-1.md.
-- **Wave 2 done:**
-  - W2-01 scenario runner (embedded SurrealDB, FakeClock, stub embeddings).
-  - B0 complete, W2-02..W2-11: one `_turn_pipeline`; `process_query` and `stream_query` are thin wrappers; characterisation tests pin both paths.
-  - Real SurrealDB query bugs found by the runner, fixed: W2-12 (record id in `boost_on_recall`), W2-13 and W2-26 (FETCH before LIMIT in five edge queries), W2-27 (runner stub).
-  - M2 Recall Engine complete, W2-14..W2-24: one entry point with budget, deduplication and trace; the turn goes through it (W2-20); trace endpoints (W2-23); end-to-end runner comparison (W2-24).
-- **Please review first:** W2-20 changes behaviour on purpose: retrieval runs once per turn with the real user id (before, the tool loop silently used "default", undoing W1-04), and the cold-start and latent blocks now reach the prompt.
-- **Stopped:** W2-25 (V0, remove the VRM avatar) stopped twice on a frontend build that was already broken: missing `frontend/src/lib/utils.ts` (restored from Mai's old copy) and two vrm-engine modules under a `lib/` folder that are not in the repository. BF-07 checks the ignore rule; the files must come from Mai's old working copy. W2-25 is skipped until then.
-- **Night 3 bug fixes, all done:** BF-01 (fifth FETCH-before-LIMIT query), BF-02 (pin/unpin return 500 when the write fails), BF-03 (baselines written only with RECORD_BASELINE=1; first attempt rejected, second passed), BF-04 (valid IdentityContext in both stream fallbacks), BF-05 and BF-06 (memory and dreaming read time through the clock; a memory stored on day 0 is 30 days old on day 30), BF-07 (the Python lib/ ignore rule no longer matches frontend source). Suite: 200 passed.
-- **For Mai:** the two vrm-engine modules that broke the frontend build are in the old working copy at Desktop\Aura\Aura-Core\aura-app\frontend\src\components\vrm-engine\lib\ (VRMAnimation/ with 5 files and utils/ with 3, VRMLookAtSmootherLoaderPlugin/ with 2). V0 deletes that folder anyway; copying them in only unblocks W2-25 baseline build. W2-25 stays skipped (failed twice) until then.
-- **Follow-up noted:** other direct time reads remain (for example DreamingEngine.tick and parts of manager.py); to be carded with the next clock pass.
-- **G1 progress:** W2-28 (registry), W2-29 (executor stats, fourth attempt), W2-30 (tool selection), W2-31 (single tool loop) done. W2-32 (blocking path onto the loop) not done: three attempts lost to provider failures (Cohere invalid tool generation, an empty Gemini answer), one attempt left. Suite: 243 passed.
-- **Stopped for the night (Mai, 2026-11-19):** most free providers exhausted. Resume with W2-32, then W2-33..W2-38, then wave 3.
-- **Sluice changes tonight (Sluice repo):** billing safety (SL-01..SL-16a); fail over on content-shape 400s and on streams that open with an error event; Cohere removed from the coder pool (kept in chat).
-- **Supervisor fixes:** baselines restored twice (bccf884, 6668d2f) until BF-03 lands; the overnight log was restored once after a session rewrote it (3db9728).
+- **Wave 2: done** (2026-11-20). Review in docs/metrics/wave-2.md. Suite: 261 passed; frontend build passes.
+  - W2-01 scenario runner; B0 one turn pipeline (W2-02..W2-11); SurrealDB query fixes found by the runner (W2-12, W2-13, W2-26, W2-27, BF-01).
+  - M2 Recall Engine (W2-14..W2-24).
+  - V0: VRM removed (W2-25), after Mai decided on 2026-11-20 to drop VRM without restoring its missing lib files.
+  - G1 tool registry and single tool loop (W2-28..W2-38): both reply paths run on one loop; the model is offered the selected tools; native function calling is ready behind `AURA_L3_NATIVE_TOOLS` (off); keywords no longer force tool use.
+  - Night 3 bug fixes BF-01..BF-07.
+- **Please review:** W2-20 (retrieval once per turn with the real user id), W2-38 (only learned trigger phrases force a tool call; the model decides otherwise). Check that `/chat` shows the spiral (W2-25).
+- **Wave 3 started:** M3 carded as W3-01..W3-08 (full-text index, dense and lexical channels, query building, fusion, gate, abstention, scenarios and latency). All flags off by default; turning them on is Mai's call after W3-08.
+- **Follow-ups noted:** remaining direct time reads (DreamingEngine.tick, parts of manager.py); the native-tools streaming fallback can repeat already streamed text (fix before enabling `AURA_L3_NATIVE_TOOLS`).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
-- **Night 3 (2026-11-19):** Sluice billing safety (Part 1) verified first; see the Sluice repo, docs/night3-log.md. Mistral is credit-capped and ineligible until 2026-12-18.
+- **Sluice (separate repo):** billing safety (SL-01..SL-16a), failover on content-shape 400s and error-opening streams; new free providers on 2026-11-20 (Token Harbor, Inferbase, Gonka, Novai).
+- **Supervisor fixes:** baselines restored twice (bccf884, 6668d2f) before BF-03; the overnight log restored once (3db9728).
 
 ---
 

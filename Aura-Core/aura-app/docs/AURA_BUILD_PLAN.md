@@ -1614,6 +1614,149 @@ Written by the supervisor against the code on overnight-wave-0-1. Done-when line
 ---
 
 
+### Wave 3: cards for M3 (indexes, channels, fusion, query building, gate, abstention)
+
+Written by the supervisor on 2026-11-20 against the code at the end of wave 2. M3 works on today's `memory` table: schema v2 (`fact`, `episode`, `entity`) is M4, and the entity, graph and temporal channels are M5. Every mechanism ships behind its own config flag, off by default (memory PRD rule 7); turning them on is a decision for Mai after W3-08.
+
+SurrealDB syntax below was checked on the installed embedded engine (surrealdb 3.0.0) on 2026-11-20:
+- Full-text: `DEFINE ANALYZER ... TOKENIZERS class FILTERS lowercase, ascii, snowball(english)` and `DEFINE INDEX ... FIELDS content FULLTEXT ANALYZER <name> BM25 HIGHLIGHTS`. The older `SEARCH ANALYZER` form is a parse error. Match with `content @1,OR@ $text` and score with `search::score(1)`. Plain `@1@` requires every word to match, so a sentence matches nothing: always use `@1,OR@`.
+- KNN: `WHERE <filters> AND embedding <|20,40|> $vec` with `vector::distance::knn() AS distance`, `ORDER BY distance`. Filters are applied before the k nearest are chosen. `k` and `ef` must be integer literals: a parameter is a parse error. They come from config and are inserted with `int(...)`; this is the only allowed formatting into a query string, and only for integers from config.
+
+---
+
+**W3-01 A full-text index on memory content**
+- **PRD:** memory 4.5 (indexes), M3
+- **Tier:** bulk
+- **Files:** `scripts/init_schema.surql`, new `tests/scenarios/test_memory_fulltext_index_embedded.py`. Read `tests/scenarios/runner.py` (how the schema is applied to the embedded engine) and `tests/scenarios/test_edge_queries_clause_order_embedded.py` (pattern).
+- **Change:** in `init_schema.surql`, right after the `memory_embedding` HNSW index line, add:
+  ```
+  DEFINE ANALYZER OVERWRITE memory_text TOKENIZERS class FILTERS lowercase, ascii, snowball(english);
+  DEFINE INDEX OVERWRITE memory_content_ft ON memory FIELDS content FULLTEXT ANALYZER memory_text BM25 HIGHLIGHTS;
+  ```
+  If `OVERWRITE` is rejected by the embedded engine, use `IF NOT EXISTS` instead and say so in the log.
+- **Tests:** on the embedded engine with the real `init_schema.surql` applied (as the runner does): create three memories (`"Mai likes the Rust language"`, `"The cat sleeps on the sofa"`, `"function parse_route in config.rs"`); `SELECT id, search::score(1) AS score FROM memory WHERE content @1,OR@ $t ORDER BY score DESC` with `$t = "what do you know about rust?"` returns the Rust memory first; `"parse_route"` returns the third; `"sleeping cats"` returns the second (stemming). Applying the schema file twice does not raise. Run the full suite.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change any other index or field. Do not touch the existing HNSW index.
+
+---
+
+**W3-02 Dense and lexical candidate channels**
+- **PRD:** memory 6.3 step 3 (dense and lexical rows), M3
+- **Tier:** bulk
+- **Depends on:** W3-01
+- **Files:** new `src/aura/engines/recall/channels.py`, `src/aura/config.py`, new `tests/scenarios/test_recall_channels_embedded.py`. Read `MemoryManager.retrieve_memories` in `src/aura/engines/memory/manager.py` for today's filter conditions.
+- **Change:**
+  1. Config, next to the other `recall_*` settings: `recall_dense_k: int = 20`, `recall_dense_ef: int = 40`, `recall_lexical_k: int = 20`, each a `Field` with a one-line description like its neighbours.
+  2. In `channels.py`, a dataclass `ChannelHit(memory_id: str, rank: int, score: float)` (rank from 0; for dense, `score` is cosine similarity `1 - distance`; for lexical, the BM25 score) and two functions:
+     - `async def dense_channel(db, embedding: list[float] | None, user_id: str | None, namespace: str | None) -> list[ChannelHit]`
+     - `async def lexical_channel(db, text: str, user_id: str | None, namespace: str | None) -> list[ChannelHit]`
+  3. Both apply the same filters as `retrieve_memories`: `deprecated = false AND ephemeral = false`, `user_id = $user_id` when given, and the same namespace rule. Dense uses `embedding <|{int(settings.recall_dense_k)},{int(settings.recall_dense_ef)}|> $vec` with `vector::distance::knn() AS distance`, `ORDER BY distance`. Lexical uses `content @1,OR@ $text`, `search::score(1) AS score`, `ORDER BY score DESC LIMIT $k`. Every other value is a query parameter.
+  4. Empty `text` or `None` embedding returns `[]` without querying. A database error propagates (the caller handles it).
+- **Tests:** on the embedded engine with the real schema and the runner's `HashedBagOfWordsEmbeddings`: dense returns the nearest memory first; lexical finds a memory by a code symbol (`parse_route`) and by a name; the `user_id` filter excludes another user's memories in both channels; a deprecated memory never appears; empty input returns `[]`. Run the full suite.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** wire the channels into the engine (W3-05). Do not change `MemoryManager`.
+
+---
+
+**W3-03 Query building**
+- **PRD:** memory 6.3 step 2, M3
+- **Tier:** bulk
+- **Files:** new `src/aura/engines/recall/query.py`, `src/aura/config.py`, new `tests/unit/test_recall_query.py`
+- **Change:**
+  1. Config: `recall_query_join_max_words: int = 6`.
+  2. `@dataclass class RecallQueries: dense_text: str; lexical_text: str; joined: bool`.
+  3. `def build_queries(user_input: str, recent_turns: list[dict[str, str]]) -> RecallQueries`. No model call.
+     - `previous` is the content of the last turn in `recent_turns` whose `role` is `"user"` and whose content differs from `user_input` (the pipeline passes history that may already end with the current input).
+     - Join when `previous` exists and either the input has at most `recall_query_join_max_words` words, or it contains one of the pronouns `it, this, that, they, them, he, she, him, her, those, these` as a whole word (case-insensitive). `dense_text` is then `previous + "\n" + user_input`, else `user_input`.
+     - `lexical_text` is `dense_text` with English stop words removed (a module-level `frozenset` of about 100 common words, including question words and the pronouns above), whitespace-collapsed. If nothing is left, `lexical_text` is `""`.
+  4. Entities and date ranges (the other two query kinds in 6.3) wait for M4 and M5; say so in the module docstring.
+- **Tests:** a long, self-contained input is not joined; `"and what about it?"` after a user turn about Rust is joined; a short input with no previous user turn is not joined; the current input repeated as the last history item is not used as `previous`; stop words are removed from `lexical_text` but kept in `dense_text`; an all-stop-word input gives `lexical_text == ""`.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** call a model or the database.
+
+---
+
+**W3-04 Reciprocal Rank Fusion**
+- **PRD:** memory 6.3 step 4, M3
+- **Tier:** bulk
+- **Depends on:** W3-02 (`ChannelHit`)
+- **Files:** new `src/aura/engines/recall/fusion.py`, `src/aura/config.py`, new `tests/unit/test_recall_fusion.py`
+- **Change:**
+  1. Config: `recall_rrf_k: int = 60`.
+  2. `@dataclass class FusedHit: memory_id: str; score: float; channel_ranks: dict[str, int]; channel_scores: dict[str, float]`.
+  3. `def rrf(channels: dict[str, list[ChannelHit]], k: int | None = None) -> list[FusedHit]`: score is the sum over channels of `1 / (k + rank + 1)`; `channel_ranks` and `channel_scores` hold each channel's rank and raw score for that id. Sorted by score descending, ties broken by the best (lowest) rank across channels, then by `memory_id`, so the order is deterministic. `k=None` uses config.
+- **Tests:** an id found by two channels outranks ids found by one at the same ranks; the exact score of a hand-computed example; deterministic tie-breaking; empty input gives `[]`.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add weights per channel (not in the PRD).
+
+---
+
+**W3-05 The memories block runs on the new channels (flagged)**
+- **PRD:** memory 6.3 steps 2 to 4, rule 7, M3
+- **Tier:** frontier
+- **Depends on:** W3-02, W3-03, W3-04
+- **Files:** `src/aura/engines/recall/engine.py` (`_build_memories`), `src/aura/engines/recall/models.py` (`TraceItem`), `src/aura/engines/recall/assembly.py` (only to copy the two new trace fields from the candidate), `src/aura/config.py`, new `tests/scenarios/test_recall_channels_wired_embedded.py`
+- **Change:**
+  1. Config: `recall_channels_enabled: bool = False` (`AURA_RECALL_CHANNELS_ENABLED`).
+  2. `TraceItem`: add optional `channel_ranks: dict[str, int] | None = None` and `fused_score: float | None = None` as the last fields. `Candidate` gets the same two optional fields, and `assemble` copies them into the trace item.
+  3. In `_build_memories`, when the flag is on: `build_queries(request.user_input, request.recent_turns)`; embed `dense_text` with the memory manager's embeddings client; run `dense_channel` and `lexical_channel` together with `asyncio.gather(..., return_exceptions=True)`; `rrf` the two; take the first `request.limit`; load those memories with one parameterised `SELECT * FROM memory WHERE id IN $ids` and build `Memory` objects the way `retrieve_memories` does, keeping the fused order. Candidates get `source="recall.channels"`, `channel_ranks` and `fused_score`. Render with `memory_manager._format_memories_xml(payloads, {})` (no thought clusters on this path; they belong to the M5 graph channel).
+  4. One channel failing records `channel_errors["memories.dense"]` or `channel_errors["memories.lexical"]`, and the other channel's hits are still used.
+  5. Flag off: exactly today's path. Nothing else in the engine changes.
+- **Tests:** on the embedded engine, with the runner's stub embeddings and seeded memories: with the flag on, a name that only the lexical channel can find reaches the memories block; the trace items carry `channel_ranks` and `fused_score`; the dense channel raising still yields lexical results and records the error; with the flag off, `retrieve_for_l3_parts` is called and the channels are not (ablation). Run the full suite; characterisation tests pass unchanged.
+- **Done when:** the new tests pass, the full suite passes, and `grep -n "settings.recall_channels_enabled" src/aura/engines/recall/engine.py` prints at least one line.
+- **Do not:** turn the flag on by default. Do not change `MemoryManager` or the other three blocks. Do not add a model call.
+
+---
+
+**W3-06 The recall gate (flagged)**
+- **PRD:** memory 6.3 step 1, M3
+- **Tier:** bulk
+- **Depends on:** W3-05
+- **Files:** new `src/aura/engines/recall/gate.py`, `src/aura/engines/recall/engine.py`, `src/aura/engines/recall/models.py` (`RecallTrace`), `src/aura/config.py`, new `tests/unit/test_recall_gate.py`
+- **Change:**
+  1. Config: `recall_gate_enabled: bool = False`; `recall_gate_phrases: list[str]` defaulting to greetings and acknowledgements (`hi`, `hello`, `hey`, `thanks`, `thank you`, `ok`, `okay`, `cool`, `nice`, `great`, `got it`, `good morning`, `good night`, `bye`, `lol`, `yes`, `no`).
+  2. `def needs_recall(user_input: str) -> bool`: `False` when the input, lowercased and stripped of punctuation and surrounding whitespace, is empty or equals one of the phrases; `True` otherwise. Rules only.
+  3. In the engine, when the flag is on and `needs_recall` is `False`, the memories block reuses the memories candidates of the last packet built for the same `(user_id, session_id)` (kept in a small dict on the engine, at most 200 entries, oldest dropped first). `RecallTrace` gets a new optional last field `gate: str | None = None`: `"skipped"` when the gate skipped retrieval, `"ran"` when it ran, `None` when the flag is off. With no previous packet, the block is empty. The insights, latent and cold-start blocks are not gated.
+- **Tests:** each phrase skips; punctuation and case are ignored; a question runs; with the flag on, a greeting after a real turn reuses the previous memories and does not call the memories retrieval (assert the mock was not awaited); the cache drops the oldest entry past 200; with the flag off nothing changes (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add a classifier or a model call.
+
+---
+
+**W3-07 Abstention (flagged)**
+- **PRD:** memory 6.3 step 7, M3
+- **Tier:** bulk
+- **Depends on:** W3-05
+- **Files:** `src/aura/engines/recall/engine.py`, `src/aura/config.py`, new `tests/unit/test_recall_abstain.py`
+- **Change:**
+  1. Config: `recall_abstain_enabled: bool = False`; `recall_abstain_min_similarity: float = 0.55` with a description saying it must be tuned for the embedding model in use.
+  2. Only on the channels path (W3-05) and only when the flag is on: `abstain` is `True` when the lexical channel returned no hits and the best dense similarity is below the threshold (or the dense channel returned nothing). The lexical channel searches without stop words (W3-03), so any lexical hit is a content-word match.
+  3. When abstaining, the memories block text is the single line `<memories abstain="true">Nothing relevant to this message is stored in memory. Do not claim to remember anything about it.</memories>` and the packet's `abstain` is `True`. The callers already read `packet.block_text("memories")`, so the note reaches the prompt with no change in `layers.py`.
+  4. When the gate skipped retrieval (W3-06), never abstain.
+- **Tests:** an unrelated query against seeded memories abstains and produces exactly that line; a query with a lexical hit does not abstain even if the dense similarity is low; a dense similarity above the threshold does not abstain; flag off gives `abstain == False` (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change `layers.py`. Do not abstain on the old (flag off) path.
+
+---
+
+**W3-08 Noise and abstention scenarios, and latency**
+- **PRD:** memory M3 gate ("noise and abstention probes pass"), 6.2 (fast path under 250 ms at p95), 8.3
+- **Tier:** bulk
+- **Depends on:** W3-06, W3-07
+- **Files:** new `tests/scenarios/test_recall_m3_embedded.py`, new `docs/metrics/m3.md`. Read `tests/scenarios/runner.py` and `docs/metrics/probes/README.md` (the probe set is still a placeholder; these scenarios stand in for its noise and abstention probes until Mai provides real ones).
+- **Change:** scenario tests through the runner, all three M3 flags on (set with `monkeypatch`), the runner's stub embeddings:
+  - **Noise:** store 30 unrelated memories plus one saying `"Mai's cat is called Pixel"`; the question `"what is my cat called?"` puts the Pixel memory in the memories block.
+  - **Lexical:** a memory mentioning `parse_route` is found by the question `"where is parse_route defined?"`.
+  - **Abstention:** the question `"what is my favourite mountain?"` (nothing stored about it) abstains with the note line; the Pixel question does not.
+  - **Gate:** `"thanks!"` after the Pixel question skips retrieval and reuses the Pixel memory.
+  - **Latency:** time 50 `recall()` calls of the fast path (flags on, 200 seeded memories) with `time.perf_counter`, and write p50 and p95 with the date to `docs/metrics/m3.md` only when `RECORD_BASELINE=1` (reuse `write_baseline` from `tests/conftest.py`). The test asserts nothing about the numbers; it records them.
+- **Tests:** these are the tests. Run the full suite, then once with `RECORD_BASELINE=1` to write `docs/metrics/m3.md`, and commit that file.
+- **Done when:** the new tests pass, the full suite passes, and `docs/metrics/m3.md` exists with p50, p95 and the date.
+- **Do not:** change any flag default. Do not tune thresholds to make a test pass; if a scenario fails, report it.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
