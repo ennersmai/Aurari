@@ -1430,126 +1430,52 @@ Constraints:
         tool_schema_str: str | None,
         requester_role: str,
     ):
-        """Run the streaming L3 generation with forced-mode/fallback/loop (W2-09).
+        """Run the streaming L3 generation through ``run_tool_loop``.
 
-        Moved verbatim from ``stream_query``. Yields ``(chunk, counts)`` tuples:
-        ``counts`` is ``True`` for real response text and ``False`` for the
-        ``"\\n\\n"`` separators, so the caller can rebuild today's
-        ``full_response`` (which excluded those separators) by accumulating only
-        the counted chunks.
+        Yields the loop's :class:`~aura.orchestrator.tool_loop.LoopEvent`
+        items unchanged: ``delta`` for each streamed chunk, ``separator``
+        between rounds, and one final ``done`` carrying the post-processed
+        response (tool-call JSON stripped, max-rounds suffix included when
+        applicable). Forced tool mode seeds the loop with a deterministic
+        tool call instead of its own prompt.
         """
-        # If forced tool mode is enabled, use it to generate JSON tool call first
-        if use_forced_tool_mode and tool_schema_str:
-            self.logger.info("[WRENCH] Using FORCED TOOL CALL MODE to generate JSON tool call (streaming)")
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
 
-            # Generate the tool call JSON using deterministic mode (no persona)
-            raw_tool_call = await self.llm_layers.l3_tool_call_mode(
-                query=user_input,
-                tool_schema=tool_schema_str
+        async def _round(loop_input, round_idx):
+            loop_context = SynthesisContext(
+                user_input=loop_input,
+                conversation_history=conversation_history or [],
+                emotional_state=ctx.emotional_state,
+                learning_context=ctx.learning_context,
+                identity_context=ctx.identity_context,
+                goal_context=ctx.goal_context,
+                recent_critique=ctx.recent_critique,
+                packet=ctx.packet,
             )
 
-            # Parse the raw_tool_call (should be pure JSON)
-            tool_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
+            round_response = ""
+            async for chunk in self.llm_layers.stream_l3_synthesis(
+                loop_context, reasoning_enabled=reasoning_enabled
+            ):
+                round_response += chunk
+                yield chunk
+            # --- Telemetry: L3 synthesis complete ---
+            self._publish_trace("L3", "synthesis_complete", {
+                "model": settings.l3_model,
+                "round": round_idx,
+                "response_len": len(round_response or ""),
+                "reasoning": reasoning_enabled,
+                "mode": "stream",
+            })
 
-            if tool_calls:
-                self.logger.info(f"✅ Extracted {len(tool_calls)} tool call(s) from forced mode")
-
-                # EXECUTE THE TOOL
-                tool_output = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
-
-                # Log the tool output for debugging
-                self.logger.info(f"[WRENCH] Tool execution completed. Output length: {len(tool_output) if tool_output else 0} chars")
-                if tool_output:
-                    self.logger.debug(f"[WRENCH] Tool output (first 500 chars): {tool_output[:500]}")
-                else:
-                    self.logger.warning("⚠️ Tool output is empty! Tool may have failed silently.")
-
-                # FINAL L3 SYNTHESIS - Now pass the tool output back to L3 (Grok) to synthesize the persona response
-                # CRITICAL: Use explicit instructions so L3 knows to use the tool output, not generate its own
-                ctx.synthesis_context.user_input = f"""I executed a tool for you. Here are the REAL results from the tool execution:
-
-{tool_output}
-
-Your task: Synthesize a natural, persona-driven response based on these ACTUAL tool results. Do NOT generate fake tool output or simulate tool execution. Use ONLY the results provided above.
-
-Original user query: {user_input}"""
-
-                self.logger.info(f"[WRENCH] Passing tool output to L3 synthesis. Updated user_input length: {len(ctx.synthesis_context.user_input)} chars")
-                self.logger.debug(f"[WRENCH] Tool output being passed to L3 (first 300 chars): {tool_output[:300] if tool_output else 'EMPTY'}")
-
-                # Stream the final persona-driven response with tool results
-                async for chunk in self.llm_layers.stream_l3_synthesis(ctx.synthesis_context, reasoning_enabled=reasoning_enabled):
-                    yield chunk, True
-            else:
-                # Fallback: if forced mode failed, try regular streaming
-                self.logger.warning("⚠️ Forced tool call mode failed to generate valid JSON, falling back to regular L3 streaming")
-                full_response = ""
-                async for chunk in self.llm_layers.stream_l3_synthesis(ctx.synthesis_context, reasoning_enabled=reasoning_enabled):
-                    full_response += chunk
-                    yield chunk, True
-
-                # Still try to extract tool calls from regular response as fallback
-                tool_calls = self.tool_executor.extract_tool_calls(full_response)
-                if tool_calls:
-                    self.logger.info(f"[WRENCH] Detected {len(tool_calls)} tool call(s) in fallback streamed response")
-                    tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
-
-                    if tool_results:
-                        follow_up_input = f"{user_input}\n\n[Tool Execution Results]\n{tool_results}"
-                        follow_up_context = SynthesisContext(
-                            user_input=follow_up_input,
-                            conversation_history=conversation_history or [],
-                            emotional_state=ctx.emotional_state,
-                            learning_context=ctx.learning_context,
-                            identity_context=ctx.identity_context,
-                            goal_context=ctx.goal_context,
-                            packet=ctx.packet,
-                        )
-
-                        yield "\n\n", False
-                        async for chunk in self.llm_layers.stream_l3_synthesis(follow_up_context, reasoning_enabled=reasoning_enabled):
-                            yield chunk, True
-        else:
-            # Regular flow: multi-round streaming tool loop (read -> write -> verify)
-            max_tool_rounds = 5
-            tool_history_blocks: list[str] = []
-
-            def _build_loop_input() -> str:
-                if not tool_history_blocks:
-                    return user_input
-                return f"{user_input}\n\n[Tool Execution Results]\n" + "\n\n".join(tool_history_blocks)
-
-            for round_idx in range(1, max_tool_rounds + 1):
-                loop_context = SynthesisContext(
-                    user_input=_build_loop_input(),
-                    conversation_history=conversation_history or [],
-                    emotional_state=ctx.emotional_state,
-                    learning_context=ctx.learning_context,
-                    identity_context=ctx.identity_context,
-                    goal_context=ctx.goal_context,
-                    packet=ctx.packet,
-                )
-
-                round_response = ""
-                async for chunk in self.llm_layers.stream_l3_synthesis(
-                    loop_context, reasoning_enabled=reasoning_enabled
-                ):
-                    round_response += chunk
-                    yield chunk, True
-
-                tool_calls = self.tool_executor.extract_tool_calls(round_response)
-                if not tool_calls:
-                    break
-
-                self.logger.info(
-                    f"[WRENCH] Tool loop round {round_idx} (streaming): detected {len(tool_calls)} tool call(s)"
-                )
-                tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
-                if not tool_results:
-                    break
-
-                tool_history_blocks.append(f"[Round {round_idx}]\n{tool_results}")
-                yield "\n\n", False
+        async for event in run_tool_loop(
+            user_input=user_input,
+            generate_round=_round,
+            tool_executor=self.tool_executor,
+            requester_role=requester_role,
+            seed_results=seed,
+        ):
+            yield event
 
     async def _turn_pipeline(
         self,
@@ -1628,8 +1554,8 @@ Original user query: {user_input}"""
 
         # Stage 8: generation (streaming or blocking).
         if stream:
-            full_response = ""
-            async for chunk, counts in self._generate_streaming(
+            response = ""
+            async for event in self._generate_streaming(
                 user_input,
                 conversation_history,
                 ctx,
@@ -1638,12 +1564,10 @@ Original user query: {user_input}"""
                 tool_schema_str,
                 requester_role,
             ):
-                # Yield every chunk as a delta (separators included); accumulate
-                # only the counted chunks so ``full_response`` matches today.
-                yield TurnEvent("delta", chunk)
-                if counts:
-                    full_response += chunk
-            response = full_response
+                if event.kind in ("delta", "separator"):
+                    yield TurnEvent("delta", event.text)
+                elif event.kind == "done":
+                    response = event.text
         else:
             response = await self._generate_blocking(
                 user_input,

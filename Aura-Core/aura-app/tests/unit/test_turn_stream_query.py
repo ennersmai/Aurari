@@ -23,6 +23,7 @@ from unittest.mock import DEFAULT, AsyncMock, MagicMock
 import pytest
 
 from aura.config import settings
+from aura.orchestrator.tool_loop import MAX_ROUNDS_SUFFIX
 from tests.conftest import _TURN_FIXED_DATETIME
 
 
@@ -229,6 +230,7 @@ async def test_d_critique_buffer_left_in_place(turn_orchestrator):
 async def test_e_multi_round_loop_concatenates_rounds_and_passes_requester_role(
     turn_orchestrator, role
 ):
+    """Multi-round streaming; changed on purpose by W2-33 (G1 single loop)."""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
@@ -243,6 +245,10 @@ async def test_e_multi_round_loop_concatenates_rounds_and_passes_requester_role(
     # Output is round-1 chunks, then "\n\n", then round-2 chunks.
     assert chunks == ["rou", "nd1", "\n\n", "rou", "nd2"]
 
+    # The stored response is the final round only.
+    orch._post_response_chain.assert_awaited_once()
+    assert orch._post_response_chain.await_args.kwargs["response"] == "round2"
+
     # The second context's user_input equals the round-1 results block.
     assert len(orch.llm_layers._stream_calls) == 2
     second_ctx, _ = orch.llm_layers._stream_calls[1]
@@ -254,10 +260,11 @@ async def test_e_multi_round_loop_concatenates_rounds_and_passes_requester_role(
 
 
 # ---------------------------------------------------------------------------
-# (f) after 5 rounds that all have tool calls, no "Stopped after max tool rounds"
+# (f) after 5 rounds that all have tool calls, the max-rounds suffix is yielded
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_f_five_rounds_all_tool_calls_no_max_rounds_suffix(turn_orchestrator):
+async def test_f_five_rounds_all_tool_calls_max_rounds_suffix(turn_orchestrator):
+    """Five-round max-rounds behaviour; changed on purpose by W2-33 (G1 single loop)."""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.tool_executor.extract_tool_calls = MagicMock(return_value=["call"])
@@ -270,16 +277,17 @@ async def test_f_five_rounds_all_tool_calls_no_max_rounds_suffix(turn_orchestrat
 
     # 5 stream_l3_synthesis calls (one per round).
     assert len(orch.llm_layers._stream_calls) == 5
-    joined = "".join(chunks)
-    assert "Stopped after max tool rounds" not in joined
+    # One "\n\n" separator between each pair of rounds, and the suffix last.
+    assert chunks.count("\n\n") == 4
+    assert chunks[-1] == MAX_ROUNDS_SUFFIX
 
 
 # ---------------------------------------------------------------------------
-# (g) forced mode: when the forced call yields tool calls, the single
-# stream_l3_synthesis context's user_input starts/ends with the forced prompt.
+# (g) forced mode: the forced call seeds the loop
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_g_forced_mode_with_tool_calls_uses_forced_prompt(turn_orchestrator):
+async def test_g_forced_mode_seeds_loop(turn_orchestrator):
+    """Forced-mode seeding; changed on purpose by W2-33 (G1 single loop)."""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
         return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
@@ -292,7 +300,7 @@ async def test_g_forced_mode_with_tool_calls_uses_forced_prompt(turn_orchestrato
     )
     # forced tool call yields a JSON tool call
     orch.llm_layers.l3_tool_call_mode = AsyncMock(return_value='{"tool":"t"}')
-    orch.tool_executor.extract_tool_calls = MagicMock(return_value=["call"])
+    orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
     orch.tool_executor.execute_and_feedback = AsyncMock(return_value="OUT")
     # the single follow-up stream
     orch.llm_layers._stream_chunks_queue.append(["per", "sona"])
@@ -300,21 +308,21 @@ async def test_g_forced_mode_with_tool_calls_uses_forced_prompt(turn_orchestrato
     chunks = await _collect(orch.stream_query("hello", user_id="u1"))
     await _drain()
 
-    # Only one stream_l3_synthesis call (the forced-tool path).
+    orch.llm_layers.l3_tool_call_mode.assert_awaited_once()
+    # Only one stream_l3_synthesis call, with the seed as a tool-results block.
     assert len(orch.llm_layers._stream_calls) == 1
     ctx, _ = orch.llm_layers._stream_calls[0]
-    assert ctx.user_input.startswith("I executed a tool for you.")
-    assert ctx.user_input.endswith("Original user query: hello")
+    assert ctx.user_input == "hello\n\n[Tool Execution Results]\n[Seed]\nOUT"
     assert chunks == ["per", "sona"]
 
 
 # ---------------------------------------------------------------------------
 # (h) forced mode where extract_tool_calls returns [] for the raw call ->
-# regular stream; if tool calls are then found in the streamed text, expect
-# "\n\n" followed by a follow-up stream with the tool-results user_input.
+# plain stream loop; the tool call found in the streamed text starts round 2.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_h_forced_mode_no_raw_tool_calls_then_fallback_followup(turn_orchestrator):
+async def test_h_forced_mode_no_raw_tool_calls_runs_plain_loop(turn_orchestrator):
+    """Forced-mode fallback; changed on purpose by W2-33 (G1 single loop)."""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
         return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
@@ -328,7 +336,7 @@ async def test_h_forced_mode_no_raw_tool_calls_then_fallback_followup(turn_orche
     orch.llm_layers.l3_tool_call_mode = AsyncMock(return_value='{"tool":"t"}')
     # Raw forced call yields no tool calls; then the streamed text yields one.
     orch.tool_executor.extract_tool_calls = MagicMock(
-        side_effect=[[], ["call2"]]
+        side_effect=[[], ["call2"], []]
     )
     orch.tool_executor.execute_and_feedback = AsyncMock(return_value="RES")
     # First the regular stream, then the follow-up stream.
@@ -344,7 +352,7 @@ async def test_h_forced_mode_no_raw_tool_calls_then_fallback_followup(turn_orche
     # tool-results block.
     assert len(orch.llm_layers._stream_calls) == 2
     second_ctx, _ = orch.llm_layers._stream_calls[1]
-    assert second_ctx.user_input == "hello\n\n[Tool Execution Results]\nRES"
+    assert second_ctx.user_input == "hello\n\n[Tool Execution Results]\n[Round 1]\nRES"
 
 
 # ---------------------------------------------------------------------------
@@ -455,9 +463,10 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
     ``SELECT * FROM skill WHERE name = $name`` query when there is no
     ``target_skill_id``. ``get_skill`` returns ``None``, the first ``db.query``
     returns a skill row, and ``db.select`` returns its definition; forced tool
-    call mode is engaged, so the forced streaming branch runs (the single
-    ``stream_l3_synthesis`` context's user_input starts with the forced
-    prompt and ends with the original query).
+    call mode seeds the loop, so the single ``stream_l3_synthesis`` context's
+    user_input carries the seed results.
+
+    changed on purpose by W2-33 (G1 single loop)
     """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
@@ -473,9 +482,9 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
     orch.learning_engine.db.select = AsyncMock(
         return_value=[{"definition": {"name": "web_search"}}]
     )
-    # forced tool call yields a JSON tool call -> the forced streaming branch.
+    # forced tool call yields a JSON tool call -> it seeds the loop.
     orch.llm_layers.l3_tool_call_mode = AsyncMock(return_value='{"tool":"t"}')
-    orch.tool_executor.extract_tool_calls = MagicMock(return_value=["call"])
+    orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
     orch.tool_executor.execute_and_feedback = AsyncMock(return_value="OUT")
     # the single follow-up stream.
     orch.llm_layers._stream_chunks_queue.append(["per", "sona"])
@@ -487,11 +496,10 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
     orch.llm_layers.l3_tool_call_mode.assert_awaited_once_with(
         query="hello", tool_schema=expected_schema
     )
-    # Only one stream_l3_synthesis call (the forced-tool path).
+    # Only one stream_l3_synthesis call, with the seed as a tool-results block.
     assert len(orch.llm_layers._stream_calls) == 1
     ctx, _ = orch.llm_layers._stream_calls[0]
-    assert ctx.user_input.startswith("I executed a tool for you.")
-    assert ctx.user_input.endswith("Original user query: hello")
+    assert ctx.user_input == "hello\n\n[Tool Execution Results]\n[Seed]\nOUT"
     assert chunks == ["per", "sona"]
 
 

@@ -1234,3 +1234,26 @@
   - The dev server compiled `/chat` and returned HTTP 200, but the browse extension was offline, so I could not visually confirm the spiral in a browser. Source inspection and the successful build/type-check confirm the new fixed `Box` renders `<SpiralAvatar size={64} />` at `right: { xs: 16, md: 24 }, bottom: { xs: 96, md: 112 }`.
   - A stale, gitignored, untracked generated file `src/aura.egg-info/SOURCES.txt` still lists `src/aura/api/routes/l5_animation.py`, so the literal `grep -rn "l5_animation" src` reports only that generated metadata line (no `.py` source references remain). I did not modify or delete the egg-info cache.
   - `@gltf-transform/core` remains in `package.json`; as the card notes, nothing in `frontend/src` imports it. It is not in the PRD removal list and was not removed.
+
+## W2-33: `_generate_streaming` runs on the single loop
+- **Status:** DONE
+- **Files changed:** `src/aura/orchestrator/coordinator.py` (`_generate_streaming`, `_turn_pipeline` stage 8), `tests/unit/test_turn_stream_query.py`, `tests/unit/test_turn_pipeline.py`
+- **Test result:** full suite passes (244 passed, 81 warnings); targeted stream/pipeline tests 25 passed
+- **What I did:**
+  1. Rewrote `_generate_streaming` (signature unchanged) as an async generator of `LoopEvent`: computes `seed` via `_forced_seed(...)` only when `use_forced_tool_mode and tool_schema_str`; defines `_round(loop_input, round_idx)` that builds the same `SynthesisContext` as the blocking `_round` (`recent_critique=ctx.recent_critique`, `packet=ctx.packet`, no `user_id`), streams `stream_l3_synthesis(loop_context, reasoning_enabled=reasoning_enabled)` chunk by chunk, then publishes `L3 synthesis_complete` with `round=round_idx` and `"mode": "stream"`; re-yields every `run_tool_loop(...)` event unchanged.
+  2. Stage 8 streaming branch now maps `delta`/`separator` events to `TurnEvent("delta", event.text)` and takes `response = event.text` from `done`; removed the `full_response` / `counts` accumulation.
+  3. Behaviour changes made on purpose:
+     - (a) the stored response has tool-call JSON removed (`strip_tool_calls`);
+     - (b) the max-rounds suffix is yielded and stored on the stream path;
+     - (c) no `"\n\n"` after the last round;
+     - (d) the stored response is the final round only;
+     - (e) forced mode seeds the loop; the `"I executed a tool for you"` prompt and the separate fallback follow-up are gone, and `ctx.synthesis_context.user_input` is no longer overwritten;
+     - (f) per-round `L3 synthesis_complete` telemetry on the stream path.
+  4. Updated only the listed characterisation tests (each carries "changed on purpose by W2-33 (G1 single loop)"): stream (e), (f), (g), (h), W2-06 forced-by-name, and pipeline (b).
+  5. Added `test_w2_33_streaming_and_blocking_pipelines_agree_on_done_text` to `test_turn_pipeline.py`: one tool round then `'done {"tool":"x"}'` produces `"done"` from both pipelines.
+- **"Done when" verified:**
+  - Full suite passes.
+  - `grep -n "I executed a tool for you\|max_tool_rounds\|counts" src/aura/orchestrator/coordinator.py` prints only line 2406, a pre-existing false positive: `For each relevant goal, assess if progress was made (even small progress counts).` in `_assess_goal_progress` (confirmed present at HEAD before this card). All removed occurrences are gone; changing that unrelated prompt word would be an out-of-scope "while I am here" edit.
+  - `grep -c "extract_tool_calls\|execute_and_feedback" src/aura/orchestrator/coordinator.py` prints `2` (both in `_forced_seed`).
+- **Do not checks respected:** Did not touch `l3_tool_call_mode`, `_resolve_forced_tool` or `_classify_intent`; did not add `user_id` to the loop contexts; did not change tests outside the list (`test_turn_process_query.py` untouched).
+- **Unsure about:** The literal "Done when" `counts` grep false-positive above (same class as W1-16/W2-16/W2-21); the substantive condition (no `counts` variable or `max_tool_rounds` left in the streaming code) is met. Also note `settings.tool_loop_max_rounds` (default 5) now governs the stream path; the updated (f) test pins 5 rounds.

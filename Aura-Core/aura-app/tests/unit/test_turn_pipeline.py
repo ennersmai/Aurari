@@ -87,6 +87,7 @@ async def test_a_turn_pipeline_blocking_yields_single_done_event(turn_orchestrat
 async def test_b_turn_pipeline_streaming_deltas_match_stream_query_then_done(
     turn_orchestrator,
 ):
+    """Streaming pipeline deltas; changed on purpose by W2-33 (G1 single loop)."""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
@@ -133,13 +134,81 @@ async def test_b_turn_pipeline_streaming_deltas_match_stream_query_then_done(
     # And the per-chunk sequence matches (one delta per stream_query chunk).
     assert delta_texts == stream_chunks
 
-    # Exactly one "done" event, after all the deltas, carrying the accumulated
-    # response (real chunks only, separators excluded — matching today's
-    # full_response).
+    # Exactly one "done" event, after all the deltas, carrying the final
+    # round's text (tool-call JSON stripped).
     done_events = [ev for ev in pipeline_events if ev.kind == "done"]
     assert len(done_events) == 1
     assert pipeline_events[-1].kind == "done"
-    assert done_events[0].text == "round1round2"
+    assert done_events[0].text == "round2"
+
+
+# ---------------------------------------------------------------------------
+# (W2-33) Streaming and blocking pipelines produce the same stored text:
+# one tool round, then a final answer with tool-call JSON stripped.
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_w2_33_streaming_and_blocking_pipelines_agree_on_done_text(
+    turn_orchestrator,
+):
+    """Streaming and blocking agree on the stored response.
+
+    changed on purpose by W2-33 (G1 single loop)
+    """
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
+    final_answer = 'done {"tool":"x"}'
+    orch.llm_layers.l3_synthesis = AsyncMock(return_value=final_answer)
+    orch.tool_executor.execute_and_feedback = AsyncMock(return_value="R1")
+
+    # Blocking pipeline: round 1 has a tool call, round 2 is the final answer.
+    orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
+    blocking_events = await _collect(
+        orch._turn_pipeline(
+            "hello",
+            "u1",
+            None,
+            stream=False,
+            context_limit=None,
+            enable_l2=True,
+            conversation_id="c1",
+            reasoning_enabled=False,
+            l2_reasoning_enabled=False,
+            session_id=None,
+            context_mode="deep_work",
+            requester_role="owner",
+        )
+    )
+    await _drain()
+
+    # Streaming pipeline: same rounds and same final answer.
+    orch.tool_executor.extract_tool_calls = MagicMock(side_effect=[["call"], []])
+    orch.llm_layers._stream_chunks_queue.append([final_answer])
+    orch.llm_layers._stream_chunks_queue.append([final_answer])
+    streaming_events = await _collect(
+        orch._turn_pipeline(
+            "hello",
+            "u1",
+            None,
+            stream=True,
+            context_limit=None,
+            enable_l2=True,
+            conversation_id="c1",
+            reasoning_enabled=False,
+            l2_reasoning_enabled=False,
+            session_id=None,
+            context_mode="deep_work",
+            requester_role="owner",
+        )
+    )
+    await _drain()
+
+    blocking_done = [ev for ev in blocking_events if ev.kind == "done"]
+    streaming_done = [ev for ev in streaming_events if ev.kind == "done"]
+    assert len(blocking_done) == 1
+    assert len(streaming_done) == 1
+    assert blocking_done[0].text == "done"
+    assert streaming_done[0].text == "done"
+    assert blocking_done[0].text == streaming_done[0].text
 
 
 # ---------------------------------------------------------------------------
