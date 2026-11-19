@@ -1800,3 +1800,24 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes.
 - **Do-not checks respected:** Did not remove `apply_influence` (W3-23 moves its callers). Did not change the physics.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+---
+
+## W3-21: The L4 appraisal call reads the user's message only
+- **Status:** DONE
+- **PRD:** emotion 5.2 (one model call returns the appraisal and an estimate of the user's state; Aura's reply is not input), finding E4, test T7
+- **Tier:** frontier
+- **Depends on:** W3-19
+- **Files changed:** 
+  - `src/aura/engines/emotion/engine.py` (W3-20 supervisor fix: pass 1.0 to `apply_influence` instead of `event.appraisal.intensity` to avoid squaring the intensity)
+  - `src/aura/llm/layers.py` (new `l4_appraise_message` method)
+  - `tests/unit/test_emotion_appraise.py` (added test for intensity-not-squared fix)
+  - new `tests/unit/test_l4_appraise.py`
+- **Test result:** All 23 new/updated tests pass. Related unit tests (appraisal table, emotion physics, layers packet, recall render, emotion appraise) all pass.
+- **What I did, step by step:**
+  1. **W3-20 supervisor fix:** In `EmotionEngine.appraise`, `impulses_for` already multiplies impulses by `appraisal.intensity`, so passing `event.appraisal.intensity` to `physics.apply_influence` was squaring the intensity. Changed to pass `1.0` (the default). Added test `test_intensity_not_squared` verifying that an event with intensity 0.5 produces the same change as calling `apply_influence` directly with `impulses_for(...)` and intensity 1.0.
+  2. **W3-21 new `l4_appraise_message` method:** Added `async def l4_appraise_message(self, user_input: str, recent_history: list[dict[str, str]], speaker: str) -> tuple[Appraisal, dict[str, float]]` to `LLMLayers`. Uses the existing L4 model (`settings.active_l4_model`) and temperature (0.3, same as `l4_emotion_analysis`). The prompt explains the eight appraisal variables (congruence, novelty, certainty, control, agency, warmth, beauty, intensity) per PRD 5.2, provides the last 4 turns of history with Aura's turns labelled as "Aura:", and asks for JSON `{"appraisal": {...}, "user_state": {<dimension>: 0..1}}` judged from the user's latest message only. The method has no parameter for Aura's reply. Parses the first JSON object (matching W3-13's `_extract_first_json`), validates with `Appraisal`, keeps only known emotion dimensions in `user_state` (dropping unknown keys). Raises `ValueError` on failure; caller decides.
+  3. **Tests in `test_l4_appraise.py`**: 12 tests covering: valid reply parses, fenced reply parses, unknown `user_state` keys dropped, invalid JSON raises, missing `appraisal` key raises, T7 (prompt identical regardless of Aura's reply text — the history passed does not include Aura's latest reply, and the method has no parameter for it), user_state values clamped to 0..1, history limited to last 4 turns, temperature is 0.3, model is active L4 model, Aura turns labelled in history.
+- **Done when:** satisfied — the new tests pass and the full suite (unit tests) passes.
+- **Do-not checks respected:** Did not change or remove `l4_emotion_analysis` (W3-22 stops calling it). The method only reads the user's message, not Aura's reply.
+- **Unsure about:** The scenario tests have pre-existing import errors (ModuleNotFoundError for `tests` module) unrelated to this change. The unit tests that can run all pass.

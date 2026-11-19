@@ -469,3 +469,54 @@ class TestEmotionAppraise:
         new_joy = emotion_engine.current_vector.joy
         expected_change = new_joy - baseline.joy
         assert deviation_change["joy"] == pytest.approx(expected_change, abs=0.001)
+
+    @pytest.mark.asyncio
+    async def test_intensity_not_squared(self, emotion_engine, fake_db, fake_clock):
+        """W3-20 fix: intensity 0.5 changes the matching dimension by the same amount as
+        calling physics.apply_influence directly with impulses_for(...) and intensity 1.0.
+        """
+        from aura.engines.emotion.appraisal import impulses_for
+
+        # Create an event with intensity 0.5
+        event = AppraisalEvent(
+            kind="message",
+            source="conversation",
+            appraisal=Appraisal(congruence=0.5, agency="self", intensity=0.5),
+        )
+
+        # Compute impulses (already multiplied by intensity inside impulses_for)
+        impulses = impulses_for(event.appraisal, event.user_state)
+
+        # Get baseline joy value
+        baseline_joy = emotion_engine.config.baseline.joy
+
+        # Case 1: appraise with intensity 0.5
+        initial_vector = emotion_engine.current_vector.model_copy()
+        with patch("aura.api.websocket.broadcast_emotion_update", new_callable=AsyncMock):
+            state_via_appraise = await emotion_engine.appraise(event)
+
+        joy_via_appraise = state_via_appraise.vector.joy
+
+        # Reset to baseline
+        emotion_engine.current_vector = baseline_joy_vector = initial_vector.model_copy()
+        emotion_engine.previous_vector = initial_vector.model_copy()
+
+        # Case 2: apply_influence directly with intensity 1.0 (impulses already have 0.5 baked in)
+        with patch("aura.api.websocket.broadcast_emotion_update", new_callable=AsyncMock):
+            state_via_physics = await emotion_engine.apply_influence(
+                __import__("aura.models.emotion", fromlist=["EmotionInfluence"]).EmotionInfluence(
+                    source="conversation",
+                    emotions=impulses,
+                    intensity=1.0,
+                    reason="test"
+                )
+            )
+
+        joy_via_physics = state_via_physics.vector.joy
+
+        # Both should produce the same change in joy
+        change_via_appraise = joy_via_appraise - baseline_joy
+        change_via_physics = joy_via_physics - baseline_joy
+
+        assert change_via_appraise == pytest.approx(change_via_physics, abs=0.001), \
+            f"appraise change ({change_via_appraise}) != physics change ({change_via_physics})"

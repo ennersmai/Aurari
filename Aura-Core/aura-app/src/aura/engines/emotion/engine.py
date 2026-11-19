@@ -300,9 +300,11 @@ class EmotionEngine(BaseEngine):
         old_vector = self.current_vector.model_copy()
 
         # Apply impulses through physics (same as apply_influence)
+        # Note: impulses_for already multiplies by appraisal.intensity, so we pass 1.0
+        # to avoid squaring the intensity (W3-20 supervisor fix).
         self.previous_vector = self.current_vector.model_copy()
         self.current_vector = self.physics.apply_influence(
-            self.current_vector, impulses, event.appraisal.intensity
+            self.current_vector, impulses, 1.0
         )
 
         # Apply state normalization clamp (same as apply_influence)

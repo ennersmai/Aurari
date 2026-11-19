@@ -18,6 +18,7 @@ from aura.models.emotion import EmotionState
 from aura.models.goal import GoalContext
 from aura.models.identity import IdentityContext
 from aura.models.learning import LearningContext
+from aura.models.appraisal import Appraisal
 from aura.orchestrator.tool_loop import NativeCalls
 
 logger = logging.getLogger(__name__)
@@ -912,6 +913,190 @@ Your output must be parseable JSON only.""",
         except Exception as e:
             logger.error(f"L4 emotion analysis failed: {e}")
             return {}
+
+    async def l4_appraise_message(
+        self,
+        user_input: str,
+        recent_history: list[dict[str, str]],
+        speaker: str,
+    ) -> tuple[Appraisal, dict[str, float]]:
+        """
+        L4 Appraisal Layer: Appraise the user's message and estimate their emotional state.
+
+        Makes one call with the existing L4 model and settings. Temperature matches
+        the current L4 call (0.3). The prompt explains the eight appraisal variables,
+        provides the last four turns of history for context (with Aura's turns labelled),
+        and asks for JSON {"appraisal": {...}, "user_state": {<dimension>: 0..1}}
+        judged from the user's latest message only. Aura's reply is NOT included.
+
+        Args:
+            user_input: The user's latest message
+            recent_history: List of recent conversation turns (up to 4), each with "role" and "content"
+            speaker: The speaker identifier (e.g., "discord", "app")
+
+        Returns:
+            Tuple of (Appraisal, user_state dict with known dimensions only)
+
+        Raises:
+            ValueError: If the response cannot be parsed as valid JSON or validated
+        """
+        # Valid emotion dimensions for user_state filtering
+        valid_emotions = {
+            "love", "joy", "interest", "trust", "fear", "sadness", "anger", "surprise", "disgust",
+            "awe", "beauty", "wonder", "serenity", "melancholy", "nostalgia",
+            "empathy", "gratitude", "pride", "shame", "envy", "compassion",
+            "curiosity", "confusion", "certainty", "doubt", "fascination", "boredom"
+        }
+
+        # Build history context (last 4 turns, Aura's turns labelled)
+        history_lines = []
+        for turn in recent_history[-4:]:
+            role = turn.get("role", "user")
+            content = turn.get("content", "")
+            if role == "assistant":
+                history_lines.append(f"Aura: {content}")
+            else:
+                history_lines.append(f"User: {content}")
+        history_text = "\n".join(history_lines) if history_lines else "(no recent history)"
+
+        prompt = f"""You are Aura's L4 appraisal layer. Analyze the user's latest message and estimate their emotional state.
+
+EIGHT APPRAISAL VARIABLES (PRD 5.2):
+- congruence: Does this help or hinder what she wants (-1 to 1)
+- novelty: How unexpected it was (0 to 1)
+- certainty: How sure she is about what it means (0 to 1)
+- control: Can she do something about it (0 to 1)
+- agency: Who caused it — "self", "other", or "circumstance"
+- warmth: Social tone directed at her (-1 to 1)
+- beauty: Aesthetic or intellectual elegance (0 to 1)
+- intensity: Overall size of the event (0 to 1)
+
+RECENT HISTORY (last 4 turns, Aura's turns labelled):
+{history_text}
+
+USER'S LATEST MESSAGE:
+{speaker}: {user_input}
+
+TASK:
+1. Judge the eight appraisal variables from the user's latest message only (not Aura's reply).
+2. Estimate the user's current emotional state (0..1 for each of the 27 dimensions) from their latest message.
+
+OUTPUT FORMAT (JSON only, no markdown, no code blocks):
+{{
+  "appraisal": {{
+    "congruence": 0.0,
+    "novelty": 0.0,
+    "certainty": 0.5,
+    "control": 0.5,
+    "agency": "circumstance",
+    "warmth": 0.0,
+    "beauty": 0.0,
+    "intensity": 0.5
+  }},
+  "user_state": {{
+    "joy": 0.3,
+    "curiosity": 0.2
+  }}
+}}"""
+
+        messages = [
+            {
+                "role": "system",
+                "content": """You are Aura's L4 appraisal layer. Return ONLY valid JSON matching the specified format.
+
+CRITICAL REQUIREMENTS:
+1. Return ONLY valid JSON - no explanations, no markdown, no code blocks
+2. All eight appraisal variables must be present with values in their specified ranges
+3. agency must be exactly "self", "other", or "circumstance"
+4. user_state may contain any subset of the 27 known emotion dimensions with values 0..1
+5. Base your judgement on the user's latest message only, not on Aura's reply""",
+            },
+            {"role": "user", "content": prompt},
+        ]
+
+        try:
+            # Use the same L4 model and temperature as l4_emotion_analysis
+            l4_model = settings.active_l4_model
+            response = await self.client.complete(
+                messages=messages,
+                model=l4_model,
+                temperature=0.3,
+                max_tokens=800,
+            )
+
+            # Parse the first JSON object (as W3-13 does)
+            parsed = self._extract_first_json(response)
+            if not parsed:
+                raise ValueError(f"L4 appraisal returned no JSON: {response[:200]}")
+
+            # Validate appraisal
+            appraisal_data = parsed.get("appraisal")
+            if not appraisal_data:
+                raise ValueError(f"L4 appraisal missing 'appraisal' key: {response[:200]}")
+
+            appraisal = Appraisal(**appraisal_data)
+
+            # Extract user_state, keeping only known dimensions
+            user_state_raw = parsed.get("user_state", {})
+            user_state = {}
+            for emotion, value in user_state_raw.items():
+                if emotion.lower() in valid_emotions and isinstance(value, (int, float)):
+                    user_state[emotion.lower()] = max(0.0, min(1.0, float(value)))
+                elif emotion.lower() not in valid_emotions:
+                    logger.debug(f"L4 appraisal returned unknown user_state emotion: {emotion} (dropping)")
+
+            return appraisal, user_state
+
+        except ValueError:
+            raise
+        except Exception as e:
+            logger.error(f"L4 appraisal failed: {e}")
+            raise ValueError(f"L4 appraisal failed: {e}")
+
+    def _extract_first_json(self, text: str) -> dict | None:
+        """Extract the first JSON object from text (handles code blocks and raw JSON)."""
+        # First try code blocks
+        code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if code_block_match:
+            try:
+                return json.loads(code_block_match.group(1))
+            except json.JSONDecodeError:
+                pass
+
+        # Try to find the first balanced JSON object
+        start_idx = text.find('{')
+        if start_idx >= 0:
+            brace_count = 0
+            in_string = False
+            escape_next = False
+
+            for i in range(start_idx, len(text)):
+                char = text[i]
+
+                if escape_next:
+                    escape_next = False
+                    continue
+
+                if char == '\\':
+                    escape_next = True
+                    continue
+
+                if char == '"' and not escape_next:
+                    in_string = not in_string
+                    continue
+
+                if not in_string:
+                    if char == '{':
+                        brace_count += 1
+                    elif char == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            json_str = text[start_idx:i+1]
+                            try:
+                                return json.loads(json_str)
+                            except json.JSONDecodeError:
+                                pass
+        return None
 
     # =========================================================================
     # L3: THE SYNTHESIZER (Structured Context)
