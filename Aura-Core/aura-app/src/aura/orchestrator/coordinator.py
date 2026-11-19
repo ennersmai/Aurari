@@ -20,6 +20,7 @@ from aura.engines.emotion.engine import EmotionEngine
 from aura.engines.goal.engine import GoalEngine
 from aura.engines.identity.engine import IdentityEngine
 from aura.engines.learning.engine import LearningEngine
+from aura.engines.memory.v2.identity import speaker_key
 from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
@@ -56,6 +57,8 @@ class TurnContext:
     synthesis_context: SynthesisContext
     packet: ContextPacket | None = None
     offered_tools: list = field(default_factory=list)
+    speaker: str = ""
+    venue: str = "app"
 
 
 @dataclass
@@ -1505,6 +1508,7 @@ Constraints:
         session_id: str | None,
         context_mode: str,
         requester_role: str,
+        venue: str = "app",
     ):
         """Run one turn end-to-end and yield :class:`TurnEvent` items (W2-10).
 
@@ -1563,6 +1567,9 @@ Constraints:
 
         # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
         ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=stream)
+        # Record who is speaking and where this turn happens (W3-10).
+        ctx.speaker = speaker_key(user_id, requester_role)
+        ctx.venue = venue
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
             ctx.offered_tools = await get_tool_registry().select_tools(
@@ -1634,6 +1641,7 @@ Constraints:
         session_id: str | None = None,
         context_mode: str = "deep_work",
         requester_role: str = "owner",
+        venue: str = "app",
     ) -> str:
         """
         Full orchestrated query processing.
@@ -1670,6 +1678,7 @@ Constraints:
             session_id=session_id,
             context_mode=context_mode,
             requester_role=requester_role,
+            venue=venue,
         ):
             if ev.kind == "done":
                 response = ev.text
@@ -2253,6 +2262,7 @@ Constraints:
         session_id: str | None = None,
         context_mode: str = "deep_work",
         requester_role: str = "owner",
+        venue: str = "app",
     ):
         """
         Stream orchestrated response generation.
@@ -2276,6 +2286,7 @@ Constraints:
             session_id=session_id,
             context_mode=context_mode,
             requester_role=requester_role,
+            venue=venue,
         ):
             if ev.kind == "delta":
                 yield ev.text

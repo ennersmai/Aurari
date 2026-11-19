@@ -1526,3 +1526,21 @@
   - The full-text indexes include `HIGHLIGHTS` for parity with W3-01's `memory_content_ft`; the card asks for BM25 only.
   - Only the startup tuple was added to `main.py`, so the numbered boot-order comment above the list still enumerates the original five files and does not mention `schema_v2.surql`.
   - The tests call `db.select(...)` on the runner's adapter (already present) and compare `RecordID`s with `==`; helper record ids are kept as `RecordID` because the embedded engine rejects string ids bound into typed `record<...>` fields.
+
+## W3-10: Venue and speaker reach the turn
+- **Status:** DONE
+- **PRD:** memory 4.4, M4
+- **Tier:** bulk
+- **Files changed:** `src/aura/orchestrator/coordinator.py`, `src/aura/discord/bot.py`, new `src/aura/engines/memory/v2/__init__.py`, new `src/aura/engines/memory/v2/identity.py`, new `tests/unit/test_memory_v2_identity.py`
+- **Test result:** full suite passes (356 passed, 83 warnings); `tests/unit/test_memory_v2_identity.py` 16 passed
+- **What I did:**
+  1. `identity.py` has the four helpers exactly as carded: `speaker_key` (owner role -> `"owner"`, otherwise the given user id), `venue_for_discord` (`dm:<user_id>` for guild id `"dm"`, otherwise `guild:<g>/channel:<c>`), `visibility_for_venue` (`app` -> `owner`, `dm:<x>` -> `private:<speaker>`, guild -> `guild:<g>`), and `visible_in_venue` (`app` -> `["owner"]`; a DM -> `["private:<x>"]`, plus `"owner"` for `dm:owner`; guild -> `["guild:<g>"]`). `__init__.py` is a docstring only.
+  2. `TurnContext` gained `speaker: str = ""` and the card's last field `venue: str = "app"`. `process_query`, `stream_query` and `_turn_pipeline` each gained `venue: str = "app"` as their last keyword argument and pass it down. `_turn_pipeline` sets `ctx.speaker = speaker_key(user_id, requester_role)` and `ctx.venue = venue` immediately after `_gather_turn_context`, so the fields are on the same context object the rest of the turn uses.
+  3. The Discord bot computes `venue_for_discord(guild_id, channel_id, user_id)` in `_call_orchestrator` and overrides it to `"dm:owner"` when `requester_role == "owner"` and `guild_id == "dm"`, then passes `venue=venue` to `process_query`. The chat routes are untouched and keep the `"app"` default. What the bot sends to the model, its history keys and its role logic are unchanged.
+  4. The new tests cover every helper on its documented inputs (including trusted -> user id, owner DM visibility and owner-DM recall list), and three `process_query` cases with the `turn_orchestrator` fixture: a guest in `guild:1/channel:2` stores that venue and `discord_42` as speaker, an owner stores `dm:owner` and `"owner"`, and the unaided default stores `"app"`. The tests capture the context by wrapping the fixture's real `_gather_turn_context`.
+- **"Done when" verified:** the new tests pass and the full suite passes (356 passed).
+- **Do-not checks respected:** no change to the bot's model input, history keys or role logic; no other card touched; existing characterisation tests (`test_turn_process_query.py`, `test_turn_stream_query.py`, `test_turn_pipeline.py`) pass unchanged.
+- **Unsure about:**
+  - `visibility_for_venue` builds `private:<speaker>` from the `speaker` argument rather than parsing the `dm:<x>` suffix, so the helper relies on the bot's invariant that the DM venue suffix and the speaker key are the same value (`dm:owner`/`owner`, or `dm:discord_<id>`/`discord_<id>`). The card's text names both the helper's `speaker` parameter and the venue's `<x>`; the tests pass the two equal, and this is why `speaker` exists as a parameter at all.
+  - `visible_in_venue("dm:owner")` returns `["private:owner", "owner"]` in that order ("the DM's own visibility, plus owner"), which is the card's wording order.
+  - An unknown venue raises `ValueError` in both visibility helpers; the card only documents the three forms, and no caller can produce anything else.

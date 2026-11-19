@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Any, Callable
 
 from aura.config import settings
+from aura.engines.memory.v2.identity import venue_for_discord
 
 logger = logging.getLogger(__name__)
 
@@ -627,12 +628,20 @@ class AuraDiscordBot:
             # Prefix user input with speaker name for LLM clarity
             labelled_input = f"{user_name}: {user_input}"
 
+            # The venue this turn happens in (W3-10). The owner's DM is the
+            # one DM that also sees owner facts, so it keeps the owner key
+            # rather than the Discord user id.
+            venue = venue_for_discord(guild_id, channel_id, user_id)
+            if requester_role == "owner" and guild_id == "dm":
+                venue = "dm:owner"
+
             response = await self._orchestrator.process_query(
                 user_input=labelled_input,
                 user_id=user_id,
                 conversation_history=history,
                 deep_analysis_enabled=True,
                 requester_role=requester_role,
+                venue=venue,
             )
             response_text = str(response)
 
