@@ -534,6 +534,14 @@ class Settings(BaseSettings):
                     "interaction depth).",
     )
 
+    # Memory v2 episode writes (W3-12)
+    memory_v2_write_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_MEMORY_V2_WRITE_ENABLED",
+        description="Store every turn as a memory v2 episode. Off by default so "
+                    "the write path can be compared with today's memory writes.",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

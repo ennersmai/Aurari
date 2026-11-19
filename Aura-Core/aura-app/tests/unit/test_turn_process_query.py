@@ -504,8 +504,12 @@ async def test_m_post_response_chain_kwargs_enable_l2_from_deep_when_none(turn_o
         "user_input", "response", "emotional_before", "user_id",
         "conversation_id", "goal_context", "learning_context",
         "enable_l2", "l2_reasoning_enabled", "resonance_score",
+        # W3-12: the post-response chain receives the turn's venue/speaker.
+        "venue", "speaker",
     }
     assert set(kwargs.keys()) == expected_keys
+    assert kwargs["venue"] == "app"
+    assert kwargs["speaker"] == "owner"
     assert kwargs["enable_l2"] is False
     assert kwargs["user_input"] == "hello"
     assert kwargs["response"] == "resp"

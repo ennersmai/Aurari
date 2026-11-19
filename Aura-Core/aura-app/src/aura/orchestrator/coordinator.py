@@ -20,7 +20,13 @@ from aura.engines.emotion.engine import EmotionEngine
 from aura.engines.goal.engine import GoalEngine
 from aura.engines.identity.engine import IdentityEngine
 from aura.engines.learning.engine import LearningEngine
+from aura.engines.memory.v2.episodes import store_episode
 from aura.engines.memory.v2.identity import speaker_key
+from aura.engines.memory.v2.salience import (
+    emotional_intensity,
+    interaction_depth,
+    salience as compute_salience,
+)
 from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
@@ -1032,6 +1038,8 @@ Constraints:
         enable_l2: bool,
         l2_reasoning_enabled: bool,
         resonance_score: float,
+        venue: str = "app",
+        speaker: str = "owner",
     ) -> None:
         """Schedule the post-response chain in the background (never awaited here)."""
         asyncio.create_task(self._post_response_chain(
@@ -1045,6 +1053,8 @@ Constraints:
             enable_l2=enable_l2,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=resonance_score,
+            venue=venue,
+            speaker=speaker,
         ))
 
     async def _gather_turn_context(
@@ -1622,6 +1632,8 @@ Constraints:
             enable_l2=enable_l2,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=ctx.resonance_score,
+            venue=ctx.venue,
+            speaker=ctx.speaker,
         )
 
         # Stage 10: yield the final done event with the accumulated response.
@@ -1924,6 +1936,8 @@ Constraints:
         enable_l2: bool,
         l2_reasoning_enabled: bool = False,
         resonance_score: float | None = None,
+        venue: str = "app",
+        speaker: str = "owner",
     ) -> None:
         """
         Execute post-response tasks in correct dependency order.
@@ -1931,7 +1945,8 @@ Constraints:
         Order:
         1. L4 Emotion Analysis (Must complete first)
         2. Log Experience
-        3. L2 Deep Analysis (Needs updated emotional state)
+        3. Store the memory v2 episode (only when the write flag is on)
+        4. L2 Deep Analysis (Needs updated emotional state)
         """
 
         # 1. Apply L4 Emotion Analysis (Critical for state update)
@@ -1954,8 +1969,35 @@ Constraints:
             emotional_state=emotional_current,
             learning_context=learning_context,
         )
-        
-        # 3. Run L2 Analysis (if enabled AND L2 layer not bypassed via inference cockpit)
+
+        # 3. Store the memory v2 episode (only when the write flag is on).
+        #    A failure here must never affect the turn, which has already been
+        #    answered and had its experience logged.
+        if settings.memory_v2_write_enabled:
+            try:
+                from aura.llm.embeddings import get_embeddings_client
+
+                baseline = self.emotion_engine.config.baseline.model_dump()
+                intensity = emotional_intensity(
+                    emotional_current.vector.model_dump(), baseline
+                )
+                depth = interaction_depth(len(response), None, None)
+                salience_value = compute_salience(intensity, None, depth)
+                await store_episode(
+                    self.db,
+                    get_embeddings_client(),
+                    user_text=user_input,
+                    aura_text=response,
+                    speaker=speaker,
+                    venue=venue,
+                    conversation_id=conversation_id,
+                    emotional_signature=emotional_current.vector.model_dump(),
+                    salience=salience_value,
+                )
+            except Exception as e:
+                self.logger.warning(f"Failed to store memory v2 episode: {e}")
+
+        # 4. Run L2 Analysis (if enabled AND L2 layer not bypassed via inference cockpit)
         if enable_l2 and settings.layer_l2_enabled:
             await self._async_l2_analysis(
                 user_input=user_input,
