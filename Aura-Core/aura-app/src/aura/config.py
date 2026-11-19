@@ -596,6 +596,12 @@ class Settings(BaseSettings):
         validation_alias="AURA_RECALL_LEXICAL_K",
         description="Number of candidates the lexical BM25 channel retrieves.",
     )
+    recall_query_join_max_words: int = Field(
+        default=6,
+        validation_alias="AURA_RECALL_QUERY_JOIN_MAX_WORDS",
+        description="Inputs of at most this many words are joined with the previous "
+                    "user turn when building the Recall Engine queries (PRD 6.3 step 2).",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(

@@ -1379,3 +1379,22 @@
   - The card gives the dense query without a `LIMIT`, relying on the KNN operator's `k` to bound the results; I kept it exactly that way. The embedded engine returned at most `k` rows in testing.
   - The dense `k`/`ef` are the only interpolated values in either query, because SurrealDB's `<|k,ef|>` syntax requires literals; all filters, the vector, the text and the lexical limit are parameters.
   - I treated whitespace-only lexical text as empty (`[]` with no query), the same way `retrieve_memories` treats a blank query; the card says "empty `text`" without spelling that out.
+
+## W3-03: Query building
+- **Status:** DONE
+- **Files changed:** `src/aura/config.py`, new `src/aura/engines/recall/query.py`, new `tests/unit/test_recall_query.py`
+- **Test result:** full suite passes (277 passed, 81 warnings); `tests/unit/test_recall_query.py` 6 passed
+- **What I did:**
+  1. Added `recall_query_join_max_words` (default 6) to `config.py` after the other `recall_*` fields, with the `AURA_RECALL_QUERY_JOIN_MAX_WORDS` alias and a one-line description.
+  2. Created `query.py` with the `RecallQueries(dense_text, lexical_text, joined)` dataclass and `build_queries(user_input, recent_turns)`. `previous` is the content of the last turn whose `role` is `"user"` and whose content differs from `user_input`, so history that already ends with the current input does not use it as the previous turn.
+  3. The input is joined when `previous` exists and either the input has at most `settings.recall_query_join_max_words` whitespace-separated words or it contains one of the 11 card pronouns as a whole word (case-insensitive, `\b` regex). `dense_text` is `previous + "\n" + user_input` when joined, otherwise `user_input`.
+  4. `lexical_text` is `dense_text.split()` with stop words dropped and the rest joined by single spaces; a 114-word module-level `frozenset` covers common words, question words and the 11 pronouns. When every token is a stop word the result is `""`.
+  5. The module docstring records that entity matching and date ranges (the other two query kinds in PRD 6.3 step 2) wait for M4 and M5. No model call and no database call.
+  6. Six tests, one per card case: long self-contained input not joined; `"and what about it?"` after a Rust turn joined; short input with no previous user turn not joined; the current input repeated at the end of history not used as `previous`; stop words absent from `lexical_text` but present in `dense_text`; all-stop-word input yields `lexical_text == ""`.
+- **"Done when" verified:** The new tests and the full suite pass (277 passed). No file outside the card's three Files entries was changed; `git diff --stat` for tracked files shows only `config.py` (+6 lines), and the two new files are untracked additions.
+- **Do not checks respected:** No model call, no database call. Did not wire the queries into the engine or channels (later cards).
+- **Unsure about:**
+  - "about 100" stop words: the set has 114. It includes every required pronoun and question word; the extra entries are common articles, prepositions, auxiliaries and pronouns.
+  - For stop-word matching I strip leading/trailing ASCII punctuation from each token (`"it?"` is compared as `"it"`), but a token kept because it is not a stop word keeps its original punctuation; the card only asks for stop-word removal and whitespace collapse, not punctuation stripping.
+  - A user turn with explicit empty-string content would be selected as `previous` under the card's literal "content differs from `user_input`" rule and would produce a leading newline; a turn with no `content` key is skipped. Neither occurs in the pipeline, and I did not add a condition the card does not state.
+  - I did not export `build_queries` / `RecallQueries` from `engines/recall/__init__.py` because the card's Files list does not include it; the tests import `aura.engines.recall.query` directly.
