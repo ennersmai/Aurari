@@ -1,0 +1,140 @@
+[
+  {
+    "name": "high_novelty",
+    "when": {
+      "novelty": [0.6, 1.0]
+    },
+    "impulse": {
+      "surprise": 0.6,
+      "curiosity": 0.5
+    }
+  },
+  {
+    "name": "high_novelty_positive_congruence_high_beauty",
+    "when": {
+      "novelty": [0.6, 1.0],
+      "congruence": [0.2, 1.0],
+      "beauty": [0.6, 1.0]
+    },
+    "impulse": {
+      "wonder": 0.8,
+      "fascination": 0.7,
+      "awe": 0.6
+    }
+  },
+  {
+    "name": "positive_congruence_agency_self",
+    "when": {
+      "congruence": [0.2, 1.0],
+      "agency": "self"
+    },
+    "impulse": {
+      "joy": 0.7,
+      "pride": 0.5
+    }
+  },
+  {
+    "name": "positive_congruence_agency_other_positive_warmth",
+    "when": {
+      "congruence": [0.2, 1.0],
+      "agency": "other",
+      "warmth": [0.2, 1.0]
+    },
+    "impulse": {
+      "joy": 0.6,
+      "gratitude": 0.7
+    }
+  },
+  {
+    "name": "negative_congruence_agency_other_high_control",
+    "when": {
+      "congruence": [-1.0, -0.2],
+      "agency": "other",
+      "control": [0.6, 1.0]
+    },
+    "impulse": {
+      "anger": 0.8
+    }
+  },
+  {
+    "name": "negative_congruence_low_control",
+    "when": {
+      "congruence": [-1.0, -0.2],
+      "control": [0.0, 0.3]
+    },
+    "impulse": {
+      "sadness": 0.7
+    },
+    "note": "plus fear when certainty is low (separate row)"
+  },
+  {
+    "name": "negative_congruence_low_control_low_certainty_fear",
+    "when": {
+      "congruence": [-1.0, -0.2],
+      "control": [0.0, 0.3],
+      "certainty": [0.0, 0.3]
+    },
+    "impulse": {
+      "sadness": 0.7,
+      "fear": 0.6
+    }
+  },
+  {
+    "name": "negative_congruence_agency_self",
+    "when": {
+      "congruence": [-1.0, -0.2],
+      "agency": "self"
+    },
+    "impulse": {
+      "shame": 0.7,
+      "doubt": 0.5
+    }
+  },
+  {
+    "name": "low_novelty_low_intensity_boredom",
+    "when": {
+      "novelty": [0.0, 0.3],
+      "intensity": [0.0, 0.3]
+    },
+    "impulse": {
+      "boredom": 0.5
+    },
+    "note": "The 'repeated' part of boredom needs habituation (E3a); left out"
+  },
+  {
+    "name": "low_certainty",
+    "when": {
+      "certainty": [0.0, 0.3]
+    },
+    "impulse": {
+      "confusion": 0.6,
+      "doubt": 0.5
+    }
+  },
+  {
+    "name": "empathy_distress",
+    "when": {
+      "user_state": {
+        "sadness": [0.5, 1.0]
+      }
+    },
+    "impulse": {
+      "empathy": 0.7,
+      "compassion": 0.5
+    },
+    "note": "The 'positive relationship' part of empathy needs relationships (E5); left out. Matches on user_state showing distress (sadness >= 0.5)."
+  },
+  {
+    "name": "empathy_fear_distress",
+    "when": {
+      "user_state": {
+        "fear": [0.5, 1.0]
+      }
+    },
+    "impulse": {
+      "empathy": 0.7,
+      "compassion": 0.5
+    },
+    "note": "The 'positive relationship' part of empathy needs relationships (E5); left out. Matches on user_state showing distress (fear >= 0.5)."
+  }
+]

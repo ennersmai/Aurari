@@ -1732,3 +1732,40 @@
 - **Unsure about:**
   - The "updated fact" probe relies on the extracted fact containing "live" so that the lexical channel matches the "where do I live?" question with `recall_abstain_enabled` on. The turn text "I moved to Porto" is unchanged; the extracted fact content "I live in Porto now." still classifies as an update because the predicate "live in" and subject "I" match the Lisbon fact. This is faithful to the extraction prompt's requirement that each fact be one self-contained sentence.
   - The stale-fact rate measurement uses the final clock state (all 40 facts present) and issues one recall per scripted turn after the fact writing is complete. This counts recalled facts across the full script but uses the final current/superseded status, which matches the gate's intent of "share of recalled facts that are superseded".
+
+## W3-19: Appraisal variables and the appraisal table
+- **Status:** DONE
+- **PRD:** emotion 5.2, 5.3, test T8
+- **Tier:** frontier (Mai-approved)
+- **Files changed:** new `src/aura/models/appraisal.py`, new `src/aura/engines/emotion/appraisal_table.json`, new `src/aura/engines/emotion/appraisal.py`, new `tests/unit/test_appraisal_table.py`
+- **Test result:** full suite passes (434 passed, 83 warnings); `tests/unit/test_appraisal_table.py` 20 passed.
+- **What I did, step by step:**
+  1. **`src/aura/models/appraisal.py` (models)**: Created `Appraisal` Pydantic model with all eight variables from PRD 5.2 — `congruence` (float [-1,1], default 0), `novelty` (float [0,1], default 0), `certainty` (float [0,1], default 0.5), `control` (float [0,1], default 0.5), `agency` (Literal["self","other","circumstance"], default "circumstance"), `warmth` (float [-1,1], default 0), `beauty` (float [0,1], default 0), `intensity` (float [0,1], default 0.5) — each with a field validator that clamps to the valid range. Also created `AppraisalEvent` with `kind`, `source`, `appraisal`, `person_id`, `venue`, `ref`, `user_state` (dict[str,float] for empathy matching).
+  2. **`src/aura/engines/emotion/appraisal_table.json`**: Created the pattern table covering every row of PRD 5.3 (12 patterns):
+     - high novelty → surprise, curiosity
+     - high novelty + positive congruence + high beauty → wonder, fascination, awe
+     - positive congruence + agency self → joy, pride
+     - positive congruence + agency other + positive warmth → joy, gratitude
+     - negative congruence + agency other + high control → anger
+     - negative congruence + low control → sadness (plus separate row for fear when certainty is low)
+     - negative congruence + agency self → shame, doubt
+     - low novelty + low intensity → boredom (note: "repeated" part needs habituation E3a, left out)
+     - low certainty → confusion, doubt
+     - user_state sadness >= 0.5 → empathy, compassion (note: "positive relationship" part needs relationships E5, left out)
+     - user_state fear >= 0.5 → empathy, compassion (note: "positive relationship" part needs relationships E5, left out)
+     Thresholds: "high" = >= 0.6, "low" = <= 0.3, "positive" = > 0.2, "negative" = < -0.2.
+  3. **`src/aura/engines/emotion/appraisal.py` (engine)**: 
+     - `Pattern` class with `matches(appraisal, user_state)` implementing the when-conditions (numeric ranges, exact agency match, user_state distress checks).
+     - `load_table(path=None)` validates every impulse dimension name against `EmotionVector.model_fields` and raises `ValueError` on unknown dimension.
+     - `impulses_for(appraisal, user_state=None, table=None)` sums impulses of all matching rows, multiplies by `appraisal.intensity`, caps each at 1.0; intensity 0 returns `{}`.
+  4. **`tests/unit/test_appraisal_table.py`**: 20 tests covering:
+     - Default table loads and validates dimensions
+     - Unknown dimension in table raises at load
+     - Intensity 0 gives no impulse
+     - No-match appraisal returns `{}`
+     - One test per table row verifying the expected dominant dimension (largest impulse)
+     - Intensity scaling and capping at 1.0
+     - AppraisalEvent model and field validator clamping
+- **Done when:** satisfied — the new tests pass and the full suite passes.
+- **Do-not checks respected:** No engine or physics code was touched. No rows beyond PRD 5.3 were invented. The empathy rows match on `user_state` distress (sadness or fear >= 0.5) as specified. The "repeated" boredom and "positive relationship" empathy notes are included as `"note"` fields on those rows.
+- **Unsure about:** Nothing. The change is scoped to the four new files only; no existing code was modified.
