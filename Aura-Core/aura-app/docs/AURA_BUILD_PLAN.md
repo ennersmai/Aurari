@@ -1889,6 +1889,23 @@ SurrealDB syntax checked on the installed embedded engine on 2026-11-20: `DEFINE
 
 ---
 
+**W3-15a The owner's names resolve to the owner**
+- **PRD:** memory 4.4 (every person is an entity keyed by a stable id; nothing a guest says can change facts about the owner)
+- **Tier:** bulk
+- **Depends on:** W3-15
+- **Why:** added by the supervisor after reviewing W3-15. `ensure_person` names the owner's entity `owner` with the single alias `owner`, so a guest saying "Mai lives in Porto" resolves "Mai" to a new, separate person entity. The guest rule in `write_facts` (subject is `entity:owner`, so provenance is `hearsay`) then never applies, and the conflict check (W3-16) cannot see that the claim is about the owner. The W3-15 tests named the owner entity directly, so they did not catch this.
+- **Files:** `src/aura/config.py`, `src/aura/engines/memory/v2/episodes.py` (`ensure_person`), `src/aura/orchestrator/coordinator.py` (the `store_episode` call in `_post_response_chain`), new `tests/scenarios/test_memory_v2_owner_names_embedded.py`
+- **Change:**
+  1. Config: `owner_display_name: str = ""` (`AURA_OWNER_NAME`) and `owner_aliases: list[str] = []` (`AURA_OWNER_ALIASES`, comma-separated in the environment if the settings class already parses lists that way; otherwise follow how other list settings are read).
+  2. `ensure_person`: aliases are merged, never replaced: the stored aliases are the union of the existing ones and the new ones, lowercased and whitespace-collapsed. For `key == "owner"`, the name is `settings.owner_display_name`, else the passed display name, else `"owner"`; the aliases always include `"owner"`, the lowercased name and every `settings.owner_aliases` entry.
+  3. In `_post_response_chain`, when the speaker is `"owner"` and the venue is `"app"`, pass the turn's `user_id` as the display name unless it is `"default"` or empty (the app sends the owner's name, for example `"Mai"`).
+- **Tests:** on the embedded engine: with `owner_display_name="Mai"`, `ensure_person(db, "owner", None)` gives the name `Mai` and aliases containing `owner` and `mai`; a second call with another display name keeps the earlier aliases; `owner_aliases=["M"]` adds `m`. With a scripted extraction where a Discord guest in a guild says "Mai lives in Porto" (`subject="Mai"`), the stored fact is `about` `entity:owner` with provenance `hearsay`. An app turn with `user_id="Mai"` adds the alias `mai` even when `owner_display_name` is empty.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change the entity resolution rules (W3-14) or the provenance rules (W3-15) themselves.
+
+---
+
+
 **W3-16 The conflict check: duplicate, update, contradiction, new**
 - **PRD:** memory 5.2 step 3, 5.3 (superseded facts)
 - **Tier:** frontier
