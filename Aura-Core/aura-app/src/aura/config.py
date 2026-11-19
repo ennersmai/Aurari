@@ -570,6 +570,25 @@ class Settings(BaseSettings):
                     "is logged.",
     )
 
+    # Memory v2 fact provenance (W3-15)
+    memory_hearsay_confidence: float = Field(
+        default=0.3,
+        validation_alias="AURA_MEMORY_HEARSAY_CONFIDENCE",
+        description="Confidence for a fact learned from someone speaking about "
+                    "another person.",
+    )
+    memory_observed_confidence: float = Field(
+        default=0.8,
+        validation_alias="AURA_MEMORY_OBSERVED_CONFIDENCE",
+        description="Confidence for a fact the speaker stated about themselves or "
+                    "their own world.",
+    )
+    memory_inferred_confidence: float = Field(
+        default=0.5,
+        validation_alias="AURA_MEMORY_INFERRED_CONFIDENCE",
+        description="Confidence for a fact Aura inferred rather than heard stated.",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

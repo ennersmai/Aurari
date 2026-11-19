@@ -229,4 +229,15 @@ async def run_extraction(db: Any, client: Any, episode_id: Any) -> Extraction | 
             },
         },
     )
+
+    # Writing facts is a separate step after a successful extraction. It must
+    # not turn a stored extraction into a failure, so an error is logged and
+    # the episode stays ``done``.
+    try:
+        from aura.engines.memory.v2.facts import write_facts
+        from aura.llm.embeddings import get_embeddings_client
+
+        await write_facts(db, get_embeddings_client(), episode, extraction)
+    except Exception:  # noqa: BLE001 - extraction already succeeded
+        logger.exception("Writing facts failed for episode %s", episode_id)
     return extraction
