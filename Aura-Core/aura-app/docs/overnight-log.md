@@ -1398,3 +1398,21 @@
   - For stop-word matching I strip leading/trailing ASCII punctuation from each token (`"it?"` is compared as `"it"`), but a token kept because it is not a stop word keeps its original punctuation; the card only asks for stop-word removal and whitespace collapse, not punctuation stripping.
   - A user turn with explicit empty-string content would be selected as `previous` under the card's literal "content differs from `user_input`" rule and would produce a leading newline; a turn with no `content` key is skipped. Neither occurs in the pipeline, and I did not add a condition the card does not state.
   - I did not export `build_queries` / `RecallQueries` from `engines/recall/__init__.py` because the card's Files list does not include it; the tests import `aura.engines.recall.query` directly.
+
+## W3-04: Reciprocal Rank Fusion
+- **Status:** DONE
+- **PRD:** memory 6.3 step 4, M3
+- **Tier:** bulk
+- **Files changed:** `src/aura/config.py`, new `src/aura/engines/recall/fusion.py`, new `tests/unit/test_recall_fusion.py`
+- **Test result:** full suite passes (284 passed, 81 warnings); `tests/unit/test_recall_fusion.py` 7 passed
+- **What I did:**
+  1. Added `recall_rrf_k` (default 60) to `config.py` immediately after `recall_query_join_max_words`, with the `AURA_RECALL_RRF_K` validation alias and a one-line description.
+  2. Created `fusion.py` with the card's `FusedHit` dataclass (`memory_id`, `score`, `channel_ranks`, `channel_scores`) and `rrf(channels, k=None)`. The score is the sum over channels of `1 / (k + rank + 1)` using each `ChannelHit.rank`; `channel_ranks` / `channel_scores` record each channel's rank and raw score for that id. `k=None` reads `settings.recall_rrf_k`. No per-channel weights.
+  3. Sort key is `(-score, min(channel_ranks.values()), memory_id)`, so ties fall back to the best (lowest) rank across channels and then the id; the result does not depend on the insertion order of the `channels` dict.
+  4. Seven tests: an id found by two channels outranks single-channel ids; a hand-computed k=60 example checks the exact scores (`1/62 + 1/61`, `1/61`, `1/63`) and the rank/score dicts; ties at equal score break by best rank (constructed with `k=0` so `1/2 + 1/6` and `1/3 + 1/3` are exactly equal); equal scores and ranks break by `memory_id`; reversing the channel dict yields the same order; `{}` / empty channel lists give `[]`; omitted `k` uses the config value.
+- **"Done when" verified:** The new tests pass and the full suite passes (284 passed).
+- **Do-not checks respected:** No per-channel weights. Did not change the channels, query building, or the engine, and did not export `rrf` from `engines/recall/__init__.py` (not in the card's Files list).
+- **Unsure about:**
+  - The tie test uses `k=0` because with non-negative 0-based ranks and a positive `k` two distinct rank multisets can only tie by coincidence; `k=0` makes the same-score/different-best-rank case exact (`1/2 + 1/6 == 1/3 + 1/3`), which is what exercises the best-rank tie-breaker.
+  - `rrf` reads `hit.rank` rather than the hit's position in the list; the channels set `rank` from `enumerate`, so the two agree today. If a later card ever reorders a list without re-ranking it, `rrf` would follow `rank`, per the card's wording.
+  - A repeated `memory_id` inside a single channel would accumulate two score terms and the later rank would overwrite the earlier one in `channel_ranks`; the channels return each id at most once, so this is not exercised.

@@ -602,6 +602,11 @@ class Settings(BaseSettings):
         description="Inputs of at most this many words are joined with the previous "
                     "user turn when building the Recall Engine queries (PRD 6.3 step 2).",
     )
+    recall_rrf_k: int = Field(
+        default=60,
+        validation_alias="AURA_RECALL_RRF_K",
+        description="Constant k in Reciprocal Rank Fusion's 1 / (k + rank + 1) score.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(
