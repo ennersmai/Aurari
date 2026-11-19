@@ -1197,3 +1197,19 @@
 - **Attempt 2:** ended after 15 s with no changes when gemini/gemini-3.6-flash returned an empty 200 (0 output tokens), which OpenCode took as the end of the turn.
 - **Attempt 3:** stopped by the supervisor on Mai's instruction; partial changes discarded. Most free providers were exhausted for the night (Gemini Hydrogen daily quota until 08:00 UTC, LLM7 daily tokens, Mistral credit until 2026-12-18, OpenRouter and Kilo rate-limited).
 - **Next:** W2-32 has one attempt left under the four-attempt rule; rerun when quotas reset.
+
+## W2-32: `_generate_blocking` runs on the single loop
+- **Status:** DONE
+- **Files changed:** `src/aura/orchestrator/coordinator.py`
+- **Test result:** `tests/unit/test_turn_process_query.py` unchanged and all 22 pass; full suite passes (243 passed)
+- **What I did:**
+  1. Added `async def _forced_seed(self, user_input, tool_schema_str, requester_role) -> str | None`, holding today's blocking seed block: `l3_tool_call_mode`, `extract_tool_calls`, then `execute_and_feedback(..., requester_role=requester_role)`. Returns the results string, or `None` (with today's warning) when there are no calls or no results.
+  2. Rewrote `_generate_blocking` (signature unchanged): kept the `context_window_size` line and both log lines, computed `seed` via `_forced_seed` only when `use_forced_tool_mode and tool_schema_str`, defined `_round(loop_input, round_idx)` that builds the same `SynthesisContext` (including `recent_critique` and `packet`), awaits `l3_synthesis(...)`, publishes the same `L3 synthesis_complete` trace with `round=round_idx`, and yields the response once.
+  3. Drove it with `async for event in run_tool_loop(...)`, keeping only the `done` event's text and returning it. The round limit now comes from `settings.tool_loop_max_rounds` (default 5).
+  4. Updated the docstring to say it runs `run_tool_loop`.
+- **"Done when" verified:**
+  - Full suite passes; `git diff --stat` lists only `coordinator.py` (not `test_turn_process_query.py`).
+  - `grep -c "run_tool_loop" src/aura/orchestrator/coordinator.py` prints 3.
+  - `grep -n "max_tool_rounds" src/aura/orchestrator/coordinator.py` prints only lines 1514 and 1522, inside `_generate_streaming`.
+- **Do not checks respected:** Did not touch `_generate_streaming`, `_turn_pipeline`, the `(chunk, counts)` contract, or delete `_remove_tool_calls_from_text`.
+- **Unsure about:** The warning log now also fires when `execute_and_feedback` returns no results (the card asked for `None` "with today's warning log" for no calls or no results); today the warning fired only for no calls. No test pins the warning.

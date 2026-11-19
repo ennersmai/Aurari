@@ -29,6 +29,7 @@ from aura.models.goal import GoalContext, Goal
 from aura.models.learning import LearningContext
 from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
+from aura.orchestrator.tool_loop import run_tool_loop
 
 logger = logging.getLogger(__name__)
 
@@ -1345,10 +1346,10 @@ Constraints:
         tool_schema_str: str | None,
         requester_role: str,
     ) -> str:
-        """Run the blocking L3 generation with a bounded tool loop (W2-09).
+        """Run the blocking L3 generation through ``run_tool_loop``.
 
-        Moved verbatim from ``process_query``. Returns the post-processed
-        response, including the tool-call stripping and the max-rounds suffix.
+        Returns the post-processed response from the loop's ``done`` event,
+        including the tool-call stripping and the max-rounds suffix.
         """
 
         # Step 5: Generate response (L3)
@@ -1361,31 +1362,11 @@ Constraints:
             f"[MAG] Tool mode check: use_forced_tool_mode={use_forced_tool_mode}, tool_schema_str={'present' if tool_schema_str else 'None'}"
         )
 
-        max_tool_rounds = 5
-        tool_history_blocks: list[str] = []
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
 
-        def _build_loop_input() -> str:
-            if not tool_history_blocks:
-                return user_input
-            return f"{user_input}\n\n[Tool Execution Results]\n" + "\n\n".join(tool_history_blocks)
-
-        # Optional: seed with deterministic tool call when forced mode is available.
-        if use_forced_tool_mode and tool_schema_str:
-            self.logger.info("[WRENCH] Using FORCED TOOL CALL MODE to seed the tool loop")
-            raw_tool_call = await self.llm_layers.l3_tool_call_mode(query=user_input, tool_schema=tool_schema_str)
-            self.logger.info(f"[BOX] Raw tool call from forced mode: {raw_tool_call[:300]}...")
-            seed_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
-            if seed_calls:
-                seed_results = await self.tool_executor.execute_and_feedback(seed_calls, requester_role=requester_role)
-                if seed_results:
-                    tool_history_blocks.append(f"[Seed]\n{seed_results}")
-            else:
-                self.logger.warning("⚠️ Forced tool call mode produced no valid tool calls; proceeding with normal tool loop")
-
-        response = ""
-        for round_idx in range(1, max_tool_rounds + 1):
+        async def _round(loop_input, round_idx):
             loop_context = SynthesisContext(
-                user_input=_build_loop_input(),
+                user_input=loop_input,
                 conversation_history=conversation_history or [],
                 emotional_state=ctx.emotional_state,
                 learning_context=ctx.learning_context,
@@ -1395,7 +1376,7 @@ Constraints:
                 packet=ctx.packet,
             )
 
-            response = await self.llm_layers.l3_synthesis(
+            round_response = await self.llm_layers.l3_synthesis(
                 loop_context,
                 max_history_messages=context_window_size,
                 reasoning_enabled=reasoning_enabled,
@@ -1404,29 +1385,40 @@ Constraints:
             self._publish_trace("L3", "synthesis_complete", {
                 "model": settings.l3_model,
                 "round": round_idx,
-                "response_len": len(response or ""),
+                "response_len": len(round_response or ""),
                 "reasoning": reasoning_enabled,
             })
+            yield round_response
 
-            tool_calls = self.tool_executor.extract_tool_calls(response)
-            if not tool_calls:
-                response = self._remove_tool_calls_from_text(response)
-                break
-
-            self.logger.info(f"[WRENCH] Tool loop round {round_idx}: detected {len(tool_calls)} tool call(s)")
-            tool_results = await self.tool_executor.execute_and_feedback(tool_calls, requester_role=requester_role)
-            if not tool_results:
-                response = self._remove_tool_calls_from_text(response)
-                break
-
-            tool_history_blocks.append(f"[Round {round_idx}]\n{tool_results}")
-
-        else:
-            # Guard: stop after max rounds to avoid infinite loops.
-            response = self._remove_tool_calls_from_text(response)
-            response += "\n\n(Stopped after max tool rounds; ask me to continue if needed.)"
-
+        response = ""
+        async for event in run_tool_loop(
+            user_input=user_input,
+            generate_round=_round,
+            tool_executor=self.tool_executor,
+            requester_role=requester_role,
+            seed_results=seed,
+        ):
+            if event.kind == "done":
+                response = event.text
         return response
+
+    async def _forced_seed(
+        self,
+        user_input: str,
+        tool_schema_str: str,
+        requester_role: str,
+    ) -> str | None:
+        """Seed the tool loop with a deterministic forced tool call."""
+        self.logger.info("[WRENCH] Using FORCED TOOL CALL MODE to seed the tool loop")
+        raw_tool_call = await self.llm_layers.l3_tool_call_mode(query=user_input, tool_schema=tool_schema_str)
+        self.logger.info(f"[BOX] Raw tool call from forced mode: {raw_tool_call[:300]}...")
+        seed_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
+        if seed_calls:
+            seed_results = await self.tool_executor.execute_and_feedback(seed_calls, requester_role=requester_role)
+            if seed_results:
+                return seed_results
+        self.logger.warning("⚠️ Forced tool call mode produced no valid tool calls; proceeding with normal tool loop")
+        return None
 
     async def _generate_streaming(
         self,
