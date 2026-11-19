@@ -1465,3 +1465,22 @@
   - A run with the gate on caches its memories result even when the retrieval found nothing (an empty tuple). That is the last packet built for the pair, so a following greeting yields an empty block rather than retrying; the card says "with no previous packet, the block is empty", and I read an empty packet as a previous packet.
   - The normaliser removes `-` as punctuation, so `"good-morning"` becomes `"goodmorning"` and does not match `"good morning"`. This follows the card's literal "stripped of punctuation" rule; I did not add word-boundary repair.
   - The 200-entry cap is a module constant in `engine.py` rather than a config setting, because the card names only the two new config fields and gives 200 exactly.
+
+## W3-07: Abstention (flagged)
+- **Status:** DONE
+- **PRD:** memory 6.3 step 7, M3
+- **Tier:** bulk
+- **Files changed:** `src/aura/config.py`, `src/aura/engines/recall/engine.py`, new `tests/unit/test_recall_abstain.py`
+- **Test result:** full suite passes (330 passed, 83 warnings); `tests/unit/test_recall_abstain.py` 5 passed
+- **What I did:**
+  1. Added `recall_abstain_enabled` (default `False`, alias `AURA_RECALL_ABSTAIN_ENABLED`) and `recall_abstain_min_similarity` (default `0.55`, alias `AURA_RECALL_ABSTAIN_MIN_SIMILARITY`, description says to tune it for the embedding model in use) to `config.py` after the gate phrases.
+  2. In the channels branch of `_build_memories`, after the two channels are gathered and channel errors recorded, the engine now computes `abstain`: no lexical hits and either no dense hits or a best dense score below the threshold. Only when `settings.recall_abstain_enabled` is on. On an abstention it returns no candidates plus a renderer that always returns the card's exact single line, and `True` as the fourth value. The old (`recall_channels_enabled` off) path always returns `False`, so it never abstains.
+  3. `_build_memories` now returns a 4-tuple `(candidates, renderer, cluster_data, abstain)`; `recall` unpacks it, stores all four in the W3-06 gate cache, and passes the abstain value into `ContextPacket`. A gate-skipped turn defaults to `False`; if the cached result was an abstention it drops the cached renderer so the skipped turn renders no memories block (never abstains). `layers.py` was not touched.
+  4. Added `_ABSTAIN_MEMORIES_LINE` with the exact line `<memories abstain="true">Nothing relevant to this message is stored in memory. Do not claim to remember anything about it.</memories>`.
+- **Tests (`tests/unit/test_recall_abstain.py`):** the four card cases — an unrelated query against a seeded memory abstains and `block_text("memories")` equals the line exactly; a lexical hit keeps the block with a low (0.10) dense score; a dense score above the threshold (0.90) keeps the block; with the flag off empty channels give `abstain is False`. A fifth test locks item 4: a real turn that abstains is cached, then a greeting that the gate skips reuses it with `abstain is False` and no memories block. The dense and lexical channels are monkeypatched to fixed `ChannelHit` lists; the manager is built with `MemoryManager.__new__` and a fake `db.query` over a small in-memory row table.
+- **"Done when" verified:** The new tests pass and the full suite passes (330 passed).
+- **Do-not checks respected:** `layers.py` unchanged; the flag is off by default; the old (channels-off) path never abstains; no new query, model call or dependency.
+- **Unsure about:**
+  - The gate cache now stores a 4-tuple. The skipped-turn branch still accepts a 3-tuple (`cached[:3]` plus an absent fourth value), so an entry created before this change in the same process cannot break; entries created after the change are always 4-tuples.
+  - When a real retrieval abstains, its cache entry carries the abstain renderer but no memories. I drop it on reuse rather than rendering a stale note, which is the literal reading of "when the gate skipped retrieval, never abstain". The cached entry still means "no memories found", so a following greeting has an empty memories block rather than retrying.
+  - A dense or lexical channel *exception* is recorded as an empty list, so with no lexical hits and no dense hits the engine can abstain on that turn. The card does not say to suppress abstention on channel errors; I left it simple.

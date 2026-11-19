@@ -49,6 +49,12 @@ logger = logging.getLogger(__name__)
 # reuse. The card fixes this at 200 entries; the oldest is dropped first.
 _GATE_CACHE_MAX = 200
 
+# W3-07: the single line the memories block carries when the engine abstains.
+_ABSTAIN_MEMORIES_LINE = (
+    '<memories abstain="true">Nothing relevant to this message is stored in '
+    "memory. Do not claim to remember anything about it.</memories>"
+)
+
 
 class RecallEngine:
     """One entry point over today's memory channels (PRD 6.1, M2).
@@ -146,20 +152,29 @@ class RecallEngine:
 
         # --- memories channel (W3-06: the gate may reuse the last result) ---
         gate: str | None = None
+        memory_abstain = False
         if settings.recall_gate_enabled:
             gate = "ran" if needs_recall(request.user_input) else "skipped"
         if gate == "skipped":
             cached = self._take_cached_memories(request.user_id, request.session_id)
             if cached is not None:
-                memory_candidates, memory_renderer, _cluster_data = cached
+                memory_candidates, memory_renderer, _cluster_data = cached[:3]
+                cached_abstain = cached[3] if len(cached) > 3 else False
+                # W3-07: a gate-skipped turn never abstains. A cached
+                # abstention carries no memories, so it renders no block.
+                if cached_abstain:
+                    memory_candidates, memory_renderer = [], None
                 candidates.extend(memory_candidates)
                 if memory_renderer is not None:
                     renderers["memories"] = memory_renderer
         else:
             try:
-                memory_candidates, memory_renderer, cluster_data = await self._build_memories(
-                    request, channel_errors
-                )
+                (
+                    memory_candidates,
+                    memory_renderer,
+                    cluster_data,
+                    memory_abstain,
+                ) = await self._build_memories(request, channel_errors)
                 candidates.extend(memory_candidates)
                 if memory_renderer is not None:
                     renderers["memories"] = memory_renderer
@@ -167,7 +182,12 @@ class RecallEngine:
                     self._store_cached_memories(
                         request.user_id,
                         request.session_id,
-                        (memory_candidates, memory_renderer, cluster_data),
+                        (
+                            memory_candidates,
+                            memory_renderer,
+                            cluster_data,
+                            memory_abstain,
+                        ),
                     )
             except Exception as e:
                 channel_errors["memories"] = str(e)
@@ -217,7 +237,7 @@ class RecallEngine:
         return ContextPacket(
             stable_blocks=stable_blocks,
             dynamic_blocks=dynamic_blocks,
-            abstain=False,
+            abstain=memory_abstain,
             trace=trace,
         )
 
@@ -377,18 +397,21 @@ class RecallEngine:
         self,
         request: RecallRequest,
         channel_errors: dict[str, str] | None = None,
-    ) -> tuple[list[Candidate], Any, dict[str, dict]]:
+    ) -> tuple[list[Candidate], Any, dict[str, dict], bool]:
         """Memories channel.
 
         With ``settings.recall_channels_enabled`` off (the default) this is
         today's path: retrieved memories via ``retrieve_for_l3_parts``, with the
         renderer calling ``memory_manager._format_memories_xml`` on the kept
         payloads (in the same order) using the cluster data gathered during
-        retrieval. Returns ``([], None, {})`` when no memories are found.
+        retrieval. Returns ``([], None, {}, False)`` when no memories are found.
 
         With the flag on, the dense and lexical channels run together, their
         hits are fused with RRF (PRD 6.3 steps 2-4), and the fused memories are
-        rendered without thought clusters.
+        rendered without thought clusters. With ``recall_abstain_enabled`` also
+        on, no lexical hit and no dense hit at or above
+        ``recall_abstain_min_similarity`` returns the abstention note instead
+        (``([], renderer, {}, True)``).
         """
         memory_manager = await self._get_memory_manager()
 
@@ -426,9 +449,27 @@ class RecallEngine:
                 else:
                     channels[name] = result
 
+            abstain = False
+            if settings.recall_abstain_enabled:
+                lexical_hits = channels["lexical"]
+                dense_hits = channels["dense"]
+                best_dense = max(
+                    (hit.score for hit in dense_hits), default=None
+                )
+                abstain = not lexical_hits and (
+                    best_dense is None
+                    or best_dense < settings.recall_abstain_min_similarity
+                )
+                if abstain:
+
+                    def _abstain_renderer(payloads: list[Any]) -> str:
+                        return _ABSTAIN_MEMORIES_LINE
+
+                    return [], _abstain_renderer, {}, True
+
             fused = rrf(channels)[: request.limit]
             if not fused:
-                return [], None, {}
+                return [], None, {}, False
 
             rows = await memory_manager.db.query(
                 "SELECT * FROM memory WHERE id IN $ids",
@@ -470,14 +511,14 @@ class RecallEngine:
                     )
                 )
             if not candidates:
-                return [], None, {}
+                return [], None, {}, False
 
             def _renderer(payloads: list[Any]) -> str:
                 if not payloads:
                     return ""
                 return memory_manager._format_memories_xml(payloads, {})
 
-            return candidates, _renderer, {}
+            return candidates, _renderer, {}, False
 
         emotional_state = request.emotional_state
         current_emotions: dict[str, float] | None = None
@@ -497,7 +538,7 @@ class RecallEngine:
             depth=request.depth,
         )
         if not memories:
-            return [], None, {}
+            return [], None, {}, False
 
         candidates: list[Candidate] = []
         for rank, m in enumerate(memories):
@@ -519,7 +560,7 @@ class RecallEngine:
                 return ""
             return memory_manager._format_memories_xml(payloads, cluster_data)
 
-        return candidates, _renderer, cluster_data
+        return candidates, _renderer, cluster_data, False
 
     # ------------------------------------------------------------------
     # Gate cache (W3-06)

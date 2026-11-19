@@ -645,6 +645,20 @@ class Settings(BaseSettings):
         description="Greetings and acknowledgements that never need memory retrieval "
                     "when the recall gate is enabled.",
     )
+    recall_abstain_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_ABSTAIN_ENABLED",
+        description="When true, the memories block abstains (and the packet sets "
+                    "abstain) when neither the lexical channel nor the dense "
+                    "channel found anything relevant. Off by default.",
+    )
+    recall_abstain_min_similarity: float = Field(
+        default=0.55,
+        validation_alias="AURA_RECALL_ABSTAIN_MIN_SIMILARITY",
+        description="Best dense cosine similarity below which the memories block "
+                    "abstains when the lexical channel returned no hits. Tune this "
+                    "for the embedding model in use.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(
