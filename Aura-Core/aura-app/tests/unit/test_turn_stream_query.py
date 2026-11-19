@@ -427,6 +427,8 @@ async def test_j_post_response_chain_kwargs_match_w2_02(turn_orchestrator):
         "enable_l2", "l2_reasoning_enabled", "resonance_score",
         # W3-12: the post-response chain receives the turn's venue/speaker.
         "venue", "speaker",
+        # W3-22: the post-response chain receives conversation_history for appraisal.
+        "conversation_history",
     }
     assert set(kwargs.keys()) == expected_keys
     assert kwargs["venue"] == "app"

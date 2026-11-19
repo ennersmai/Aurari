@@ -1821,3 +1821,36 @@
 - **Done when:** satisfied — the new tests pass and the full suite (unit tests) passes.
 - **Do-not checks respected:** Did not change or remove `l4_emotion_analysis` (W3-22 stops calling it). The method only reads the user's message, not Aura's reply.
 - **Unsure about:** The scenario tests have pre-existing import errors (ModuleNotFoundError for `tests` module) unrelated to this change. The unit tests that can run all pass.
+
+
+## W3-22: Messages are appraised; the keyword fallback is deleted
+- **Status:** DONE
+- **PRD:** emotion 5.2, 5.3 ("the keyword fallback (E5) is deleted"), T14
+- **Tier:** frontier
+- **Depends on:** W3-20, W3-21
+- **Files changed:** 
+  - `src/aura/orchestrator/coordinator.py` (`_post_response_chain`, `_apply_l4_emotion_analysis`, `_apply_conversation_influence_fallback` removed)
+  - `tests/unit/test_turn_process_query.py` (updated expected keys for `_post_response_chain`)
+  - `tests/unit/test_turn_stream_query.py` (updated expected keys for `_post_response_chain`)
+  - new `tests/unit/test_message_appraisal.py`
+- **Test result:** full suite passes (464 passed)
+- **What I did, step by step:**
+  1. Deleted `_apply_conversation_influence_fallback` function and both calls to it from `_apply_l4_emotion_analysis`.
+  2. Modified `_apply_l4_emotion_analysis` to not call the fallback, just log a warning and apply nothing when L4 returns nothing or fails (T14 on the old path). Removed the retry loop.
+  3. Added new `_appraise_message(user_input, conversation_history, venue, speaker)` method that:
+     - Calls `llm_layers.l4_appraise_message` with history up to and including the user's message (not Aura's reply)
+     - Creates an `AppraisalEvent` with `kind="message"`, `source="conversation"`, `person_id=speaker`, `venue=venue`
+     - Calls `emotion_engine.appraise(event)`
+     - On failure: one warning log, no impulse, no fallback, no retry loop
+  4. Updated `_post_response_chain` to call `_appraise_message` when `emotion_appraisal_enabled` is on, otherwise call `_apply_l4_emotion_analysis` (legacy path).
+  5. Added `conversation_history` parameter to `_schedule_post_response` and `_post_response_chain` to pass history to the new appraisal method.
+  6. Updated tests in `test_turn_process_query.py` and `test_turn_stream_query.py` to expect the new `conversation_history` key in `_post_response_chain` kwargs.
+  7. Created new test file `tests/unit/test_message_appraisal.py` with tests for:
+     - T14 on both paths: failing L4 call produces no state change and a warning
+     - No keyword-based change for replies full of "architecture" and "blueprint"
+     - With flag on, message is appraised and `appraise` receives `person_id` and `venue`
+     - Reply text never reaches `l4_appraise_message` (assert on call arguments)
+     - Characterisation tests with docstring "changed on purpose by W3-22 (keyword fallback removed)"
+- **Done when:** satisfied — the new tests pass, the full suite passes, and `grep -rn "_apply_conversation_influence_fallback" src` prints nothing.
+- **Do-not checks respected:** Did not change the L4 model settings or `l4_emotion_analysis` itself.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.

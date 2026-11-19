@@ -1,0 +1,86 @@
+async def _appraise_message(
+        self,
+        user_input: str,
+        conversation_history: list[dict[str, str]] | None,
+        venue: str,
+        speaker: str,
+    ) -> None:
+        """
+        Appraise the user's message using the new L4 appraisal pathway (W3-21, W3-22).
+        
+        Calls l4_appraise_message with history up to and including the user's message
+        (not Aura's reply), then passes the result to emotion_engine.appraise.
+        On failure: one warning log, no impulse, no fallback. No retry loop.
+        """
+        try:
+            self.logger.info("Starting L4 message appraisal...")
+            # Use L4 to appraise the user's message (history excludes Aura's reply)
+            appraisal, user_state = await self.llm_layers.l4_appraise_message(
+                user_input=user_input,
+                recent_history=conversation_history or [],
+                speaker=speaker,
+            )
+            
+            # Create and send the appraisal event
+            from aura.models.appraisal import AppraisalEvent
+            event = AppraisalEvent(
+                kind="message",
+                source="conversation",
+                appraisal=appraisal,
+                user_state=user_state,
+                person_id=speaker,
+                venue=venue,
+            )
+            
+            await self.emotion_engine.appraise(event)
+            self.logger.info("✅ L4 message appraisal applied successfully")
+            
+        except Exception as e:
+            # On failure: one warning log, no impulse, no fallback, no retry
+            self.logger.warning(f"⚠️ L4 message appraisal failed: {e}")
+
+    async def _apply_l4_emotion_analysis(
+        self,
+        user_input: str,
+        aura_response: str,
+        current_emotions: dict[str, float],
+    ) -> None:
+        """
+        Apply emotional influence using L4 emotion analysis (legacy path).
+        
+        Uses LLM to analyze conversation and detect emotions, replacing heuristic detection.
+        On failure: one warning log, no impulse, no fallback. No retry loop.
+        """
+        try:
+            self.logger.info("Starting L4 emotion analysis...")
+            # Use L4 to analyze emotions
+            emotion_deltas = await self.llm_layers.l4_emotion_analysis(
+                user_input=user_input,
+                aura_response=aura_response,
+                current_emotions=current_emotions,
+            )
+            
+            if emotion_deltas:
+                # Log what emotions were detected
+                emotion_str = ", ".join([f"{k}={v:.2f}" for k, v in emotion_deltas.items()])
+                self.logger.info(f"L4 detected emotions: {emotion_str}")
+                
+                # Apply detected emotions with appropriate intensity
+                influence = EmotionInfluence(
+                    source="conversation",
+                    emotions=emotion_deltas,
+                    intensity=0.6,
+                    reason="L4 emotion analysis from conversation",
+                )
+                await self.emotion_engine.apply_influence(influence)
+                self.logger.info(
+                    f"✅ L4 emotion analysis applied: {len(emotion_deltas)} emotions influenced"
+                )
+            else:
+                # When L4 returns nothing: log warning, apply nothing (T14 on the old path)
+                self.logger.warning("⚠️ L4 emotion analysis returned no emotion deltas")
+                
+        except Exception as e:
+            # On failure: one warning log, no impulse, no fallback
+            self.logger.warning(f"⚠️ L4 emotion analysis failed: {e}")
+     

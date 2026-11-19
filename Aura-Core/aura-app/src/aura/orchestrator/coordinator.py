@@ -1038,6 +1038,7 @@ Constraints:
         enable_l2: bool,
         l2_reasoning_enabled: bool,
         resonance_score: float,
+        conversation_history: list[dict[str, str]] | None = None,
         venue: str = "app",
         speaker: str = "owner",
     ) -> None:
@@ -1053,6 +1054,7 @@ Constraints:
             enable_l2=enable_l2,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=resonance_score,
+            conversation_history=conversation_history,
             venue=venue,
             speaker=speaker,
         ))
@@ -1641,6 +1643,7 @@ Constraints:
             enable_l2=enable_l2,
             l2_reasoning_enabled=l2_reasoning_enabled,
             resonance_score=ctx.resonance_score,
+            conversation_history=conversation_history,
             venue=ctx.venue,
             speaker=ctx.speaker,
         )
@@ -1945,6 +1948,7 @@ Constraints:
         enable_l2: bool,
         l2_reasoning_enabled: bool = False,
         resonance_score: float | None = None,
+        conversation_history: list[dict[str, str]] | None = None,
         venue: str = "app",
         speaker: str = "owner",
     ) -> None:
@@ -1952,15 +1956,22 @@ Constraints:
         Execute post-response tasks in correct dependency order.
         
         Order:
-        1. L4 Emotion Analysis (Must complete first)
+        1. Emotion Appraisal (when enabled) or L4 Emotion Analysis
         2. Log Experience
         3. Store the memory v2 episode (only when the write flag is on)
         4. L2 Deep Analysis (Needs updated emotional state)
         """
 
-        # 1. Apply L4 Emotion Analysis (Critical for state update)
+        # 1. Apply Emotion Appraisal (when enabled) or L4 Emotion Analysis (legacy)
         # Respects layer_l4_enabled toggle from inference cockpit.
-        if settings.layer_l4_enabled:
+        if settings.emotion_appraisal_enabled:
+            await self._appraise_message(
+                user_input=user_input,
+                conversation_history=conversation_history,
+                venue=venue,
+                speaker=speaker,
+            )
+        elif settings.layer_l4_enabled:
             await self._apply_l4_emotion_analysis(
                 user_input=user_input,
                 aura_response=response,
@@ -2357,6 +2368,47 @@ Constraints:
             if ev.kind == "delta":
                 yield ev.text
 
+    async def _appraise_message(
+        self,
+        user_input: str,
+        conversation_history: list[dict[str, str]] | None,
+        venue: str,
+        speaker: str,
+    ) -> None:
+        """
+        Appraise the user's message using the new L4 appraisal pathway (W3-21, W3-22).
+        
+        Calls l4_appraise_message with history up to and including the user's message
+        (not Aura's reply), then passes the result to emotion_engine.appraise.
+        On failure: one warning log, no impulse, no fallback. No retry loop.
+        """
+        try:
+            self.logger.info("Starting L4 message appraisal...")
+            # Use L4 to appraise the user's message (history excludes Aura's reply)
+            appraisal, user_state = await self.llm_layers.l4_appraise_message(
+                user_input=user_input,
+                recent_history=conversation_history or [],
+                speaker=speaker,
+            )
+            
+            # Create and send the appraisal event
+            from aura.models.appraisal import AppraisalEvent
+            event = AppraisalEvent(
+                kind="message",
+                source="conversation",
+                appraisal=appraisal,
+                user_state=user_state,
+                person_id=speaker,
+                venue=venue,
+            )
+            
+            await self.emotion_engine.appraise(event)
+            self.logger.info("✅ L4 message appraisal applied successfully")
+            
+        except Exception as e:
+            # On failure: one warning log, no impulse, no fallback, no retry
+            self.logger.warning(f"⚠️ L4 message appraisal failed: {e}")
+
     async def _apply_l4_emotion_analysis(
         self,
         user_input: str,
@@ -2364,108 +2416,44 @@ Constraints:
         current_emotions: dict[str, float],
     ) -> None:
         """
-        Apply emotional influence using L4 emotion analysis (async).
+        Apply emotional influence using L4 emotion analysis (legacy path).
         
         Uses LLM to analyze conversation and detect emotions, replacing heuristic detection.
-        Includes retry logic for robustness.
+        On failure: one warning log, no impulse, no fallback. No retry loop.
         """
-        max_retries = 2
-        for attempt in range(max_retries + 1):
-            try:
-                self.logger.info(f"Starting L4 emotion analysis (attempt {attempt+1})...")
-                # Use L4 to analyze emotions
-                emotion_deltas = await self.llm_layers.l4_emotion_analysis(
-                    user_input=user_input,
-                    aura_response=aura_response,
-                    current_emotions=current_emotions,
-                )
-                
-                if emotion_deltas:
-                    # Log what emotions were detected
-                    emotion_str = ", ".join([f"{k}={v:.2f}" for k, v in emotion_deltas.items()])
-                    self.logger.info(f"L4 detected emotions: {emotion_str}")
-                    
-                    # Apply detected emotions with appropriate intensity
-                    influence = EmotionInfluence(
-                        source="conversation",
-                        emotions=emotion_deltas,
-                        intensity=0.6,
-                        reason="L4 emotion analysis from conversation",
-                    )
-                    await self.emotion_engine.apply_influence(influence)
-                    self.logger.info(
-                        f"✅ L4 emotion analysis applied: {len(emotion_deltas)} emotions influenced"
-                    )
-                    return # Success
-                else:
-                    self.logger.warning(f"⚠️ L4 emotion analysis returned no emotion deltas (attempt {attempt+1})")
-                    if attempt == max_retries:
-                         # Fallback to heuristic detection if L4 returns nothing after retries
-                         await self._apply_conversation_influence_fallback(user_input, aura_response)
-                    
-            except Exception as e:
-                self.logger.error(f"❌ L4 emotion analysis failed (attempt {attempt+1}): {e}")
-                if attempt == max_retries:
-                    # Fallback to heuristic detection if L4 fails
-                    await self._apply_conversation_influence_fallback(user_input, aura_response)
-
-    async def _apply_conversation_influence_fallback(
-        self, user_input: str, aura_response: str
-    ) -> None:
-        """
-        Fallback heuristic emotion detection (used if L4 fails).
-        
-        Kept as backup for reliability.
-        """
-        emotions = {}
-        user_lower = user_input.lower()
-        response_lower = aura_response.lower()
-
-        # Positive words increase joy/interest
-        positive_words = ["happy", "great", "love", "wonderful", "excited", "thank", "yes", "absolutely"]
-        if any(word in user_lower for word in positive_words):
-            emotions["joy"] = 0.15
-            emotions["interest"] = 0.1
-
-        # Surprise triggers
-        surprise_words = ["wow", "amazing", "incredible", "unexpected", "show me", "reveal", "discover"]
-        surprise_phrases = ["i want to see", "i want to understand", "show me", "let me see"]
-        if any(word in user_lower for word in surprise_words) or any(phrase in user_lower for phrase in surprise_phrases):
-            emotions["surprise"] = 0.2
-            emotions["curiosity"] = 0.15
-
-        # Anticipation triggers (use interest + curiosity instead of anticipation)
-        anticipation_words = ["waiting", "expect", "anticipate", "eager", "excited", "ready", "want to"]
-        anticipation_phrases = ["i want", "i need", "can't wait", "looking forward"]
-        if any(word in user_lower for word in anticipation_words) or any(phrase in user_lower for phrase in anticipation_phrases):
-            emotions["interest"] = max(emotions.get("interest", 0), 0.2)
-            emotions["curiosity"] = max(emotions.get("curiosity", 0), 0.15)
-
-        # Questions increase curiosity
-        if "?" in user_input:
-            emotions["curiosity"] = max(emotions.get("curiosity", 0), 0.12)
-
-        # Intensity/excitement in response
-        intensity_words = ["electric", "sharpens", "crystallizing", "vast", "blueprint", "architecture"]
-        if any(word in response_lower for word in intensity_words):
-            emotions["interest"] = max(emotions.get("interest", 0), 0.15)
-            emotions["fascination"] = max(emotions.get("fascination", 0), 0.1)
-
-        # Apply if we detected any emotions
-        if emotions:
-            emotion_str = ", ".join([f"{k}={v:.2f}" for k, v in emotions.items()])
-            self.logger.info(f"Fallback heuristic detection: {emotion_str}")
-            influence = EmotionInfluence(
-                source="conversation",
-                emotions=emotions,
-                intensity=0.4,
-                reason="Fallback heuristic detection",
+        try:
+            self.logger.info("Starting L4 emotion analysis...")
+            # Use L4 to analyze emotions
+            emotion_deltas = await self.llm_layers.l4_emotion_analysis(
+                user_input=user_input,
+                aura_response=aura_response,
+                current_emotions=current_emotions,
             )
-            await self.emotion_engine.apply_influence(influence)
-            self.logger.info(f"✅ Fallback emotion influence applied: {len(emotions)} emotions")
-        else:
-            self.logger.debug("Fallback heuristic detection found no emotions")
-    
+            
+            if emotion_deltas:
+                # Log what emotions were detected
+                emotion_str = ", ".join([f"{k}={v:.2f}" for k, v in emotion_deltas.items()])
+                self.logger.info(f"L4 detected emotions: {emotion_str}")
+                
+                # Apply detected emotions with appropriate intensity
+                influence = EmotionInfluence(
+                    source="conversation",
+                    emotions=emotion_deltas,
+                    intensity=0.6,
+                    reason="L4 emotion analysis from conversation",
+                )
+                await self.emotion_engine.apply_influence(influence)
+                self.logger.info(
+                    f"✅ L4 emotion analysis applied: {len(emotion_deltas)} emotions influenced"
+                )
+            else:
+                # When L4 returns nothing: log warning, apply nothing (T14 on the old path)
+                self.logger.warning("⚠️ L4 emotion analysis returned no emotion deltas")
+                
+        except Exception as e:
+            # On failure: one warning log, no impulse, no fallback
+            self.logger.warning(f"⚠️ L4 emotion analysis failed: {e}")
+
     async def _assess_goal_progress(
         self,
         user_input: str,
