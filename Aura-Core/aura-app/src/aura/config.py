@@ -555,6 +555,21 @@ class Settings(BaseSettings):
                     "this it stays pending for the dream cycle to retry.",
     )
 
+    # Memory v2 entity resolution (W3-14)
+    memory_entity_match_threshold: float = Field(
+        default=0.92,
+        validation_alias="AURA_MEMORY_ENTITY_MATCH_THRESHOLD",
+        description="Minimum embedding cosine similarity for a new surface form "
+                    "to resolve to an existing entity.",
+    )
+    memory_entity_close_margin: float = Field(
+        default=0.02,
+        validation_alias="AURA_MEMORY_ENTITY_CLOSE_MARGIN",
+        description="When the top two entity matches are both above the threshold "
+                    "and within this margin, the closer one is taken and the pair "
+                    "is logged.",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

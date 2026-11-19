@@ -1610,3 +1610,21 @@
   - The prompt renders the literal labels `speaker:` and `Aura:` as the card's wording gives them, rather than the speaker's record id or name.
   - `run_extraction` leaves `extraction_error` populated after a later success and clears nothing; the card only asks for the extraction and the `done` status on success.
   - `schedule_extraction` checks `memory_v2_write_enabled` itself, and the caller also only runs it inside that block, so the task is skipped cleanly when the flag is off.
+
+## W3-14: Entity resolution
+- **Status:** DONE
+- **PRD:** memory 5.2 step 1
+- **Tier:** bulk
+- **Files changed:** new `src/aura/engines/memory/v2/entities.py`, `src/aura/config.py`, new `tests/scenarios/test_memory_v2_entities_embedded.py`
+- **Test result:** full suite passes (384 passed, 83 warnings); `tests/scenarios/test_memory_v2_entities_embedded.py` 5 passed.
+- **What I did:**
+  1. Added `memory_entity_match_threshold` (default `0.92`, alias `AURA_MEMORY_ENTITY_MATCH_THRESHOLD`) and `memory_entity_close_margin` (default `0.02`, alias `AURA_MEMORY_ENTITY_CLOSE_MARGIN`) to `Settings`, after the W3-13 extraction fields.
+  2. `entities.py` has `resolve_entity(db, embeddings, name, type, speaker)`. The name is normalised once as `" ".join(name.split()).lower()`. `"i"`, `"me"` and `"myself"` return `ensure_person(db, speaker, None)` from the W3-12 episode module, so the speaker's `entity:<key>` person is created or reused. Next, `SELECT * FROM entity WHERE aliases CONTAINS $alias` resolves an exact alias without touching the embeddings, choosing a row with the same `type` when one exists. Otherwise it embeds the name and runs `SELECT id, name, type, aliases, vector::distance::knn() AS distance FROM entity WHERE embedding <|3,COSINE|> $vec ORDER BY distance` (k=3); similarity is `1 - distance`. The best match at or above the threshold wins and the normalised surface form is appended to its `aliases` with `UPDATE $rid MERGE $data`. If the second match is also above the threshold and within the margin, the pair is logged at INFO and the closer one is taken; the module docstring says the PRD's model call for close cases is left for later and that no model is called. With no match, a new entity is created with the raw name, type, lowercased alias, embedding, and the clock's `created_at` (the v2 schema requires it).
+  3. The five embedded tests cover the card's list: an exact alias (with different case and extra whitespace) resolves with an embeddings stub that raises if called; `"pixel miso"` (identical hashed-bag embedding, different alias) resolves to `"Miso Pixel"` and is added as an alias; `"Quantum Router"` creates a second entity; `"I"`/`"me"`/`"Myself"` all return `entity:discord_42`; and resolving `"Zephyr"` twice leaves one entity.
+- **"Done when" verified:** the new tests pass and the full suite passes (384 passed).
+- **Do-not checks respected:** no model is called; no earlier card's file or behaviour was changed.
+- **Unsure about:**
+  - The card says "the speaker's person entity" without naming a helper; I reused `episodes.ensure_person` rather than duplicating the upsert. That means a self-name resolution also refreshes the person's `name`/`aliases` from the key (with `display_name=None`), which is the existing `ensure_person` behaviour.
+  - The installed `surrealdb` 3.0.0 rejects the bare `<|3|>` operator ("KTree / M-Tree is no longer supported"), so the query uses `<|3,COSINE|>`, the brute-force KNN form the error message recommends. It runs against the `entity_embedding` HNSW index in the embedded engine and returns the same cosine distance semantics as the recall engine's dense channel.
+  - Adding an alias is a read-modify-write of the entity's full `aliases` list via `UPDATE ... MERGE`; the card does not ask for a concurrent-safe alias append, and all ids/values are query parameters.
+  - There is no test that drives the close-margin INFO branch (the card lists five tests and none names it); the branch is exercised only by inspection. The "top two" comparison uses the two nearest rows regardless of `type`, because the card mentions same-type preference only for the exact-alias path.
