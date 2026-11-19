@@ -40,6 +40,7 @@ DEFINE FIELD appraisal ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD impulses ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD deviation_change ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD dominant_change ON emotion_event TYPE option<string>;
+DEFINE FIELD size ON emotion_event TYPE float DEFAULT 0;
 DEFINE INDEX emotion_event_at ON emotion_event FIELDS at;
 
 -- ============================================================================

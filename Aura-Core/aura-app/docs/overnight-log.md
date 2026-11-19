@@ -1921,3 +1921,27 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes.
 - **Do-not checks respected:** Did not reveal record ids, appraisal numbers or other people's message text in the phrase.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-26: E2 and E3 scenarios: own reply, causes, signatures differ
+- **Status:** DONE
+- **PRD:** emotion tests T7, T9, T14, T15
+- **Tier:** bulk
+- **Depends on:** W3-22, W3-23, W3-25
+- **Files changed:**
+  - `scripts/init_schema.surql` (added `size` field to `emotion_event` table — supervisor fix for W3-24)
+  - new `tests/scenarios/test_emotion_causes_embedded.py` (supervisor fix test)
+  - new `tests/scenarios/test_emotion_appraisal_embedded.py` (T7, T9, T14, T15 scenario tests)
+  - new `docs/metrics/e2e3.md` (T15 baseline with cosine similarity and date)
+- **Test result:** 508 passed (full suite: 502 prior + 6 new)
+- **What I did, step by step:**
+  1. **Supervisor fix for W3-24 (required first):** Added `DEFINE FIELD IF NOT EXISTS size ON emotion_event TYPE float DEFAULT 0;` to `scripts/init_schema.surql` next to the other `emotion_event` fields. The `appraise` method writes a `size` value (largest absolute deviation change) into `emotion_event`, and `_get_top_causes` sorts by it, but the table was SCHEMAFULL without a `size` field, so a real SurrealDB silently dropped it.
+  2. **Created `test_emotion_causes_embedded.py`:** Uses the runner's embedded SurrealDB with real schema. Writes three emotion_event rows through `EmotionEngine.appraise` (flag on) with events of different intensity, then asserts `get_current_state().top_causes` is ordered by size (largest first) and every returned cause has non-zero size.
+  3. **Created `test_emotion_appraisal_embedded.py`** with four scenario tests using a scripted L4 client (fake returning fixed appraisals per message):
+     - **T7 (own reply invariance):** Two runs with same user inputs but different Aura replies end in the same emotional state (within 1e-9). Verifies emotional state depends only on user input, not Aura's reply.
+     - **T9 (deviation change records):** 30-turn script with system events mixed in. All 30 turns produce emotion_event records. Verifies every turn with deviation change > 0.1 has a record (24 of 30 had large changes; all 30 have records).
+     - **T14 (failed appraisal):** A turn whose L4 appraisal call fails leaves the state unchanged except for physics decay over the elapsed simulated time. Simulates 1 hour passing with only `tick()` running; state matches physics decay exactly.
+     - **T15 (signature similarity):** Memory formed after failed tool event vs successful tool event. Cosine similarity on deviations (signature minus baseline) is -0.17 (well below 0.5 threshold). Written to `docs/metrics/e2e3.md` with date when `RECORD_BASELINE=1`.
+  4. **Ran full test suite** (508 passed) and with `RECORD_BASELINE=1` to generate `docs/metrics/e2e3.md`.
+- **Done when:** satisfied — the new tests pass, the full suite passes (508), and `docs/metrics/e2e3.md` exists with the T15 similarity (-0.1703) and date (2026-11-19).
+- **Do-not checks respected:** Did not change any table or threshold to make a test pass. The T9 test correctly reports 24/30 events with large changes rather than asserting all 30.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.
