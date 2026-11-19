@@ -1484,3 +1484,25 @@
   - The gate cache now stores a 4-tuple. The skipped-turn branch still accepts a 3-tuple (`cached[:3]` plus an absent fourth value), so an entry created before this change in the same process cannot break; entries created after the change are always 4-tuples.
   - When a real retrieval abstains, its cache entry carries the abstain renderer but no memories. I drop it on reuse rather than rendering a stale note, which is the literal reading of "when the gate skipped retrieval, never abstain". The cached entry still means "no memories found", so a following greeting has an empty memories block rather than retrying.
   - A dense or lexical channel *exception* is recorded as an empty list, so with no lexical hits and no dense hits the engine can abstain on that turn. The card does not say to suppress abstention on channel errors; I left it simple.
+
+## W3-08: Noise and abstention scenarios, and latency
+- **Status:** DONE
+- **PRD:** memory M3 gate ("noise and abstention probes pass"), 6.2 (fast path under 250 ms at p95), 8.3
+- **Tier:** bulk
+- **Files changed:** new `tests/scenarios/test_recall_m3_embedded.py`, new `docs/metrics/m3.md`
+- **Test result:** full suite passes (335 passed, 83 warnings); `tests/scenarios/test_recall_m3_embedded.py` 5 passed. The same module run once with `RECORD_BASELINE=1` wrote `docs/metrics/m3.md` (p50 17.742 ms, p95 19.797 ms over 50 calls and 200 seeded memories, date 2026-11-19).
+- **What I did:**
+  1. Added five tests that run scenarios through `tests.scenarios.runner.run(..., via="recall")` with the runner's in-memory embedded SurrealDB, the real schema and `HashedBagOfWordsEmbeddings`. Every test switches `recall_channels_enabled`, `recall_gate_enabled` and `recall_abstain_enabled` on with `monkeypatch`; no default is changed.
+  2. Noise: stores 30 unrelated memories plus `Mai's cat is called Pixel`, asks `what is my cat called?`, and checks that `Pixel` is in `packet.block_text("memories")`.
+  3. Lexical: a memory saying `parse_route is defined in src/aura/router.py` is found by `where is parse_route defined?`, again in the memories block.
+  4. Abstention: `what is my favourite mountain?` gives `packet.abstain is True` and exactly the W3-07 note line in the memories block; the cat question gives `abstain is False` and no note line.
+  5. Gate: a `thanks!` probe immediately after the cat probe has `trace.gate == "skipped"`, and its memories block contains `Pixel` and is byte-identical to the cat probe's block (the cached result, not retrieval).
+  6. Latency: creates exactly 200 retrievable memories with the runner's stub embeddings, then times 50 `engine.recall()` fast-path calls with `time.perf_counter` (cold-start and latent channels off, flags on). It computes p50 with `statistics.median` and p95 by linear interpolation and calls `write_baseline` on `docs/metrics/m3.md` with the p50, p95 and the date from `get_clock().now()`. The test asserts nothing about the measured numbers.
+- **"Done when" verified:** the new tests pass, the full suite passes (335 passed), and `docs/metrics/m3.md` exists with `p50_ms`, `p95_ms` and `date`.
+- **Do-not checks respected:** no flag default was changed; no threshold was tuned. If a scenario had failed I would have reported it instead of adjusting `recall_abstain_min_similarity`.
+- **Unsure about:**
+  - `ProbeResult` exposes only gold hits, character/token counts and a trace id, so the tests wrap `RecallEngine.recall` with a spy that keeps the real `ContextPacket` returned for each probe. `run` still drives everything; `runner.py` is unchanged.
+  - The runner's requests ask with `include_cold_start=True`, and cold-start candidates are deduplicated ahead of the memories block. With only the target memory stored, the target lands in the cold-start block and the memories block is empty (the gold hit still appears in `all_text`). The lexical, abstention and gate scenarios therefore store three later filler memories so the target falls out of cold start's three most recent memories and reaches the memories block. This is a runner/cold-start interaction, not a flag or threshold change.
+  - Latency seeds the 200 memories with direct `CREATE memory` statements (the runner's adapter and stub embeddings) rather than 200 `store_memory` turns, so exactly 200 non-ephemeral memories exist and the timed section contains only the 50 `recall()` calls.
+  - The card says to reuse `write_baseline`, which writes JSON, so `docs/metrics/m3.md` contains JSON-formatted text with an `.md` extension. It includes `card`, `date`, `calls`, `seeded_memories`, the three flags, `p50_ms`, `p95_ms`, `min_ms` and `max_ms`.
+  - I did not run the full suite with `RECORD_BASELINE=1`: the other recording tests would rewrite the already-committed `emotion_before.json`, `memory_before.json` and `emotion_after.json`. I ran the new module once with `RECORD_BASELINE=1` to write `m3.md`, then the full suite without it.
