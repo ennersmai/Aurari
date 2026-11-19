@@ -1959,6 +1959,130 @@ SurrealDB syntax checked on the installed embedded engine on 2026-11-20: `DEFINE
 ---
 
 
+### Wave 3: cards for E2 and E3 (events, appraisal, causes, the new state interface)
+
+Written by the supervisor on 2026-11-20 against the code after M4. E1 (physics v2) landed as W1-15. Everything new is behind `emotion_appraisal_enabled` (off): with it off, emotions change exactly as today, except that the keyword fallback is deleted (PRD 5.3 and T14 apply on both paths). Emotion PRD rules apply: time from the injected clock; the appraisal table in a data file; Aura's reply never reaches an appraisal; the 27 dimension names unchanged (`love, joy, interest, trust, fear, sadness, anger, surprise, disgust, awe, beauty, wonder, serenity, melancholy, nostalgia, empathy, gratitude, pride, shame, envy, compassion, curiosity, confusion, certainty, doubt, fascination, boredom`).
+
+Note found while carding: the self-critique influence in `coordinator.py` pushes `determination`, which is not one of the 27 dimensions. W3-23 replaces that call with an event.
+
+---
+
+**W3-19 Appraisal variables and the appraisal table**
+- **PRD:** emotion 5.2, 5.3, test T8
+- **Tier:** frontier (the table is behaviour)
+- **Files:** new `src/aura/models/appraisal.py`, new `src/aura/engines/emotion/appraisal_table.json`, new `src/aura/engines/emotion/appraisal.py`, new `tests/unit/test_appraisal_table.py`
+- **Change:**
+  1. `appraisal.py` (models): pydantic `Appraisal(congruence: float [-1,1] = 0, novelty: float [0,1] = 0, certainty: float [0,1] = 0.5, control: float [0,1] = 0.5, agency: Literal["self", "other", "circumstance"] = "circumstance", warmth: float [-1,1] = 0, beauty: float [0,1] = 0, intensity: float [0,1] = 0.5)` with field validators that clamp to range; `AppraisalEvent(kind: str, source: str, appraisal: Appraisal, person_id: str | None = None, venue: str | None = None, ref: str | None = None, user_state: dict[str, float] | None = None)`.
+  2. `appraisal_table.json`: a list of patterns, each `{"name", "when": {<variable>: [min, max] or "<agency value>"}, "impulse": {<dimension>: weight}}`, covering every row of PRD 5.3 (high novelty; high novelty with positive congruence and high beauty; positive congruence with agency self; positive congruence, agency other, positive warmth; negative congruence, agency other, high control; negative congruence, low control, plus fear when certainty is low as its own row; negative congruence, agency self; low novelty and low intensity; low certainty; negative warmth from another is not in the table and is left out). Thresholds: "high" means at least 0.6, "low" at most 0.3, "positive" above 0.2, "negative" below -0.2. The "repeated" part of boredom and the "positive relationship" part of empathy need habituation (E3a) and relationships (E5); leave them out and say so in a `"note"` field on those rows. The empathy row matches on the event's `user_state` showing distress (sadness or fear at least 0.5) instead.
+  3. `appraisal.py` (engine): `def load_table(path=None) -> list[Pattern]` (validates every dimension name against `EmotionVector.model_fields` and raises on an unknown one); `def impulses_for(appraisal, user_state=None, table=None) -> dict[str, float]`: sum the impulses of every matching row, then multiply by `appraisal.intensity`; values capped at 1.
+- **Tests:** T8: for each row, a hand-built appraisal that matches it produces that row's expected dominant dimension (largest impulse); an unknown dimension in a table file raises at load; intensity 0 gives no impulse; an appraisal matching nothing gives `{}`.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** touch the engine or the physics. Do not invent rows beyond PRD 5.3.
+
+---
+
+**W3-20 `appraise` and cause records (flagged)**
+- **PRD:** emotion 5.3 (impulse through coupling and inertia), 5.7 (causes), 9 (`appraise` is the only way state changes), T9
+- **Tier:** frontier
+- **Depends on:** W3-19
+- **Files:** `src/aura/engines/emotion/engine.py`, `scripts/init_schema.surql` (new table), `src/aura/config.py`, new `tests/unit/test_emotion_appraise.py`
+- **Change:**
+  1. Config: `emotion_appraisal_enabled: bool = False` (`AURA_EMOTION_APPRAISAL_ENABLED`).
+  2. Schema: `DEFINE TABLE IF NOT EXISTS emotion_event SCHEMAFULL` with `at` datetime, `kind` string, `source` string, `ref` option<string>, `person_id` option<string>, `venue` option<string>, `appraisal` object FLEXIBLE, `impulses` object FLEXIBLE, `deviation_change` object FLEXIBLE (per dimension, after physics), `dominant_change` option<string>; index on `at`.
+  3. `EmotionEngine.appraise(event: AppraisalEvent) -> EmotionState`: `impulses_for(...)`; if empty, log at DEBUG and return the current state without writing; otherwise apply through the same physics call `apply_influence` uses today (coupling and inertia included), clamp as today, compute the per-dimension change in deviation from baseline, write one `emotion_event` (time from `get_clock()`), broadcast as today, and return the state. A database failure while writing the record is logged and does not undo the state change.
+- **Tests:** a positive-congruence, agency-self event raises joy and writes one `emotion_event` with the appraisal, the impulses and the deviation change; an event matching no row writes nothing and changes nothing; T9: over a scripted sequence of ten events, every dimension whose deviation changed by more than 0.1 in a step has an `emotion_event` for that step (use a fake database that records writes).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** remove `apply_influence` yet (W3-23 moves its callers). Do not change the physics.
+
+---
+
+**W3-21 The L4 appraisal call reads the user's message only**
+- **PRD:** emotion 5.2 (one model call returns the appraisal and an estimate of the user's state; Aura's reply is not input), finding E4, test T7
+- **Tier:** frontier
+- **Depends on:** W3-19
+- **Files:** `src/aura/llm/layers.py` (new `l4_appraise_message`), new `tests/unit/test_l4_appraise.py`
+- **Change:** `async def l4_appraise_message(self, user_input: str, recent_history: list[dict[str, str]], speaker: str) -> tuple[Appraisal, dict[str, float]]`: one call with the existing L4 model and settings, temperature as the current L4 call uses. The prompt explains the eight variables in one line each (PRD 5.2), gives the last four turns of history for context with Aura's turns included only as context labelled as such, and asks for JSON `{"appraisal": {...}, "user_state": {<dimension>: 0..1}}` judged from the user's latest message. It must not receive the reply Aura is about to give or has just given: the method has no parameter for it. Parse the first JSON object (as W3-13 does), validate with `Appraisal`, keep only known dimensions in `user_state`. Raise on failure; the caller decides.
+- **Tests:** with a fake client: a valid reply parses; a fenced reply parses; unknown `user_state` keys are dropped; invalid JSON raises; T7: the request sent to the client is identical whatever reply text Aura produced in the turn (build two turns that differ only in Aura's latest reply, not yet in the history passed, and assert the prompts are equal).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change or remove `l4_emotion_analysis` here (W3-22 stops calling it).
+
+---
+
+**W3-22 Messages are appraised; the keyword fallback is deleted**
+- **PRD:** emotion 5.2, 5.3 ("the keyword fallback (E5) is deleted"), T14
+- **Tier:** frontier
+- **Depends on:** W3-20, W3-21
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_post_response_chain`, `_apply_l4_emotion_analysis`, `_apply_conversation_influence_fallback`), `tests/unit/test_turn_*` only where they assert the fallback, new `tests/unit/test_message_appraisal.py`
+- **Change:**
+  1. Delete `_apply_conversation_influence_fallback` and both calls to it. When `_apply_l4_emotion_analysis` gets nothing after its retries, it logs a warning and applies nothing (T14 on the old path).
+  2. When `emotion_appraisal_enabled` is on, `_post_response_chain` calls a new `_appraise_message(user_input, conversation_history, venue, speaker)` instead of `_apply_l4_emotion_analysis`: `l4_appraise_message` with the history up to and including the user's message (not Aura's reply), then `emotion_engine.appraise(AppraisalEvent(kind="message", source="conversation", appraisal=..., user_state=..., person_id=speaker, venue=venue))`. On failure: one warning log, no impulse, no fallback. No retry loop (the old one retried a call whose output was then never checked for sanity).
+- **Tests:** T14 on both paths: a failing L4 call produces no state change and a warning, and no keyword-based change happens for a reply full of "architecture" and "blueprint"; with the flag on, a message is appraised and `appraise` receives `person_id` and `venue`; the reply text never reaches `l4_appraise_message` (assert on the call arguments). Update only the characterisation assertions that referred to the fallback, each with the docstring line "changed on purpose by W3-22 (keyword fallback removed)".
+- **Done when:** the new tests pass, the full suite passes, and `grep -rn "_apply_conversation_influence_fallback" src` prints nothing.
+- **Do not:** change the L4 model settings or `l4_emotion_analysis` itself.
+
+---
+
+**W3-23 System events are appraised, not pushed as raw deltas (flagged)**
+- **PRD:** emotion 5.1 (events from the whole system), 5.2 (computed appraisal for system events), 9 (`apply_influence` removed from the public interface; callers post events)
+- **Tier:** bulk
+- **Depends on:** W3-20
+- **Files:** `src/aura/orchestrator/coordinator.py` (the self-critique influence near `critique_buffer`, the memory-storage failure influence), `src/aura/orchestrator/tool_loop.py` (only to report results; see step 3), new `src/aura/engines/emotion/system_events.py`, new `tests/unit/test_system_appraisal.py`
+- **Change:**
+  1. `system_events.py`: functions that return an `AppraisalEvent` with computed values, each documented in one line: `memory_write_failed()` (congruence -0.6, control 0.3, certainty 0.8, agency circumstance, intensity 0.5); `self_critique_received()` (congruence -0.2, agency self, certainty 0.7, control 0.8, intensity 0.3); `tool_succeeded(tool)` (congruence 0.5, agency self, certainty 0.8, control 0.8, intensity 0.3); `tool_failed(tool, retryable: bool)` (congruence -0.5, agency circumstance, certainty 0.6, control 0.7 if retryable else 0.2, intensity 0.4).
+  2. When `emotion_appraisal_enabled` is on, the two coordinator call sites call `emotion_engine.appraise(...)` with these events instead of `apply_influence`. With the flag off they stay as they are.
+  3. `run_tool_loop` gains an optional `on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None`, called once per executed call with the tool name and success, when the executor reports per-call success (if it only returns joined text, report success when the result block does not start with an error marker the executor already uses; read `execute_and_feedback` and say which in the log). The coordinator passes a callback that appraises `tool_succeeded` / `tool_failed` when the flag is on.
+- **Tests:** each computed event produces its expected dominant dimension through the real table (failure: sadness or confusion; success: joy or pride); with the flag on, a memory write failure calls `appraise` and not `apply_influence`; with it off, today's call happens (ablation); the tool loop calls `on_tool_result` once per call.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** remove `apply_influence` or the `/emotion/influence` API route (the route is a developer tool; leave it).
+
+---
+
+**W3-24 The state interface: deviation, baseline, causes, `explain`**
+- **PRD:** emotion 9 (`EmotionState` gains `deviation`, `baseline`, `mood`, `top_causes`; `explain`; websocket payload), milestone E3
+- **Tier:** bulk
+- **Depends on:** W3-20
+- **Files:** `src/aura/models/emotion.py` (`EmotionState`, new `EmotionCause`), `src/aura/engines/emotion/engine.py` (`get_current_state`, new `get_state`, new `explain`, `_broadcast_state_update`), new `tests/unit/test_emotion_state_interface.py`
+- **Change:**
+  1. `EmotionCause(at: datetime, kind: str, source: str, ref: str | None, person_id: str | None, dominant_change: str | None, size: float)` where `size` is the largest absolute deviation change of that event.
+  2. `EmotionState` gains optional `deviation: dict[str, float] | None`, `baseline: dict[str, float] | None`, `mood: dict[str, float] | None` (always `None` until E4) and `top_causes: list[EmotionCause] = []`.
+  3. `get_current_state` fills `deviation` (vector minus baseline), `baseline`, and `top_causes` (the three largest `emotion_event`s of the last hour by `size`, newest first among equals; empty when there are none or the query fails).
+  4. `get_state(person_id: str | None = None)` returns `get_current_state()` (per-person state is E5; say so). `explain(since: datetime | None = None) -> list[EmotionCause]` returns the events since then (default: the last hour), newest first.
+  5. The websocket payload built in `_broadcast_state_update` gains `deviation`, `baseline`, `mood` and `top_causes` (as plain JSON), keeping every existing field.
+- **Tests:** deviation equals vector minus baseline; `top_causes` orders and caps at three; `explain` filters by time with the fake clock; the broadcast payload keeps its old keys and has the new ones.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change the frontend. Do not remove any existing field.
+
+---
+
+**W3-25 The prompt names the main cause**
+- **PRD:** emotion 5.7 ("the emotion block in her prompt names the main cause alongside the state"), E3
+- **Tier:** bulk
+- **Depends on:** W3-24
+- **Files:** `src/aura/llm/layers.py` (`_build_l3_system_prompt`, the `<emotional_state>` block), new `src/aura/engines/emotion/describe.py`, new `tests/unit/test_emotion_prompt_cause.py`
+- **Change:** `describe.py`: `def cause_phrase(cause: EmotionCause, now: datetime) -> str`, a short plain phrase such as `"since a tool failed 12 minutes ago"` or `"since a message from discord_42 3 minutes ago"`, built from `kind`, `source`, `person_id` and the age (minutes under an hour, hours otherwise). When the state has at least one top cause, the `<emotional_state>` block gains one line `  <cause>{phrase for the first cause}</cause>` after `<dominant>`. Without causes, the block is byte-for-byte as today.
+- **Tests:** phrases for each kind used by W3-22 and W3-23; the block with a cause; the block without causes is unchanged (compare with today's exact string).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** reveal record ids, appraisal numbers or other people's message text in the phrase.
+
+---
+
+**W3-26 E2 and E3 scenarios: own reply, causes, signatures differ**
+- **PRD:** emotion tests T7, T9, T14, T15
+- **Tier:** bulk
+- **Depends on:** W3-22, W3-23, W3-25
+- **Files:** new `tests/scenarios/test_emotion_appraisal_embedded.py`, new `docs/metrics/e2e3.md`. Read `tests/scenarios/runner.py`.
+- **Change:** scenarios through the runner with `emotion_appraisal_enabled` on and a scripted L4 client (a fake returning fixed appraisals per message, so no model is called):
+  - **T7:** two runs that differ only in Aura's replies end in the same emotional state (within 1e-9).
+  - **T9:** over a 30-turn script with system events mixed in, every deviation change above 0.1 has an `emotion_event` record.
+  - **T14:** a turn whose appraisal call fails leaves the state unchanged except for physics decay over the elapsed simulated time.
+  - **T15:** a memory formed right after a failed tool event and one formed right after a successful one have signatures whose cosine similarity, computed on deviations (signature minus baseline), is below 0.5. Write the measured similarity with the date to `docs/metrics/e2e3.md` only when `RECORD_BASELINE=1` (use `write_baseline`).
+- **Tests:** these are the tests. Run the full suite, then once with `RECORD_BASELINE=1`, and commit `docs/metrics/e2e3.md`.
+- **Done when:** the new tests pass, the full suite passes, and `docs/metrics/e2e3.md` exists with the T15 similarity and the date.
+- **Do not:** change the table or any threshold to make a test pass; report failures instead.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
