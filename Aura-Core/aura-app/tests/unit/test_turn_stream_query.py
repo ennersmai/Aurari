@@ -287,10 +287,17 @@ async def test_f_five_rounds_all_tool_calls_max_rounds_suffix(turn_orchestrator)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_g_forced_mode_seeds_loop(turn_orchestrator):
-    """Forced-mode seeding; changed on purpose by W2-33 (G1 single loop)."""
+    """Forced-mode seeding; changed on purpose by W2-33 (G1 single loop).
+
+    changed on purpose by W2-38 (G1, keyword rule removed)
+    """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
-        return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
+        return_value={
+            "intent": "TOOL_USE",
+            "target_action": "skill:x",
+            "routing_method": "vector_search",
+        }
     )
     orch.learning_engine.get_skill = AsyncMock(
         return_value=SimpleNamespace(name="test_skill")
@@ -322,10 +329,17 @@ async def test_g_forced_mode_seeds_loop(turn_orchestrator):
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_h_forced_mode_no_raw_tool_calls_runs_plain_loop(turn_orchestrator):
-    """Forced-mode fallback; changed on purpose by W2-33 (G1 single loop)."""
+    """Forced-mode fallback; changed on purpose by W2-33 (G1 single loop).
+
+    changed on purpose by W2-38 (G1, keyword rule removed)
+    """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
-        return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
+        return_value={
+            "intent": "TOOL_USE",
+            "target_action": "skill:x",
+            "routing_method": "vector_search",
+        }
     )
     orch.learning_engine.get_skill = AsyncMock(
         return_value=SimpleNamespace(name="test_skill")
@@ -467,10 +481,16 @@ async def test_w2_06_forced_tool_by_name_lookup_streaming(turn_orchestrator):
     user_input carries the seed results.
 
     changed on purpose by W2-33 (G1 single loop)
+
+    changed on purpose by W2-38 (G1, keyword rule removed)
     """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
-        return_value={"intent": "TOOL_USE", "detected_tool": "web_search"}
+        return_value={
+            "intent": "TOOL_USE",
+            "detected_tool": "web_search",
+            "routing_method": "vector_search",
+        }
     )
     # No target_skill_id path: get_skill returns None.
     orch.learning_engine.get_skill = AsyncMock(return_value=None)

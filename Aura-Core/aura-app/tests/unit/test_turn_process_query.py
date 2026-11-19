@@ -387,10 +387,11 @@ async def test_j_tool_calls_every_round_stops_after_max_rounds(turn_orchestrator
 
 
 # ---------------------------------------------------------------------------
-# (k) keyword fallback: L1 CHAT + "weather" -> TOOL_USE, no forced mode
+# (k) "weather" stays chat: the keyword rule is gone (W2-38)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_k_keyword_fallback_weather_routes_as_tool_use_no_forced_mode(turn_orchestrator):
+async def test_k_weather_stays_chat(turn_orchestrator):
+    """changed on purpose by W2-38 (G1, keyword rule removed)"""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.llm_layers.l3_synthesis = AsyncMock(return_value="weather response")
@@ -398,11 +399,37 @@ async def test_k_keyword_fallback_weather_routes_as_tool_use_no_forced_mode(turn
 
     await orch.process_query("what is the weather today", user_id="u1")
 
-    # The keyword fallback rewrote intent to TOOL_USE (the [MAG] path runs),
-    # but "weather" does not set detected_tool, so there is no forced mode:
-    # l3_tool_call_mode is not called, and a normal L3 synthesis runs.
+    # W2-38 removed the keyword fallback: "weather" no longer rewrites a CHAT
+    # intent to TOOL_USE, so the [MAG] forced-tool path is never entered and no
+    # forced tool call is made.
+    orch.llm_layers.l3_tool_call_mode.assert_not_awaited()
+    orch.learning_engine.get_skill.assert_not_awaited()
+    for call in orch.learning_engine.db.query.await_args_list:
+        assert "skill" not in call.args[0].lower()
+    orch.llm_layers.l3_synthesis.assert_awaited_once()
+    await _drain()
+
+
+# ---------------------------------------------------------------------------
+# (W2-38) L1 TOOL_USE without a trigger match does not force a tool call
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_llm_tool_use_without_trigger_does_not_force(turn_orchestrator):
+    """changed on purpose by W2-38 (G1, keyword rule removed)"""
+    orch = turn_orchestrator
+    orch.llm_layers.l1_classify_intent = AsyncMock(
+        return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
+    )
+    orch.llm_layers.l3_synthesis = AsyncMock(return_value="final answer")
+    orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
+
+    result = await orch.process_query("hello", user_id="u1")
+
+    # Without routing_method == "vector_search" the forced seed is skipped:
+    # only the trigger-phrase fast lane may force a tool call.
     orch.llm_layers.l3_tool_call_mode.assert_not_awaited()
     orch.llm_layers.l3_synthesis.assert_awaited_once()
+    assert result == "final answer"
     await _drain()
 
 
@@ -411,9 +438,14 @@ async def test_k_keyword_fallback_weather_routes_as_tool_use_no_forced_mode(turn
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
 async def test_l_forced_seed_target_skill_id_seeds_tool_loop(turn_orchestrator):
+    """changed on purpose by W2-38 (G1, keyword rule removed)"""
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
-        return_value={"intent": "TOOL_USE", "target_action": "skill:x"}
+        return_value={
+            "intent": "TOOL_USE",
+            "target_action": "skill:x",
+            "routing_method": "vector_search",
+        }
     )
     # get_skill returns an object with a .name attribute.
     orch.learning_engine.get_skill = AsyncMock(
@@ -531,10 +563,16 @@ async def test_w2_06_forced_tool_by_name_lookup(turn_orchestrator):
     record-id hit), the first ``db.query`` returns a skill row, and
     ``db.select`` returns its definition; forced tool call mode is engaged and
     ``l3_tool_call_mode`` is called with that definition as JSON.
+
+    changed on purpose by W2-38 (G1, keyword rule removed)
     """
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(
-        return_value={"intent": "TOOL_USE", "detected_tool": "web_search"}
+        return_value={
+            "intent": "TOOL_USE",
+            "detected_tool": "web_search",
+            "routing_method": "vector_search",
+        }
     )
     # No target_skill_id path: get_skill returns None.
     orch.learning_engine.get_skill = AsyncMock(return_value=None)

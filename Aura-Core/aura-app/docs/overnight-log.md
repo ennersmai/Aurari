@@ -1335,3 +1335,20 @@
   - The fallback catches any `Exception`, not only HTTP/provider errors, because the provider layers already map transport errors to plain exceptions.
   - In the streaming path a provider error that arrives after some text was yielded would, on fallback, repeat that text. The likely trigger (400 "tools not supported") fails before the stream starts, and the card asks for a fallback for that round, so I kept the simple behaviour. Only the blocking fallback has a dedicated test; the streaming path has the same guard but no error test.
   - A `NativeCalls` marker with an empty list is treated as "no calls" and ends the loop, matching the old empty-extraction branch; the marker is never emitted as visible delta text.
+
+## W2-38: Remove the keyword intent rule; forced mode only from the trigger fast lane
+- **Status:** DONE
+- **Files changed:** `src/aura/orchestrator/coordinator.py` (`_classify_intent`, `_resolve_forced_tool`, stage 4 comment), `src/aura/llm/layers.py` (`l1_classify_intent` prompt, `<AGENT_ACTION_RULE>`), `tests/unit/test_turn_process_query.py`, `tests/unit/test_turn_stream_query.py`, `tests/unit/test_layers_packet.py`, `tests/unit/test_recall_render.py`
+- **Test result:** full suite passes (261 passed, 81 warnings); `test_turn_process_query.py` + `test_turn_stream_query.py` 43 passed
+- **What I did:**
+  1. Deleted the keyword `FALLBACK` block from `_classify_intent` (`tool_keywords` and the TOOL_USE rewrite); the L1 call, its telemetry and the TEACHING fast lane are unchanged. Also dropped "keyword fallback" from the method docstring and the stage 4 comment, which described the deleted block.
+  2. Deleted the `IMPORTANT: If the user mentions "search", ...` line from the L1 prompt; the vector-search fast lane (`semantic_trigger`, `routing_method: "vector_search"`) is untouched.
+  3. `_resolve_forced_tool` now returns `(False, None)` at the start unless `intent_data.get("routing_method") == "vector_search"`, so only a learned trigger-phrase match reaches the existing lookup/forced-seed code.
+  4. Replaced the keyword sentence in `<AGENT_ACTION_RULE>` with `If answering needs information or an action that one of the available tools provides, you MUST NOT use internal knowledge.`; the rest of the block is unchanged.
+  5. Tests: renamed process (k) to `test_k_weather_stays_chat` with the W2-38 docstring line and asserted the `[MAG]` path is not taken (`l3_tool_call_mode` not awaited, `get_skill` not awaited, no `db.query` containing `skill`); added `"routing_method": "vector_search"` to process (l), process W2-06, stream (g), stream (h) and stream W2-06 so they still exercise the forced seed; added `test_llm_tool_use_without_trigger_does_not_force` (L1 TOOL_USE without `routing_method` -> no `l3_tool_call_mode`, one L3 synthesis).
+- **"Done when" verified:**
+  - Full suite passes.
+  - `grep -n "tool_keywords\|Keyword-based TOOL_USE" src/aura/orchestrator/coordinator.py` prints nothing.
+  - `grep -n "If the user mentions \"search\"\|keywords like 'search'" src/aura/llm/layers.py` prints nothing.
+- **Do not checks respected:** Did not remove `semantic_trigger` or the vector fast lane; left `_resolve_forced_tool`'s lookup code and `l3_tool_call_mode` in place; did not touch the TEACHING lane.
+- **Unsure about:** The full suite initially failed 4 golden-prompt assertions in `tests/unit/test_layers_packet.py` and `tests/unit/test_recall_render.py` because their `GOLDEN_PROMPT_*` strings embed the old `<AGENT_ACTION_RULE>` sentence. Since those failures are caused directly by this card's prompt change and the card requires the full suite to pass, I updated only those sentence lines (no other golden content changed). Also, item 1's docstring/comment cleanup and these two test files are outside the card's explicit Files list; flagging in case the review wants them reverted.

@@ -272,7 +272,7 @@ GOLDEN_PROMPT_MASTERY_0_8 = """<system_protocol>
 </relevant_knowledge>
 
 <AGENT_ACTION_RULE>
-CRITICAL OVERRULE: If the user query contains keywords like 'search', 'current price', 'read file', 'source code', 'inspect', or requests information that requires tool access, you MUST NOT use internal knowledge.
+CRITICAL OVERRULE: If answering needs information or an action that one of the available tools provides, you MUST NOT use internal knowledge.
 You MUST instead output the following JSON block first. The system will then execute it and give you the real data.
 
 YOUR SOLE OUTPUT MUST BE THE JSON BLOCK WHEN A TOOL IS NEEDED.
@@ -317,7 +317,7 @@ GOLDEN_PROMPT_MASTERY_0_5 = """<system_protocol>
 </relevant_knowledge>
 
 <AGENT_ACTION_RULE>
-CRITICAL OVERRULE: If the user query contains keywords like 'search', 'current price', 'read file', 'source code', 'inspect', or requests information that requires tool access, you MUST NOT use internal knowledge.
+CRITICAL OVERRULE: If answering needs information or an action that one of the available tools provides, you MUST NOT use internal knowledge.
 You MUST instead output the following JSON block first. The system will then execute it and give you the real data.
 
 YOUR SOLE OUTPUT MUST BE THE JSON BLOCK WHEN A TOOL IS NEEDED.

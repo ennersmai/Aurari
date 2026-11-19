@@ -338,8 +338,6 @@ OUTPUT JSON (REQUIRED FORMAT - NO OTHER TEXT):
   "detected_tool": "web_search" | "read_file" | "list_directory" | "filesystem" | null,
   "target_action": "skill_id_if_known" | null
 }}
-
-IMPORTANT: If the user mentions "search", "stock", "read", "file", "code", "filesystem", "list directory", classify as TOOL_USE.
 """
         # We use l5_structure logic but with the L1 model for speed
         # Read L1 model from settings directly (hot-swappable, stack-aware)
@@ -1142,7 +1140,7 @@ The marker MUST use the EXACT goal_id from the suggestions above.
 
         # 6.5. Final Agent Instruction (Non-Negotiable Tool Calls)
         prompt += """<AGENT_ACTION_RULE>
-CRITICAL OVERRULE: If the user query contains keywords like 'search', 'current price', 'read file', 'source code', 'inspect', or requests information that requires tool access, you MUST NOT use internal knowledge.
+CRITICAL OVERRULE: If answering needs information or an action that one of the available tools provides, you MUST NOT use internal knowledge.
 You MUST instead output the following JSON block first. The system will then execute it and give you the real data.
 
 YOUR SOLE OUTPUT MUST BE THE JSON BLOCK WHEN A TOOL IS NEEDED.

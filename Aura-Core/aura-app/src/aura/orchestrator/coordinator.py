@@ -740,8 +740,8 @@ Constraints:
         self, user_input: str, user_id: str, stream: bool
     ) -> tuple[dict[str, Any], str, str | None]:
         """
-        L1 intent classification, telemetry, keyword fallback, and the
-        teaching fast lane. Returns ``(intent_data, intent, teaching_reply)``.
+        L1 intent classification, telemetry, and the teaching fast lane.
+        Returns ``(intent_data, intent, teaching_reply)``.
         ``teaching_reply`` is the teaching string when L1 routes to TEACHING
         (and ``log_experience`` has been called), otherwise ``None``.
         ``stream`` controls only whether the L1 trace payload carries
@@ -760,21 +760,6 @@ Constraints:
         if stream:
             trace_payload["mode"] = "stream"
         self._publish_trace("L1", "intent_classified", trace_payload)
-
-        # FALLBACK: If intent classification failed or returned empty, try keyword-based detection
-        if not intent_data or intent == "CHAT":
-            # Check for tool-use keywords as fallback
-            tool_keywords = ["search", "stock", "price", "weather", "current", "latest", "now", "today", "find", "look up"]
-            user_lower = user_input.lower()
-            if any(keyword in user_lower for keyword in tool_keywords):
-                self.logger.info(f"[MAG] Fallback: Keyword-based TOOL_USE detection triggered")
-                intent = "TOOL_USE"
-                intent_data["intent"] = "TOOL_USE"
-                intent_data["confidence"] = 0.7
-                intent_data["needs_agentic_rag"] = True
-                # Try to detect which tool
-                if "search" in user_lower or "stock" in user_lower or "price" in user_lower:
-                    intent_data["detected_tool"] = "web_search"
 
         # 1. TEACHING FAST LANE (Existing)
         if intent == "TEACHING":
@@ -808,6 +793,9 @@ Constraints:
         queries), then falls back to loading the tool definition from a file
         and registering it via ``ingest_local_tool_module``.
         """
+        if intent_data.get("routing_method") != "vector_search":
+            return False, None
+
         target_skill_id = intent_data.get("target_action")
         # L1/L5 sometimes returns a descriptive label here (e.g. "stock_price_analysis")
         # instead of an actual Surreal record id. Only treat it as an id if it looks like one.
@@ -1557,7 +1545,7 @@ Constraints:
                 yield TurnEvent("done", reply)
             return
 
-        # Stage 4: L1 intent classification, telemetry, keyword fallback, teaching lane.
+        # Stage 4: L1 intent classification, telemetry, teaching lane.
         intent_data, intent, teaching_reply = await self._classify_intent(
             user_input, user_id, stream=stream
         )
