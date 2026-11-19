@@ -581,6 +581,21 @@ class Settings(BaseSettings):
         description="Number of Recall Engine traces to keep in memory for the "
                     "GET /recall/trace/{turn_id} endpoint (PRD 6.6).",
     )
+    recall_dense_k: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_DENSE_K",
+        description="Number of candidates the dense vector channel retrieves.",
+    )
+    recall_dense_ef: int = Field(
+        default=40,
+        validation_alias="AURA_RECALL_DENSE_EF",
+        description="HNSW search breadth used by the dense vector channel.",
+    )
+    recall_lexical_k: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_LEXICAL_K",
+        description="Number of candidates the lexical BM25 channel retrieves.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(

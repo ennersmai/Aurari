@@ -1363,3 +1363,19 @@
   - The embedded engine (surrealdb 3.0.0) accepts `OVERWRITE` on both the analyzer and the index, so `IF NOT EXISTS` was not needed.
   - "Applying the schema file twice does not raise" is tested two ways because the runner's `_apply_surql_file` deliberately swallows errors (as the app does) and the pre-existing `DEFINE TABLE`/`DEFINE FIELD` lines are not idempotent. Applying the whole file again through that helper therefore cannot raise by construction; the meaningful check is the strict double-apply of just the two new `OVERWRITE` definitions, which is also asserted.
   - The card's query selects `id` and `score` but not `content`, so the test records the ids returned by the three creates and compares against the first row's id rather than adding `content` to the query.
+
+## W3-02: Dense and lexical candidate channels
+- **Status:** DONE
+- **Files changed:** `src/aura/engines/recall/channels.py` (new), `src/aura/config.py`, new `tests/scenarios/test_recall_channels_embedded.py`
+- **Test result:** full suite passes (271 passed, 81 warnings); `tests/scenarios/test_recall_channels_embedded.py` 6 passed
+- **What I did:**
+  1. Added `recall_dense_k` (20), `recall_dense_ef` (40) and `recall_lexical_k` (20) to `config.py` immediately after the other `recall_*` fields, each a `Field` with a `AURA_RECALL_*` validation alias and a one-line description.
+  2. Created `channels.py` with the `ChannelHit(memory_id: str, rank: int, score: float)` dataclass (0-based rank) and `dense_channel` / `lexical_channel`. Both build the same filter as `MemoryManager.retrieve_memories`: `deprecated = false AND ephemeral = false`, `user_id = $user_id` when a user is given, and for a non-global namespace `(namespace = $ns OR namespace = "global" OR namespace IS NONE)`. Every value is a query parameter except the dense channel's `k`/`ef` (the SurrealDB KNN operator needs them inline as ints).
+  3. Dense selects `vector::distance::knn() AS distance` with `embedding <|k,ef|> $vec` and `ORDER BY distance`, returning `score = 1 - distance`. Lexical uses `content @1,OR@ $text`, `search::score(1) AS score`, `ORDER BY score DESC LIMIT $k`. Empty/whitespace text and a `None`/empty embedding return `[]` before any query; database errors are not caught.
+  4. Tests use the embedded engine through `EmbeddedSurrealDB` (real schema) and the runner's `HashedBagOfWordsEmbeddings`: dense nearest-first ordering and rank/score shape; lexical by `parse_route` and by the name `Mai`; `user_id` exclusion for another user in both channels; deprecated memories absent from both; empty input returns `[]` and performs no query (a failing DB stand-in proves this).
+- **"Done when" verified:** New tests pass and the full suite passes (271 passed).
+- **Do not checks respected:** Did not wire the channels into the engine (W3-05) and did not change `MemoryManager`.
+- **Unsure about:**
+  - The card gives the dense query without a `LIMIT`, relying on the KNN operator's `k` to bound the results; I kept it exactly that way. The embedded engine returned at most `k` rows in testing.
+  - The dense `k`/`ef` are the only interpolated values in either query, because SurrealDB's `<|k,ef|>` syntax requires literals; all filters, the vector, the text and the lexical limit are parameters.
+  - I treated whitespace-only lexical text as empty (`[]` with no query), the same way `retrieve_memories` treats a blank query; the card says "empty `text`" without spelling that out.
