@@ -7,7 +7,7 @@ Coordinates all engines, handles conflicts, maintains coherence.
 import json
 import logging
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
@@ -23,6 +23,7 @@ from aura.engines.learning.engine import LearningEngine
 from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
+from aura.executor.tool_registry import get_tool_registry
 from aura.llm.layers import LLMLayers, SynthesisContext
 from aura.models.emotion import EmotionInfluence, EmotionState
 from aura.models.goal import GoalContext, Goal
@@ -53,6 +54,7 @@ class TurnContext:
     latent_intuition_xml: str | None
     synthesis_context: SynthesisContext
     packet: ContextPacket | None = None
+    offered_tools: list = field(default_factory=list)
 
 
 @dataclass
@@ -1379,6 +1381,7 @@ Constraints:
                 goal_context=ctx.goal_context,
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
+                offered_tools=ctx.offered_tools,
             )
 
             round_response = await self.llm_layers.l3_synthesis(
@@ -1456,6 +1459,7 @@ Constraints:
                 goal_context=ctx.goal_context,
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
+                offered_tools=ctx.offered_tools,
             )
 
             round_response = ""
@@ -1555,6 +1559,14 @@ Constraints:
 
         # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
         ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=stream)
+        # Stage 6.5: select the tools to offer the model this turn (W2-35).
+        try:
+            ctx.offered_tools = await get_tool_registry().select_tools(
+                user_input, requester_role=requester_role
+            )
+        except Exception as e:
+            self.logger.warning(f"Tool selection failed (non-critical): {e}")
+            ctx.offered_tools = []
 
         # Stage 7: cache the system prompt for debugging (before synthesis).
         await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)

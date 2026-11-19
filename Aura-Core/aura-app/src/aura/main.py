@@ -48,6 +48,7 @@ from aura.engines.reflection.engine import ReflectionEngine
 from aura.llm.layers import LLMLayers
 from aura.llm.unified_provider import UnifiedLLMClient
 from aura.executor.tool_executor import ToolExecutor
+from aura.executor.tool_registry import get_tool_registry
 from aura.orchestrator.coordinator import Orchestrator
 from aura.orchestrator.message_bus import MessageBus
 
@@ -170,6 +171,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await _apply_surql_file(db, surql_file, label)
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{label}] loader failed (non-fatal): {e}")
+
+    # Load every tool into the registry now that the database is connected and
+    # the skill rows above have been registered (W2-35).
+    try:
+        await get_tool_registry().refresh(db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Tool registry refresh failed (non-fatal): {e}")
 
     # Initialize message bus
     message_bus = MessageBus()

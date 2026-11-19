@@ -38,6 +38,7 @@ class SynthesisContext:
         cold_start_xml: str | None = None,
         latent_intuition_xml: str | None = None,
         packet: "ContextPacket | None" = None,
+        offered_tools: list | None = None,
     ):
         """Initialize synthesis context."""
         self.user_input = user_input
@@ -52,6 +53,7 @@ class SynthesisContext:
         self.cold_start_xml = cold_start_xml
         self.latent_intuition_xml = latent_intuition_xml
         self.packet = packet
+        self.offered_tools = offered_tools
 
 
 class LLMLayers:
@@ -1124,6 +1126,15 @@ The marker MUST use the EXACT goal_id from the suggestions above.
   <instruction>Adjust your response to address this critique.</instruction>
 </self_correction>
 """
+
+        # 6.4. Tools offered to the model for this turn (W2-35)
+        if context.offered_tools:
+            prompt += "<available_tools>\n"
+            for tool in context.offered_tools:
+                prompt += f'  <tool name="{tool.name}" risk="{tool.risk}">{tool.description}\n'
+                prompt += f'    <input_schema>{json.dumps(tool.input_schema, separators=(",", ":"))}</input_schema>\n'
+                prompt += "  </tool>\n"
+            prompt += "</available_tools>\n"
 
         # 6.5. Final Agent Instruction (Non-Negotiable Tool Calls)
         prompt += """<AGENT_ACTION_RULE>

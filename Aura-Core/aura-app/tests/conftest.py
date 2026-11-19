@@ -438,4 +438,16 @@ def turn_orchestrator(monkeypatch):
     )
     orch._fake_recall_engine = fake_recall_engine
 
+    # --- tool registry (W2-35) --------------------------------------------
+    # ``_turn_pipeline`` calls ``get_tool_registry().select_tools(...)`` after
+    # gathering context. The fake returns no tools by default; tests can
+    # configure or assert on ``select_tools``.
+    fake_tool_registry = MagicMock()
+    fake_tool_registry.select_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "aura.orchestrator.coordinator.get_tool_registry",
+        lambda: fake_tool_registry,
+    )
+    orch._fake_tool_registry = fake_tool_registry
+
     return orch

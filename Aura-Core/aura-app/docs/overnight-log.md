@@ -1273,3 +1273,23 @@
   - `grep -n "counts" src/aura/orchestrator/coordinator.py` prints only line 2413, the same pre-existing prose false positive W2-33 recorded: `For each relevant goal, assess if progress was made (even small progress counts).` in `_assess_goal_progress`. The `(chunk, counts)` contract is gone.
 - **Do not checks respected:** Did not touch `agent_loop.py`; did not merge `_generate_blocking` and `_generate_streaming`.
 - **Unsure about:** Both literal grep checks above still print one line (a prose/comment reference, not code). Flagging in case the frontier review wants the W2-31 provenance sentence updated in `tool_loop.py`.
+
+## W2-35: Offer the selected tools to the model
+- **Status:** DONE
+- **Files changed:** `src/aura/llm/layers.py` (`SynthesisContext.__init__`, `_build_l3_system_prompt`), `src/aura/orchestrator/coordinator.py` (`TurnContext`, `_generate_blocking`/`_generate_streaming` `_round`, `_turn_pipeline`), `src/aura/main.py` (lifespan startup), `tests/conftest.py` (`turn_orchestrator`), new `tests/unit/test_offered_tools.py`
+- **Test result:** full suite passes (247 passed, 81 warnings); `tests/unit/test_offered_tools.py` 3 passed
+- **What I did:**
+  1. `SynthesisContext` gained `offered_tools: list | None = None` as its last parameter, stored as `self.offered_tools`.
+  2. `_build_l3_system_prompt` emits `<available_tools>` immediately before `<AGENT_ACTION_RULE>` when `context.offered_tools` is non-empty: one `<tool name="..." risk="...">` per record in the given order, the description on the opening line and the compact `json.dumps(input_schema, separators=(",", ":"))` inside `<input_schema>`. Nothing else in the prompt changed.
+  3. `TurnContext` gained `offered_tools: list = field(default_factory=list)` as its last field (`field` added to the existing `dataclasses` import).
+  4. `_turn_pipeline` sets `ctx.offered_tools = await get_tool_registry().select_tools(user_input, requester_role=requester_role)` right after stage 6, in `try/except` that logs a warning and uses `[]`. Both loop-context builders (`_generate_blocking` and `_generate_streaming` `_round`) now pass `offered_tools=ctx.offered_tools`.
+  5. `main.py` calls `await get_tool_registry().refresh(db)` in the lifespan, in `try/except` with a warning.
+  6. `turn_orchestrator` monkeypatches `aura.orchestrator.coordinator.get_tool_registry` to a fake with `select_tools = AsyncMock(return_value=[])`, exposed as `orch._fake_tool_registry`.
+  7. `test_offered_tools.py`: 8 fake `ToolRecord`s reach the first loop context and render 8 `<tool name=` entries with no `force_execute`; a guest turn awaits `select_tools("hello", requester_role="guest")` exactly once; a raising `select_tools` still completes the turn with `offered_tools == []` and no `<available_tools>` in the prompt.
+- **"Done when" verified:**
+  - New tests pass; full suite passes with the existing characterisation tests unchanged.
+  - `grep -c "offered_tools=ctx.offered_tools" src/aura/orchestrator/coordinator.py` prints `2`.
+- **Do not checks respected:** Did not change `<AGENT_ACTION_RULE>` or `<capabilities>`; `select_tools` is called once per turn (asserted with `assert_awaited_once`).
+- **Unsure about:**
+  - Placement of `get_tool_registry().refresh(db)` in `main.py`: the card says "after the database is connected". I put it after the schema bootstrap loop (still after connection) because that loop runs `register_local_tools.surql`, whose `local_function` skill rows `refresh` needs; putting it immediately after `connect()` would miss them on a fresh boot.
+  - Stage 7's `_cache_system_prompt` (and `_gather_turn_context`'s `synthesis_context`) still has no `offered_tools`, so the prompt cached for debugging shows no `<available_tools>`. The card only asked to pass the list into both `_round` loop contexts and not to change anything else, so I left that path alone.
