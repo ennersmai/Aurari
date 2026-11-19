@@ -60,6 +60,8 @@ DEFINE FIELD resonance_score ON memory TYPE option<float>;
 DEFINE INDEX memory_timestamp ON memory FIELDS timestamp;
 DEFINE INDEX memory_user ON memory FIELDS user_id;
 DEFINE INDEX memory_embedding ON memory FIELDS embedding HNSW DIMENSION 768 TYPE F32 DIST COSINE;
+DEFINE ANALYZER OVERWRITE memory_text TOKENIZERS class FILTERS lowercase, ascii, snowball(english);
+DEFINE INDEX OVERWRITE memory_content_ft ON memory FIELDS content FULLTEXT ANALYZER memory_text BM25 HIGHLIGHTS;
 -- Quality-layer indexes
 DEFINE INDEX memory_core ON memory FIELDS core_memory;
 DEFINE INDEX memory_ephemeral ON memory FIELDS ephemeral;

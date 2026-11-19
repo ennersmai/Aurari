@@ -1348,3 +1348,18 @@
   - `grep -n "If the user mentions \"search\"\|keywords like 'search'" src/aura/llm/layers.py` prints nothing.
 - **Do not checks respected:** Did not remove `semantic_trigger` or the vector fast lane; left `_resolve_forced_tool`'s lookup code and `l3_tool_call_mode` in place; did not touch the TEACHING lane.
 - **Unsure about:** The full suite initially failed 4 golden-prompt assertions in `tests/unit/test_layers_packet.py` and `tests/unit/test_recall_render.py` because their `GOLDEN_PROMPT_*` strings embed the old `<AGENT_ACTION_RULE>` sentence. Since those failures are caused directly by this card's prompt change and the card requires the full suite to pass, I updated only those sentence lines (no other golden content changed). Also, item 1's docstring/comment cleanup and these two test files are outside the card's explicit Files list; flagging in case the review wants them reverted.
+
+## W3-01: A full-text index on memory content
+- **Status:** DONE
+- **Files changed:** `scripts/init_schema.surql`, new `tests/scenarios/test_memory_fulltext_index_embedded.py`
+- **Test result:** full suite passes (265 passed, 81 warnings); `tests/scenarios/test_memory_fulltext_index_embedded.py` 4 passed
+- **What I did:**
+  1. Added the card's two lines immediately after the `memory_embedding` HNSW index line (and before the quality-layer indexes): `DEFINE ANALYZER OVERWRITE memory_text TOKENIZERS class FILTERS lowercase, ascii, snowball(english);` and `DEFINE INDEX OVERWRITE memory_content_ft ON memory FIELDS content FULLTEXT ANALYZER memory_text BM25 HIGHLIGHTS;`. No other index or field was touched.
+  2. New embedded test applies the real schema through `EmbeddedSurrealDB` (the W2-01 runner) and creates the three card memories with a parameterised `CREATE memory CONTENT $data`. It runs the card's exact query `SELECT id, search::score(1) AS score FROM memory WHERE content @1,OR@ $t ORDER BY score DESC` and maps the returned id to assert: `"what do you know about rust?"` -> Rust memory first, `"parse_route"` -> `config.rs` memory first, `"sleeping cats"` -> cat memory first (snowball stemming), with scores in descending order.
+  3. Idempotence test re-applies the two new definitions strictly twice (no error swallowed) and then re-runs the whole schema file through the runner's `_apply_surql_file`, as the app does at boot.
+- **"Done when" verified:** The new tests pass and the full suite passes (265 passed).
+- **Do not checks respected:** Did not touch the existing HNSW index, any other index, or any field.
+- **Unsure about:**
+  - The embedded engine (surrealdb 3.0.0) accepts `OVERWRITE` on both the analyzer and the index, so `IF NOT EXISTS` was not needed.
+  - "Applying the schema file twice does not raise" is tested two ways because the runner's `_apply_surql_file` deliberately swallows errors (as the app does) and the pre-existing `DEFINE TABLE`/`DEFINE FIELD` lines are not idempotent. Applying the whole file again through that helper therefore cannot raise by construction; the meaningful check is the strict double-apply of just the two new `OVERWRITE` definitions, which is also asserted.
+  - The card's query selects `id` and `score` but not `content`, so the test records the ids returned by the three creates and compares against the first row's id rather than adding `content` to the query.
