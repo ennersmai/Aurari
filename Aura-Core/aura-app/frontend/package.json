@@ -13,11 +13,9 @@
         "@emotion/react": "^11.14.0",
         "@emotion/styled": "^11.14.0",
         "@gltf-transform/core": "^4.4.1",
-        "@mkkellogg/gaussian-splats-3d": "^0.4.7",
         "@monaco-editor/react": "^4.7.0",
         "@mui/icons-material": "^6.4.7",
         "@mui/material": "^6.4.7",
-        "@pixiv/three-vrm": "^3.1.2",
         "@reduxjs/toolkit": "^2.6.1",
         "axios": "^1.8.3",
         "chart.js": "^4.4.8",
@@ -25,7 +23,6 @@
         "d3": "^7.9.0",
         "date-fns": "^4.1.0",
         "framer-motion": "^12.23.26",
-        "lil-gui": "^0.21.0",
         "lucide-react": "^0.560.0",
         "next": "15.2.2",
         "react": "^19.0.0",
@@ -39,10 +36,8 @@
         "rehype-highlight": "^7.0.2",
         "remark-gfm": "^4.0.1",
         "socket.io-client": "^4.8.1",
-        "stats.js": "^0.17.0",
         "tailwind-merge": "^3.4.0",
-        "three": "^0.169.0",
-        "three-mesh-bvh": "^0.9.9"
+        "three": "^0.169.0"
     },
     "devDependencies": {
         "@eslint/eslintrc": "^3",

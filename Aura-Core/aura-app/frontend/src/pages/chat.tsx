@@ -83,8 +83,7 @@ import SystemDebugPanel from '@/components/debug/SystemDebugPanel';
 import SessionSwitcher from '@/components/sessions/SessionSwitcher';
 import sessionService, { type Session } from '@/services/sessionService';
 import type { Goal, Memory, EmotionState } from '@/types/aura';
-import FloatingAvatarWindow from '@/components/FloatingAvatarWindow';
-import { avatarAudioBridge } from '@/services/avatarAudioBridge';
+import SpiralAvatar from '@/components/SpiralAvatar';
 import ChartDialog from '@/components/chat/ChartRenderer';
 import type { ChartJsConfig } from '@/components/chat/ChartRenderer';
 import MemoryGraphDialog from '@/components/neural/MemoryGraphDialog';
@@ -1595,15 +1594,6 @@ export default function ChatPage() {
             console.warn(`[TTS] Backend fell back from ${ttsProvider} to Edge-TTS`);
           }
 
-          // Forward to avatar bridge for VRM lip-sync (non-blocking, fire-and-forget).
-          // Errors in lip-sync decoding are caught inside the bridge handler.
-          blob.arrayBuffer().then(buf => {
-            avatarAudioBridge.dispatch({
-              buffer: buf,
-              expression: emotion.dominant ?? 'neutral',
-            });
-          }).catch(e => console.warn('[chat] avatar bridge buffer conversion failed:', e));
-
           audioQueue.push(blob);
           playNextInQueue();
         } else {
@@ -1624,70 +1614,6 @@ export default function ChatPage() {
         pendingUpdate = null;
       };
       
-      // ---- Movement Command: instant keyword-based animation shortcut ----
-      // Before any network calls: check if the user is explicitly requesting
-      // a movement. If so, set a direct override on the animation router for
-      // an instantaneous response (no cooldown, highest priority).
-      try {
-        const { animationRouter: router } = await import('@/services/animationRouterInstance');
-        const matchedAnim = router.detectAndSetMovementCommand(content);
-        if (matchedAnim) {
-          console.log(`[Movement] Keyword match → direct override: ${matchedAnim}`);
-        }
-      } catch {
-        // Non-critical
-      }
-
-      // ---- L5 Animation Selector: fast route L1→L5 ----
-      // Call the L5 model to select an animation based on current emotion,
-      // conversation context, AND the user's upcoming message text.
-      // This runs BEFORE text streaming, so the avatar starts animating
-      // in sync with what Aura is about to say.
-      try {
-        const l5Res = await fetch(`${API_BASE_URL}/l5/select-animation`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            emotion: {
-              dominant: emotion.dominant,
-              valence: emotion.valence,
-              arousal: emotion.arousal,
-              love: emotion.love, joy: emotion.joy, interest: emotion.interest,
-              trust: emotion.trust, fear: emotion.fear, sadness: emotion.sadness,
-              anger: emotion.anger, surprise: emotion.surprise, disgust: emotion.disgust,
-              awe: emotion.awe, beauty: emotion.beauty, wonder: emotion.wonder,
-              serenity: emotion.serenity, melancholy: emotion.melancholy,
-              nostalgia: emotion.nostalgia, empathy: emotion.empathy,
-              gratitude: emotion.gratitude, pride: emotion.pride,
-              shame: emotion.shame, envy: emotion.envy,
-              compassion: emotion.compassion, curiosity: emotion.curiosity,
-              confusion: emotion.confusion, certainty: emotion.certainty,
-              doubt: emotion.doubt, fascination: emotion.fascination,
-              boredom: emotion.boredom,
-            },
-            context: messages.slice(-6).map(m => m.content),
-            // Pass the user's actual message as upcoming_text so L5 can
-            // align the animation with the semantic content of the request.
-            upcoming_text: content.slice(0, 500),
-            // TODO: Pass previous_animation for L3 awareness (blocked by TypeScript scoping issue)
-            // previous_animation: lastAnimationRef.current,
-          }),
-        });
-        if (l5Res.ok) {
-          const l5Data = await l5Res.json();
-          if (l5Data.animation && l5Data.confidence > 0.4) {
-            const { animationRouter: router } = await import('@/services/animationRouterInstance');
-            // Only set L5 override if no direct movement command was already set
-            // (direct commands take priority over semantic selection).
-            router.setL5Override(l5Data.animation, 12000);
-            // TODO: Track animation for L3 awareness (blocked by TypeScript scoping issue)
-            console.log(`[L5] Animation selected: ${l5Data.animation} (confidence: ${l5Data.confidence.toFixed(2)}) — ${l5Data.reasoning}`);
-          }
-        }
-      } catch (l5Err) {
-        // L5 is non-critical — if it fails, reflex-based animation routing still works
-        console.debug('[L5] Animation selector unavailable (non-critical):', l5Err);
-      }
 
       // Send to Aura backend and handle streaming response
       // commanderIdentity comes from settings (e.g., "Mai") and is used as user_id for memory storage
@@ -2648,7 +2574,9 @@ export default function ChatPage() {
               </Container>
             </Box>
             
-            <FloatingAvatarWindow />
+            <Box sx={{ position: 'fixed', right: { xs: 16, md: 24 }, bottom: { xs: 96, md: 112 }, zIndex: 1320, pointerEvents: 'none' }}>
+              <SpiralAvatar size={64} />
+            </Box>
             
             {/* Add this before the MessageInput component */}
             <ModelThinkingDisplay 

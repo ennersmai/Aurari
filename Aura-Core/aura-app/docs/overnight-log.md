@@ -1213,3 +1213,24 @@
   - `grep -n "max_tool_rounds" src/aura/orchestrator/coordinator.py` prints only lines 1514 and 1522, inside `_generate_streaming`.
 - **Do not checks respected:** Did not touch `_generate_streaming`, `_turn_pipeline`, the `(chunk, counts)` contract, or delete `_remove_tool_calls_from_text`.
 - **Unsure about:** The warning log now also fires when `execute_and_feedback` returns no results (the card asked for `None` "with today's warning log" for no calls or no results); today the warning fired only for no calls. No test pins the warning.
+
+## W2-25: Remove the VRM avatar
+- **Status:** DONE
+- **Files changed:** deleted `frontend/src/components/vrm-engine/` (whole directory), `frontend/src/components/VrmModelSelector.tsx`, `frontend/src/components/AvatarCanvas.tsx`, `frontend/src/components/AuraAvatar.tsx`, `frontend/src/components/FloatingAvatarWindow.tsx`, `frontend/src/services/animationRouterInstance.ts`, `frontend/src/services/avatarAudioBridge.ts`, `frontend/src/utils/emotionToBlendshape.ts`, `frontend/inspect-vrm.js`, `frontend/public/vrm-assets/` (10 `.vrm`, 15 `.vrma`, `thumb-placeholder.jpg`), and `src/aura/api/routes/l5_animation.py`; edited `frontend/src/pages/chat.tsx`, `frontend/package.json`, `frontend/package-lock.json` (through `npm uninstall`), and `src/aura/main.py`.
+- **Pre-change build:** `npm ci` installed 688 packages. `npm run build` then failed only on the expected missing VRM lib files: `can't resolve '../../lib/VRMAnimation/loadVRMAnimation'` in `vrm-engine/features/vrmViewer/animationRouter.ts` and `viewer.ts`, and `can't resolve '../../lib/VRMLookAtSmootherLoaderPlugin/VRMLookAtSmootherLoaderPlugin'` in `vrm-engine/features/vrmViewer/model.ts`. No other errors.
+- **What I did:**
+  1. `git rm -r` on every path the card lists. `vrm-animations-temp/` was not present.
+  2. `chat.tsx`: replaced the `FloatingAvatarWindow` and `avatarAudioBridge` imports with `import SpiralAvatar from '@/components/SpiralAvatar';`; removed the TTS `blob.arrayBuffer()` avatar-bridge dispatch and its two comments (kept `audioQueue.push(blob); playNextInQueue();`); removed the whole Movement Command `try { ... animationRouterInstance ... } catch {}` block and the whole L5 Animation Selector `try { fetch(.../l5/select-animation) ... } catch (l5Err) {...}` block; replaced `<FloatingAvatarWindow />` with the fixed `Box` wrapping `<SpiralAvatar size={64} />` using the card's position values. No variable became unused (`emotion` is still used elsewhere), so nothing else was removed.
+  3. Confirmed each dependency to be removed with `grep -rn "<name>" src` before uninstalling; every hit was inside `vrm-engine/` or `AvatarCanvas.tsx`, both deleted. Ran `npm uninstall @pixiv/three-vrm stats.js lil-gui three-mesh-bvh @mkkellogg/gaussian-splats-3d` (removed 18 packages).
+  4. `main.py`: removed only the `l5_animation` import and its `include_router` line (they are at lines 33 and 492 in this checkout, not 32/490).
+- **Test result:** `npm run build` succeeds after the change. Python suite: 243 passed, 81 warnings.
+- **"Done when" verified:**
+  - T1 `grep -rniE "three-vrm|vrm-engine|VrmRenderer|VrmModelSelector|AuraAvatar|AvatarCanvas|FloatingAvatarWindow|avatarAudioBridge|animationRouter|emotionToBlendshape|l5/select-animation" frontend/src frontend/package.json` prints nothing.
+  - `grep -cE` for the five removed dependencies in `package.json` prints `0`; no top-level `"node_modules/<name>"` keys remain in `package-lock.json`.
+  - `git ls-files frontend/public/vrm-assets | wc -l` prints `0`; `git ls-files | grep -ciE "\.vrma?$"` prints `0`.
+  - `grep -rn "l5_animation" src --include='*.py'` prints nothing; the Python suite passes.
+  - `git diff --stat` does not list `SpiralAvatar.tsx` or `ChatMessage.tsx`.
+- **Unsure about:**
+  - The dev server compiled `/chat` and returned HTTP 200, but the browse extension was offline, so I could not visually confirm the spiral in a browser. Source inspection and the successful build/type-check confirm the new fixed `Box` renders `<SpiralAvatar size={64} />` at `right: { xs: 16, md: 24 }, bottom: { xs: 96, md: 112 }`.
+  - A stale, gitignored, untracked generated file `src/aura.egg-info/SOURCES.txt` still lists `src/aura/api/routes/l5_animation.py`, so the literal `grep -rn "l5_animation" src` reports only that generated metadata line (no `.py` source references remain). I did not modify or delete the egg-info cache.
+  - `@gltf-transform/core` remains in `package.json`; as the card notes, nothing in `frontend/src` imports it. It is not in the PRD removal list and was not removed.
