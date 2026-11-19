@@ -29,7 +29,12 @@ from aura.db.query_utils import to_record_id
 from aura.models.memory import Memory
 
 from .assembly import assemble, normalise_text
-from .channels import dense_channel, lexical_channel
+from .channels import (
+    dense_channel,
+    fact_dense_channel,
+    fact_lexical_channel,
+    lexical_channel,
+)
 from .fusion import rrf
 from .gate import needs_recall
 from .models import (
@@ -406,14 +411,23 @@ class RecallEngine:
         payloads (in the same order) using the cluster data gathered during
         retrieval. Returns ``([], None, {}, False)`` when no memories are found.
 
-        With the flag on, the dense and lexical channels run together, their
-        hits are fused with RRF (PRD 6.3 steps 2-4), and the fused memories are
-        rendered without thought clusters. With ``recall_abstain_enabled`` also
-        on, no lexical hit and no dense hit at or above
-        ``recall_abstain_min_similarity`` returns the abstention note instead
-        (``([], renderer, {}, True)``).
+        With that flag on and ``settings.memory_v2_recall_enabled`` also on, the
+        channels run over the memory v2 ``fact`` table instead (W3-17), filtered
+        by the turn venue's visibilities and to current facts. Their hits are
+        fused with RRF and abstention applies unchanged; the renderer writes one
+        ``<fact age=... provenance=... confidence=...>`` line per fact.
+
+        With only ``recall_channels_enabled`` on, the dense and lexical channels
+        run over the ``memory`` table together, their hits are fused with RRF
+        (PRD 6.3 steps 2-4), and the fused memories are rendered without thought
+        clusters. With ``recall_abstain_enabled`` also on, no lexical hit and no
+        dense hit at or above ``recall_abstain_min_similarity`` returns the
+        abstention note instead (``([], renderer, {}, True)``).
         """
         memory_manager = await self._get_memory_manager()
+
+        if settings.recall_channels_enabled and settings.memory_v2_recall_enabled:
+            return await self._build_fact_memories(request, channel_errors)
 
         if settings.recall_channels_enabled:
             queries = build_queries(request.user_input, request.recent_turns)
@@ -561,6 +575,127 @@ class RecallEngine:
             return memory_manager._format_memories_xml(payloads, cluster_data)
 
         return candidates, _renderer, cluster_data, False
+
+    async def _build_fact_memories(
+        self,
+        request: RecallRequest,
+        channel_errors: dict[str, str] | None = None,
+    ) -> tuple[list[Candidate], Any, dict[str, dict], bool]:
+        """Memories block over memory v2 facts (W3-17).
+
+        The dense and lexical fact channels are filtered by the visibilities
+        that may be recalled in ``request.venue`` and to facts with no
+        ``valid_to``. Their hits are fused with RRF and abstention applies
+        exactly as on the memory-table path. The renderer writes one
+        ``<fact>`` line per kept fact with its age in whole days, provenance
+        and two-decimal confidence.
+        """
+        memory_manager = await self._get_memory_manager()
+        queries = build_queries(request.user_input, request.recent_turns)
+        embedding = await memory_manager.embeddings.embed(queries.dense_text)
+
+        dense_result, lexical_result = await asyncio.gather(
+            fact_dense_channel(
+                memory_manager.db,
+                embedding,
+                request.venue,
+            ),
+            fact_lexical_channel(
+                memory_manager.db,
+                queries.lexical_text,
+                request.venue,
+            ),
+            return_exceptions=True,
+        )
+
+        channels: dict[str, list[Any]] = {}
+        for name, result in (("dense", dense_result), ("lexical", lexical_result)):
+            if isinstance(result, Exception):
+                if channel_errors is not None:
+                    channel_errors[f"memories.{name}"] = str(result)
+                logger.debug(
+                    "Recall fact %s channel failed (non-critical): %s",
+                    name,
+                    result,
+                )
+                channels[name] = []
+            else:
+                channels[name] = result
+
+        if settings.recall_abstain_enabled:
+            lexical_hits = channels["lexical"]
+            dense_hits = channels["dense"]
+            best_dense = max((hit.score for hit in dense_hits), default=None)
+            abstain = not lexical_hits and (
+                best_dense is None
+                or best_dense < settings.recall_abstain_min_similarity
+            )
+            if abstain:
+
+                def _abstain_renderer(payloads: list[Any]) -> str:
+                    return _ABSTAIN_MEMORIES_LINE
+
+                return [], _abstain_renderer, {}, True
+
+        fused = rrf(channels)[: request.limit]
+        if not fused:
+            return [], None, {}, False
+
+        rows = await memory_manager.db.query(
+            "SELECT * FROM fact WHERE id IN $ids",
+            {
+                "ids": [
+                    to_record_id(
+                        hit.memory_id.replace("⟨", "").replace("⟩", "")
+                    )
+                    for hit in fused
+                ]
+            },
+        )
+        rows_by_id = {str(row["id"]): row for row in (rows or [])}
+
+        candidates: list[Candidate] = []
+        for rank, hit in enumerate(fused):
+            row = rows_by_id.get(hit.memory_id)
+            if row is None:
+                continue
+            content = row.get("content", "") or ""
+            fact_id = str(row["id"])
+            candidates.append(
+                Candidate(
+                    block="memories",
+                    key=fact_id,
+                    dedup_keys=(
+                        "fact:" + fact_id,
+                        "text:" + normalise_text(content),
+                    ),
+                    payload=row,
+                    rank=rank,
+                    source="recall.facts",
+                    channel_ranks=dict(hit.channel_ranks),
+                    fused_score=hit.score,
+                )
+            )
+        if not candidates:
+            return [], None, {}, False
+
+        def _renderer(payloads: list[Any]) -> str:
+            if not payloads:
+                return ""
+            now = get_clock().now()
+            lines = ["<memories>"]
+            for fact in payloads:
+                age_days = max(0, (now - fact["recorded_at"]).days)
+                lines.append(
+                    f'  <fact age="{age_days}d" '
+                    f'provenance="{fact["provenance"]}" '
+                    f'confidence="{float(fact["confidence"]):.2f}">'
+                    f'{fact["content"]}</fact>'
+                )
+            lines.append("</memories>")
+            return "\n".join(lines)
+
+        return candidates, _renderer, {}, False
 
     # ------------------------------------------------------------------
     # Gate cache (W3-06)

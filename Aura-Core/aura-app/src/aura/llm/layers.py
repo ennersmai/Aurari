@@ -41,6 +41,7 @@ class SynthesisContext:
         latent_intuition_xml: str | None = None,
         packet: "ContextPacket | None" = None,
         offered_tools: list | None = None,
+        venue: str = "app",
     ):
         """Initialize synthesis context."""
         self.user_input = user_input
@@ -56,6 +57,7 @@ class SynthesisContext:
         self.latent_intuition_xml = latent_intuition_xml
         self.packet = packet
         self.offered_tools = offered_tools
+        self.venue = venue
 
 
 class LLMLayers:
@@ -1210,6 +1212,7 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
                     limit=5,
                     include_cold_start=False,
                     include_latent=False,
+                    venue=getattr(context, "venue", "app"),
                 ))
                 memory_xml = packet.block_text("memories") or ""
             except Exception as e:
@@ -1468,6 +1471,7 @@ If you include any text before or after the JSON, the system will fail."""
                     limit=5,
                     include_cold_start=False,
                     include_latent=False,
+                    venue=getattr(context, "venue", "app"),
                 ))
                 memory_xml = packet.block_text("memories") or ""
             except Exception as e:

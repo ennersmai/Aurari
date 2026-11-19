@@ -62,6 +62,9 @@ class RecallRequest:
     include_cold_start: bool = False
     # M2: wraps today's channel
     include_latent: bool = True
+    # W3-17: where the turn happens (app, dm:<user_id>, guild:<g>/channel:<c>),
+    # used to filter facts by visibility before ranking.
+    venue: str = "app"
 
 
 # ---------------------------------------------------------------------------

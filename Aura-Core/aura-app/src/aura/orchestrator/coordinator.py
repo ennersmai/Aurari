@@ -1063,6 +1063,7 @@ Constraints:
         user_id: str,
         conversation_history: list[dict[str, str]] | None,
         stream: bool,
+        venue: str = "app",
     ) -> TurnContext:
         """Gather engine context and assemble the L3 ``SynthesisContext`` (W2-08).
 
@@ -1148,6 +1149,7 @@ Constraints:
                     namespace=None,
                     include_cold_start=True,
                     include_latent=True,
+                    venue=venue,
                 ))
             except Exception as e:
                 self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1190,6 +1192,7 @@ Constraints:
                 cold_start_xml=cold_start_xml,
                 latent_intuition_xml=latent_intuition_xml,
                 packet=packet,
+                venue=venue,
             )
 
             return TurnContext(
@@ -1292,6 +1295,7 @@ Constraints:
                 namespace=None,
                 include_cold_start=False,
                 include_latent=True,
+                venue=venue,
             ))
         except Exception as e:
             self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1329,6 +1333,7 @@ Constraints:
             goal_context=goal_context,
             latent_intuition_xml=latent_intuition_xml,
             packet=packet,
+            venue=venue,
         )
 
         return TurnContext(
@@ -1384,6 +1389,7 @@ Constraints:
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
                 offered_tools=ctx.offered_tools,
+                venue=ctx.venue,
             )
 
             round_response = await self.llm_layers.l3_synthesis(
@@ -1474,6 +1480,7 @@ Constraints:
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
                 offered_tools=ctx.offered_tools,
+                venue=ctx.venue,
             )
 
             round_response = ""
@@ -1576,7 +1583,9 @@ Constraints:
         use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
         # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
-        ctx = await self._gather_turn_context(user_input, user_id, conversation_history, stream=stream)
+        ctx = await self._gather_turn_context(
+            user_input, user_id, conversation_history, stream=stream, venue=venue
+        )
         # Record who is speaking and where this turn happens (W3-10).
         ctx.speaker = speaker_key(user_id, requester_role)
         ctx.venue = venue

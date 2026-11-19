@@ -542,6 +542,15 @@ class Settings(BaseSettings):
                     "the write path can be compared with today's memory writes.",
     )
 
+    # Memory v2 recall (W3-17)
+    memory_v2_recall_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_MEMORY_V2_RECALL_ENABLED",
+        description="When true, the memories block retrieves facts through the "
+                    "memory v2 channels (filtered by venue visibility) instead of "
+                    "the memory table. Off by default.",
+    )
+
     # Memory v2 extraction (W3-13)
     memory_extraction_model: str = Field(
         default="",

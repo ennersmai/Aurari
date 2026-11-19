@@ -10,12 +10,19 @@ Dense retrieval uses the HNSW vector index (cosine distance); lexical
 retrieval uses the BM25 full-text index on ``memory.content``.  Database
 errors are deliberately left to propagate: the caller decides whether a
 failing channel is fatal.
+
+W3-17 adds the same two channels over the memory v2 ``fact`` table.  Their
+candidates are filtered by the visibilities of the turn's venue
+(``visible_in_venue``) and by ``valid_to IS NONE``; visibility replaces the
+memory table's ``user_id`` filter.  Superseded facts are therefore never
+candidates.
 """
 
 from dataclasses import dataclass
 from typing import Any
 
 from aura.config import settings
+from aura.engines.memory.v2.identity import visible_in_venue
 
 
 @dataclass
@@ -108,6 +115,101 @@ async def lexical_channel(
         f"""
         SELECT id, search::score(1) AS score
         FROM memory
+        WHERE content @1,OR@ $text
+          AND {where}
+        ORDER BY score DESC
+        LIMIT $k
+        """,
+        params,
+    )
+
+    return [
+        ChannelHit(
+            memory_id=str(row["id"]),
+            rank=rank,
+            score=float(row["score"]),
+        )
+        for rank, row in enumerate(rows or [])
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Memory v2 fact channels (W3-17)
+# ---------------------------------------------------------------------------
+
+
+def _fact_filter_clause(venue: str, params: dict[str, Any]) -> str:
+    """Build the fact WHERE filter and populate its parameters.
+
+    A fact is visible when its stored visibility is one the venue may read,
+    and a superseded fact (``valid_to`` set) is never a candidate.  There is
+    no ``user_id`` filter: visibility replaces it.
+    """
+    params["visible"] = visible_in_venue(venue)
+    return "visibility IN $visible AND valid_to IS NONE"
+
+
+async def fact_dense_channel(
+    db: Any,
+    embedding: list[float] | None,
+    venue: str,
+) -> list[ChannelHit]:
+    """Return the nearest visible facts by cosine similarity, nearest first.
+
+    ``k`` and ``ef`` come from ``settings.recall_dense_k`` and
+    ``settings.recall_dense_ef``; the KNN operator needs them inline, so they
+    are coerced to ints.  Every other value is a query parameter.
+    """
+    if not embedding:
+        return []
+
+    params: dict[str, Any] = {"vec": embedding}
+    where = _fact_filter_clause(venue, params)
+    k = int(settings.recall_dense_k)
+    ef = int(settings.recall_dense_ef)
+
+    rows = await db.query(
+        f"""
+        SELECT id, vector::distance::knn() AS distance
+        FROM fact
+        WHERE embedding <|{k},{ef}|> $vec
+          AND {where}
+        ORDER BY distance
+        """,
+        params,
+    )
+
+    return [
+        ChannelHit(
+            memory_id=str(row["id"]),
+            rank=rank,
+            score=1.0 - float(row["distance"]),
+        )
+        for rank, row in enumerate(rows or [])
+    ]
+
+
+async def fact_lexical_channel(
+    db: Any,
+    text: str,
+    venue: str,
+) -> list[ChannelHit]:
+    """Return visible facts matching ``text`` by BM25, best first.
+
+    The full-text index is referenced as ``@1`` and its score read with
+    ``search::score(1)``.  The result limit comes from
+    ``settings.recall_lexical_k``.
+    """
+    if not text or not text.strip():
+        return []
+
+    params: dict[str, Any] = {"text": text, "k": int(settings.recall_lexical_k)}
+    where = _fact_filter_clause(venue, params)
+
+    rows = await db.query(
+        f"""
+        SELECT id, search::score(1) AS score
+        FROM fact
         WHERE content @1,OR@ $text
           AND {where}
         ORDER BY score DESC
