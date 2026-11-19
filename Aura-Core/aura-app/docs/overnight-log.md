@@ -1257,3 +1257,19 @@
   - `grep -c "extract_tool_calls\|execute_and_feedback" src/aura/orchestrator/coordinator.py` prints `2` (both in `_forced_seed`).
 - **Do not checks respected:** Did not touch `l3_tool_call_mode`, `_resolve_forced_tool` or `_classify_intent`; did not add `user_id` to the loop contexts; did not change tests outside the list (`test_turn_process_query.py` untouched).
 - **Unsure about:** The literal "Done when" `counts` grep false-positive above (same class as W1-16/W2-16/W2-21); the substantive condition (no `counts` variable or `max_tool_rounds` left in the streaming code) is met. Also note `settings.tool_loop_max_rounds` (default 5) now governs the stream path; the updated (f) test pins 5 rounds.
+
+
+## W2-34: Remove what the old loops left behind
+- **Status:** DONE
+- **Files changed:** `src/aura/orchestrator/coordinator.py`
+- **Test result:** full suite passes (244 passed, 81 warnings)
+- **What I did:**
+  1. Confirmed `_remove_tool_calls_from_text` has no callers, then deleted the method (its local `import re` and the three regex substitutions lived only inside it). `src/aura/orchestrator/tool_loop.py` has its own `strip_tool_calls`; nothing imports or calls the deleted method.
+  2. Updated the `TurnEvent` docstring: `done` now carries the stored response (not a "full accumulated response"), and it explains that generation relays `run_tool_loop`/`LoopEvent` items (`delta` and `separator` -> `delta`, `done` -> stored response). Updated `_turn_pipeline`'s streaming paragraph the same way. `_generate_blocking` and `_generate_streaming` already described `run_tool_loop`/`LoopEvent` after W2-32/W2-33, so they were left unchanged.
+  3. Checked imports with `ruff check --select F401 src/aura/orchestrator/coordinator.py`: no unused imports, so nothing to remove (W2-32/W2-33 orphaned none).
+- **"Done when" verified:**
+  - Full suite passes.
+  - `grep -rn --include=*.py "_remove_tool_calls_from_text" src tests` lists only `src/aura/orchestrator/tool_loop.py:36`, a provenance sentence inside `strip_tool_calls`' docstring written by W2-31 ("Copied verbatim from Orchestrator._remove_tool_calls_from_text."). It is a comment, not a caller, and the coordinator `def` is gone. I left `tool_loop.py` untouched because it is outside this card's Files and rule 3 forbids out-of-scope edits.
+  - `grep -n "counts" src/aura/orchestrator/coordinator.py` prints only line 2413, the same pre-existing prose false positive W2-33 recorded: `For each relevant goal, assess if progress was made (even small progress counts).` in `_assess_goal_progress`. The `(chunk, counts)` contract is gone.
+- **Do not checks respected:** Did not touch `agent_loop.py`; did not merge `_generate_blocking` and `_generate_streaming`.
+- **Unsure about:** Both literal grep checks above still print one line (a prose/comment reference, not code). Flagging in case the frontier review wants the W2-31 provenance sentence updated in `tool_loop.py`.

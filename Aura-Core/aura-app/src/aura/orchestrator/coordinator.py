@@ -61,7 +61,12 @@ class TurnEvent:
 
     ``delta`` events carry a text chunk (one character for an early reply,
     one streamed chunk during generation, including the ``"\\n\\n"`` round
-    separators). ``done`` carries the full accumulated response.
+    separators). ``done`` carries the response the turn stores.
+
+    During generation the pipeline relays the ``run_tool_loop``
+    :class:`~aura.orchestrator.tool_loop.LoopEvent` items: the loop's
+    ``delta`` and ``separator`` events become ``delta`` here, and its single
+    ``done`` event supplies the stored response.
     """
 
     kind: Literal["delta", "done"]
@@ -1508,10 +1513,12 @@ Constraints:
         ``done`` with the full reply; when ``stream`` is false only the ``done``
         event is yielded.
 
-        During streaming generation every chunk is yielded as a ``delta``
-        (separators included); the post-response chain is scheduled before the
-        ``done`` event so it still runs only after the last delta has been
-        consumed, as today.
+        During streaming generation the ``run_tool_loop``
+        :class:`~aura.orchestrator.tool_loop.LoopEvent` items are relayed as
+        ``delta`` events (both its ``delta`` and ``separator`` kinds), and its
+        ``done`` event supplies the response; the post-response chain is
+        scheduled before the ``done`` event so it still runs only after the
+        last delta has been consumed, as today.
         """
         # Stage 1: set the LLM router context mode.
         self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
@@ -2469,29 +2476,6 @@ Only include goals where relevance_score > 0.5. Progress_made should be small (0
         except Exception as e:
             self.logger.debug(f"Goal progress assessment failed: {e}")
 
-    def _remove_tool_calls_from_text(self, text: str) -> str:
-        """
-        Remove tool call JSON blocks from text to clean up the response.
-        
-        Args:
-            text: Text that may contain tool call JSON blocks
-            
-        Returns:
-            Text with tool call blocks removed
-        """
-        import re
-        
-        # Remove JSON code blocks that look like tool calls
-        text = re.sub(r'```(?:json)?\s*\{[^{}]*"tool"[^{}]*\}\s*```', '', text, flags=re.DOTALL)
-        
-        # Remove inline tool call JSON objects
-        text = re.sub(r'\{[^{}]*"tool"[^{}]*\}', '', text, flags=re.DOTALL)
-        
-        # Clean up extra whitespace
-        text = re.sub(r'\n\s*\n\s*\n', '\n\n', text)
-        
-        return text.strip()
-    
     async def _log_interaction_experience(
         self,
         user_id: str,
