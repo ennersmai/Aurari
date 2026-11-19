@@ -520,6 +520,20 @@ class Settings(BaseSettings):
                     "Does not affect what is stored.",
     )
 
+    # Memory salience (W3-11)
+    memory_salience_active_min: float = Field(
+        default=0.1,
+        validation_alias="AURA_MEMORY_SALIENCE_ACTIVE_MIN",
+        description="Minimum absolute deviation from the emotional baseline for a "
+                    "dimension to count as active in memory salience.",
+    )
+    memory_salience_weights: tuple[float, float, float] = Field(
+        default=(0.4, 0.4, 0.2),
+        validation_alias="AURA_MEMORY_SALIENCE_WEIGHTS",
+        description="Salience weights for (emotional intensity, prediction error, "
+                    "interaction depth).",
+    )
+
     # =========================================================================
     # RECALL ENGINE Configuration (M2)
     # The Recall Engine assembles the prompt context from today's channels

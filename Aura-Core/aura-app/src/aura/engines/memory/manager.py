@@ -40,6 +40,7 @@ from uuid import uuid4
 from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.db.query_utils import to_record_id
+from aura.engines.memory.v2.salience import interaction_depth
 from aura.config import settings
 from aura.llm.embeddings import get_embeddings_client
 from aura.models.memory import (
@@ -260,10 +261,7 @@ class MemoryManager:
         emo_intensity = _compute_emotional_intensity(emotional_signature)
 
         # --- Interaction depth ---
-        len_score = min(1.0, response_length / 500) if response_length else 0.3
-        step_score = min(1.0, reasoning_steps / 5) if reasoning_steps else 0.0
-        tool_score = min(1.0, tool_calls / 3) if tool_calls else 0.0
-        depth = (len_score * 0.5) + (step_score * 0.3) + (tool_score * 0.2)
+        depth = interaction_depth(response_length, reasoning_steps, tool_calls)
 
         # --- Surprise ---
         surprise = 0.5  # default neutral

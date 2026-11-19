@@ -1544,3 +1544,23 @@
   - `visibility_for_venue` builds `private:<speaker>` from the `speaker` argument rather than parsing the `dm:<x>` suffix, so the helper relies on the bot's invariant that the DM venue suffix and the speaker key are the same value (`dm:owner`/`owner`, or `dm:discord_<id>`/`discord_<id>`). The card's text names both the helper's `speaker` parameter and the venue's `<x>`; the tests pass the two equal, and this is why `speaker` exists as a parameter at all.
   - `visible_in_venue("dm:owner")` returns `["private:owner", "owner"]` in that order ("the DM's own visibility, plus owner"), which is the card's wording order.
   - An unknown venue raises `ValueError` in both visibility helpers; the card only documents the three forms, and no caller can produce anything else.
+
+## W3-11: Salience
+- **Status:** DONE
+- **PRD:** memory 5.4
+- **Tier:** bulk
+- **Files changed:** new `src/aura/engines/memory/v2/salience.py`, `src/aura/engines/memory/manager.py`, `src/aura/config.py`, new `tests/unit/test_memory_v2_salience.py`
+- **Test result:** full suite passes (362 passed, 83 warnings); `tests/unit/test_memory_v2_salience.py` 6 passed
+- **What I did:**
+  1. Added `memory_salience_active_min` (0.1) and `memory_salience_weights` ((0.4, 0.4, 0.2)) to `Settings`, with `AURA_MEMORY_SALIENCE_ACTIVE_MIN` and `AURA_MEMORY_SALIENCE_WEIGHTS` validation aliases.
+  2. `salience.py` has `interaction_depth(response_length, reasoning_steps, tool_calls)` with the exact formula that was inline in `_compute_formation_score` (0.5/0.3/0.2, missing response length counts as 0.3, missing steps/tools as 0.0). `MemoryManager` now imports and calls it, and the four inline lines are gone.
+  3. `emotional_intensity(state, baseline)` takes each dimension's `d = state - baseline` (missing baseline dims count as 0.0), keeps the ones with `abs(d) >= memory_salience_active_min`, returns their RMS capped at 1.0, or 0.0 when none are active. Its docstring says the PRD's rolling baseline is not built yet and callers should pass `EmotionEngine.config.baseline`.
+  4. `salience(intensity, prediction_error, depth)` reads the configured weights and substitutes 0.5 when `prediction_error is None`.
+  5. Tests pin the resting state at zero, three strong deviations above one, a hand-computed RMS with a negative and a sub-threshold deviation, the neutral 0.5 prediction error, the configured weights, and the unchanged depth values (including the old `0, 0, 0 -> 0.15` case that `test_novelty_nearest.py` relies on).
+- **"Done when" verified:** the new tests pass and the full suite passes (362 passed).
+- **Do-not checks respected:** the depth formula is unchanged (only moved), and no formation-score weight was touched.
+- **Unsure about:**
+  - The card's file list omits `manager.py`, but step 2 explicitly says the depth formula is "called from there too, so there is one copy", which requires editing `MemoryManager`. No other manager code changed.
+  - `memory_salience_weights` is a tuple setting; the alias accepts a JSON-style env value via pydantic-settings, which I did not exercise because the card did not ask for an env test.
+  - `emotional_intensity` iterates over the dimensions present in `state` (a missing baseline dimension counts as 0.0), rather than over the union, because the emotion engine's state vector always has all 27 dimensions.
+  - `salience` returns the raw weighted sum rather than clamping to [0, 1]; with the configured weights summing to 1 and inputs in [0, 1] it is already in range.
