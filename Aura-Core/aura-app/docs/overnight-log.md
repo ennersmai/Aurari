@@ -1416,3 +1416,11 @@
   - The tie test uses `k=0` because with non-negative 0-based ranks and a positive `k` two distinct rank multisets can only tie by coincidence; `k=0` makes the same-score/different-best-rank case exact (`1/2 + 1/6 == 1/3 + 1/3`), which is what exercises the best-rank tie-breaker.
   - `rrf` reads `hit.rank` rather than the hit's position in the list; the channels set `rank` from `enumerate`, so the two agree today. If a later card ever reorders a list without re-ranking it, `rrf` would follow `rank`, per the card's wording.
   - A repeated `memory_id` inside a single channel would accumulate two score terms and the later rank would overwrite the earlier one in `channel_ranks`; the channels return each id at most once, so this is not exercised.
+
+## W2-30: Tool selection: the top few by similarity and recent success
+- **Status:** STOPPED — already committed before this session
+- **What I found:** W2-30 is already implemented and committed on this branch as `fd9a35c` ("W2-30: Tool selection: the top few by similarity and recent success"), and it is an ancestor of HEAD (the branch is already at `ce4ae35 W3-04`). `docs/overnight-log.md` already has a W2-30 entry above (line 1130). `HEAD` already contains the three `tool_selection_*` fields in `src/aura/config.py` and the `ToolRegistry.select_tools` method with its tests.
+- **What I did:** Made no card change. I made an exploratory local edit to `tool_registry.py` and `test_tool_registry.py`, then reverted both to `HEAD` once I confirmed the card was already committed, so no earlier card is modified. The unrelated in-progress `recall` changes in the working tree were left untouched.
+- **Test result:** `tests/unit/test_tool_registry.py` passes against `HEAD` (27 passed, 2 warnings). The full suite passed during this session at 288 passed / 81 warnings, with the exploratory edits present; after reverting to `HEAD` the W2-30 file itself still passes.
+- **Why I stopped:** The task said W2-30 was the card to do, but the repository shows it was already completed in an earlier session, and the rules say earlier committed cards must not be redone or changed. No new W2-30 commit was made.
+- **Unsure about:** Nothing about the implementation; only that the session's starting point did not match the repository state.
