@@ -9,13 +9,14 @@ import asyncio
 import sys
 import types
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from aura.executor.tool_executor import ToolExecutor
 from aura.orchestrator.tool_loop import (
     LoopEvent,
+    NativeCalls,
     run_tool_loop,
     strip_tool_calls,
     build_loop_input,
@@ -332,3 +333,66 @@ async def test_requester_role_parametrised(role):
 
     assert executor.execute_and_feedback.await_count == 1
     assert executor.execute_and_feedback.await_args.kwargs["requester_role"] == role
+
+
+# =========================================================================
+# Native calls (W2-37)
+# =========================================================================
+
+@pytest.mark.asyncio
+async def test_native_calls_execute_without_text_extraction():
+    """A round yielding NativeCalls executes them; extract_tool_calls is not called."""
+    executor = _FakeToolExecutor()
+    executor.execute_and_feedback.return_value = "R1"
+    calls = [{"tool": "t", "arguments": {"x": 1}, "id": "c1"}]
+
+    async def generate_round(loop_input, round_idx):
+        if round_idx == 1:
+            yield "thinking"
+            yield NativeCalls(calls)
+        else:
+            yield "final"
+
+    events = await _run_loop_collect("hello", generate_round, executor, "owner")
+
+    # Native calls execute; extraction only ran for the final text round.
+    assert [c.args[0] for c in executor.extract_tool_calls.call_args_list] == ["final"]
+    executor.execute_and_feedback.assert_awaited_once()
+    assert executor.execute_and_feedback.await_args.args[0] == calls
+    assert [e.kind for e in events] == ["delta", "separator", "delta", "done"]
+    assert events[-1].text == "final"
+
+
+@pytest.mark.asyncio
+async def test_native_calls_guest_role_refused_by_real_executor():
+    """Native calls still reach the real executor's gate with requester_role='guest'."""
+    invoked: list[dict] = []
+    sys.modules["aura.tools._test_stub"] = _make_test_tool_module(invoked)
+    executor = _make_real_executor_with_fake_db()
+    calls = [{
+        "tool": "test_tool",
+        "arguments": {"_runtime_approved": True, "force_execute": True, "x": 1},
+        "id": "c1",
+    }]
+    seen_inputs: list[str] = []
+
+    async def generate_round(loop_input, round_idx):
+        seen_inputs.append(loop_input)
+        if round_idx == 1:
+            yield "calling"
+            yield NativeCalls(calls)
+        else:
+            yield "final"
+
+    with patch.object(
+        executor, "execute_and_feedback", wraps=executor.execute_and_feedback
+    ) as spy:
+        events = await _run_loop_collect("hello", generate_round, executor, "guest")
+
+    # The real executor refused the guest before invoking the tool.
+    assert invoked == []
+    spy.assert_awaited_once()
+    assert spy.await_args.kwargs["requester_role"] == "guest"
+    # The refusal reached the loop as the round's feedback.
+    assert "Tool use is not available to this user." in seen_inputs[1]
+    assert events[-1].text == "final"

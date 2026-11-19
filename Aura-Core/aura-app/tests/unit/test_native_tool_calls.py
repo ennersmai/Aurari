@@ -12,13 +12,17 @@ import logging
 import httpx
 import pytest
 
+from aura.config import settings
+from aura.engines.recall.models import ContextPacket, RecallTrace
 from aura.executor.tool_registry import ToolRecord
+from aura.llm.layers import LLMLayers, SynthesisContext
 from aura.llm.provider import OpenRouterClient
 from aura.llm.tool_calls import (
     ModelTurn,
     parse_openai_tool_calls,
     to_openai_tools,
 )
+from aura.orchestrator.tool_loop import NativeCalls
 
 TOOLS = [
     {
@@ -253,3 +257,162 @@ async def test_complete_without_tools_still_returns_text():
         await client.client.aclose()
 
     assert text == "hello"
+
+
+# =============================================================================
+# W2-37: layers use the native tools path only when l3_native_tools is on
+# =============================================================================
+
+def _record() -> ToolRecord:
+    return ToolRecord(
+        name="web_search",
+        description="Search the web.",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}},
+            "required": ["query"],
+        },
+        transport="builtin",
+        risk="read",
+    )
+
+
+def _empty_packet() -> ContextPacket:
+    from datetime import datetime, timezone
+
+    return ContextPacket(
+        stable_blocks=[],
+        dynamic_blocks=[],
+        abstain=False,
+        trace=RecallTrace(
+            turn_id="t",
+            user_id="default",
+            query="hi",
+            created_at=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            budget_tokens=0,
+            tokens_before=0,
+            tokens_after=0,
+            items=[],
+            channel_errors={},
+        ),
+    )
+
+
+class _ToolPathClient:
+    """Records which layer method ran and what it received."""
+
+    def __init__(self, error: Exception | None = None):
+        self.calls: list[str] = []
+        self.seen: list[dict] = []
+        self.error = error
+
+    async def complete(self, *, messages, model, **kwargs):
+        self.calls.append("complete")
+        self.seen.append({"messages": messages, **kwargs})
+        return "text reply"
+
+    async def complete_with_tools(self, *, messages, model, tools, **kwargs):
+        self.calls.append("complete_with_tools")
+        self.seen.append({"messages": messages, "tools": tools, **kwargs})
+        if self.error is not None:
+            raise self.error
+        return ModelTurn(
+            text="native reply",
+            tool_calls=[
+                {"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}
+            ],
+        )
+
+    async def stream_complete(self, *, messages, model, **kwargs):
+        self.calls.append("stream_complete")
+        self.seen.append({"messages": messages, **kwargs})
+        yield "text reply"
+
+    async def stream_with_tools(self, *, messages, model, tools, **kwargs):
+        self.calls.append("stream_with_tools")
+        self.seen.append({"messages": messages, "tools": tools, **kwargs})
+        yield ("text", "native ")
+        yield (
+            "tool_calls",
+            [{"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}],
+        )
+
+
+def _layers_with(client) -> LLMLayers:
+    layers = LLMLayers.__new__(LLMLayers)
+    layers.client = client
+    return layers
+
+
+def _context() -> SynthesisContext:
+    return SynthesisContext(
+        user_input="hi",
+        packet=_empty_packet(),
+        offered_tools=[_record()],
+    )
+
+
+@pytest.mark.asyncio
+async def test_flag_off_tools_call_complete_not_complete_with_tools(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", False)
+    client = _ToolPathClient()
+    layers = _layers_with(client)
+
+    result = await layers.l3_synthesis(_context(), tools=[_record()])
+
+    assert client.calls == ["complete"]
+    assert result == "text reply"
+    # The schemas still travel in the prompt when the flag is off.
+    assert "<available_tools>" in client.seen[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_flag_on_tools_call_complete_with_tools(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    client = _ToolPathClient()
+    layers = _layers_with(client)
+
+    result = await layers.l3_synthesis(_context(), tools=[_record()])
+
+    assert client.calls == ["complete_with_tools"]
+    assert isinstance(result, ModelTurn)
+    assert result.text == "native reply"
+    assert result.tool_calls == [
+        {"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}
+    ]
+    # The schemas move to the API parameter, out of the prompt.
+    assert client.seen[0]["tools"] == to_openai_tools([_record()])
+    assert "<available_tools>" not in client.seen[0]["messages"][0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_complete_with_tools_error_falls_back_to_complete(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    client = _ToolPathClient(error=RuntimeError("400 tools not supported"))
+    layers = _layers_with(client)
+
+    with caplog.at_level(logging.WARNING):
+        result = await layers.l3_synthesis(_context(), tools=[_record()])
+
+    assert client.calls == ["complete_with_tools", "complete"]
+    assert result == "text reply"
+    assert any("falling back" in record.message for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_flag_on_stream_ends_with_native_calls_marker(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    client = _ToolPathClient()
+    layers = _layers_with(client)
+
+    items = [item async for item in layers.stream_l3_synthesis(
+        _context(), tools=[_record()]
+    )]
+
+    assert client.calls == ["stream_with_tools"]
+    assert items[0] == "native "
+    assert isinstance(items[-1], NativeCalls)
+    assert items[-1].calls == [
+        {"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}
+    ]
+    assert "<available_tools>" not in client.seen[0]["messages"][0]["content"]

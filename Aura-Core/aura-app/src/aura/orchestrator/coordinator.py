@@ -25,12 +25,13 @@ from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
 from aura.executor.tool_registry import get_tool_registry
 from aura.llm.layers import LLMLayers, SynthesisContext
+from aura.llm.tool_calls import ModelTurn
 from aura.models.emotion import EmotionInfluence, EmotionState
 from aura.models.goal import GoalContext, Goal
 from aura.models.learning import LearningContext
 from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
-from aura.orchestrator.tool_loop import run_tool_loop
+from aura.orchestrator.tool_loop import NativeCalls, run_tool_loop
 
 logger = logging.getLogger(__name__)
 
@@ -1388,15 +1389,27 @@ Constraints:
                 loop_context,
                 max_history_messages=context_window_size,
                 reasoning_enabled=reasoning_enabled,
+                tools=ctx.offered_tools,
             )
             # --- Telemetry: L3 synthesis complete ---
+            if isinstance(round_response, ModelTurn):
+                round_text = round_response.text or ""
+            else:
+                round_text = round_response
             self._publish_trace("L3", "synthesis_complete", {
                 "model": settings.l3_model,
                 "round": round_idx,
-                "response_len": len(round_response or ""),
+                "response_len": len(round_text or ""),
                 "reasoning": reasoning_enabled,
             })
-            yield round_response
+            # Native tools: text first, then the calls the model returned (W2-37).
+            if isinstance(round_response, ModelTurn):
+                if round_text:
+                    yield round_text
+                if round_response.tool_calls:
+                    yield NativeCalls(round_response.tool_calls)
+            else:
+                yield round_text
 
         response = ""
         async for event in run_tool_loop(
@@ -1464,9 +1477,12 @@ Constraints:
 
             round_response = ""
             async for chunk in self.llm_layers.stream_l3_synthesis(
-                loop_context, reasoning_enabled=reasoning_enabled
+                loop_context,
+                reasoning_enabled=reasoning_enabled,
+                tools=ctx.offered_tools,
             ):
-                round_response += chunk
+                if isinstance(chunk, str):
+                    round_response += chunk
                 yield chunk
             # --- Telemetry: L3 synthesis complete ---
             self._publish_trace("L3", "synthesis_complete", {

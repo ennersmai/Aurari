@@ -26,7 +26,18 @@ class LoopEvent:
     text: str
 
 
-RoundFn = Callable[[str, int], AsyncIterator[str]]  # (loop_input, round_idx) -> text chunks
+@dataclass
+class NativeCalls:
+    """Native tool calls reported by a round (W2-37).
+
+    A round generator may yield this once, last, instead of leaving the calls
+    inside its text. The calls use the executor's
+    ``{"tool": ..., "arguments": {...}}`` shape.
+    """
+    calls: list[dict]
+
+
+RoundFn = Callable[[str, int], AsyncIterator["str | NativeCalls"]]  # (loop_input, round_idx) -> text chunks or one NativeCalls
 
 
 def strip_tool_calls(text: str) -> str:
@@ -66,7 +77,8 @@ async def run_tool_loop(
 
     Args:
         user_input: The original user input.
-        generate_round: Async function that takes (loop_input, round_idx) and yields text chunks.
+        generate_round: Async function that takes (loop_input, round_idx) and yields
+            text chunks, optionally ending with one :class:`NativeCalls` marker.
         tool_executor: ToolExecutor instance with extract_tool_calls and execute_and_feedback.
         requester_role: "owner" | "trusted" | "guest" passed to execute_and_feedback.
         max_rounds: Override for settings.tool_loop_max_rounds.
@@ -91,12 +103,19 @@ async def run_tool_loop(
 
         loop_input = build_loop_input(user_input, blocks)
         round_text = ""
+        native_calls: list[dict] | None = None
 
         async for chunk in generate_round(loop_input, round_idx):
+            if isinstance(chunk, NativeCalls):
+                native_calls = chunk.calls
+                continue
             yield LoopEvent("delta", chunk)
             round_text += chunk
 
-        calls = tool_executor.extract_tool_calls(round_text)
+        if native_calls is not None:
+            calls = native_calls
+        else:
+            calls = tool_executor.extract_tool_calls(round_text)
         if not calls:
             final_text = strip_tool_calls(round_text)
             break

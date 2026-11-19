@@ -11,12 +11,14 @@ from aura.engines.recall.engine import get_recall_engine
 from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.recall.render import render_insights
 from aura.llm.provider import OpenRouterClient
+from aura.llm.tool_calls import ModelTurn, to_openai_tools
 from aura.llm.unified_provider import UnifiedLLMClient
 from aura.llm.router import ContextModeRouter, ContextMode
 from aura.models.emotion import EmotionState
 from aura.models.goal import GoalContext
 from aura.models.identity import IdentityContext
 from aura.models.learning import LearningContext
+from aura.orchestrator.tool_loop import NativeCalls
 
 logger = logging.getLogger(__name__)
 
@@ -943,7 +945,7 @@ Your output must be parseable JSON only.""",
         
         return self._build_l3_system_prompt(context, time_str, relevant_memories)
     
-    def _build_l3_system_prompt(self, context: SynthesisContext, time_str: str, relevant_memories: list = None) -> str:
+    def _build_l3_system_prompt(self, context: SynthesisContext, time_str: str, relevant_memories: list = None, include_tools: bool = True) -> str:
         """
         Helper to build consistent XML-structured prompts for L3 (Stream & Standard).
         
@@ -954,6 +956,8 @@ Your output must be parseable JSON only.""",
             context: Complete synthesis context
             time_str: Formatted time string
             relevant_memories: List of retrieved memories (optional)
+            include_tools: Render ``<available_tools>``; false when the schemas
+                travel through the model API's native ``tools`` parameter (W2-37)
             
         Returns:
             XML-structured system prompt
@@ -1128,7 +1132,7 @@ The marker MUST use the EXACT goal_id from the suggestions above.
 """
 
         # 6.4. Tools offered to the model for this turn (W2-35)
-        if context.offered_tools:
+        if include_tools and context.offered_tools:
             prompt += "<available_tools>\n"
             for tool in context.offered_tools:
                 prompt += f'  <tool name="{tool.name}" risk="{tool.risk}">{tool.description}\n'
@@ -1168,7 +1172,8 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
         context: SynthesisContext,
         max_history_messages: int = 10,
         reasoning_enabled: bool = False,
-    ) -> str:
+        tools: list | None = None,
+    ) -> str | ModelTurn:
         """
         L3 Synthesis Layer: Primary response generation (<2s target).
 
@@ -1183,10 +1188,15 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
             context: Complete synthesis context
             max_history_messages: Maximum conversation history to include
             reasoning_enabled: Enable deep reasoning (Grok/DeepSeek R1)
+            tools: Tools offered to the model this turn. When this and
+                ``settings.l3_native_tools`` are truthy the schemas travel in
+                the API's ``tools`` parameter and a :class:`ModelTurn` is
+                returned; otherwise the text path is used unchanged.
 
         Returns:
-            Generated response
+            Generated response (or a ``ModelTurn`` on the native tools path)
         """
+        native_tools = bool(tools and settings.l3_native_tools)
         # JIT memory retrieval with emotional resonance scoring
         memory_xml = ""
         if context.packet is not None:
@@ -1220,7 +1230,7 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
         
         # Use Helper to build XML-structured prompt
         # Pass the pre-formatted XML block (string) — not a list of Memory objects
-        system_prompt = self._build_l3_system_prompt(context, time_str, memory_xml or None)
+        system_prompt = self._build_l3_system_prompt(context, time_str, memory_xml or None, include_tools=not native_tools)
         
         # Log insight count and a preview of the prompt for debugging
         insight_count = len(context.learning_context.insights) if context.learning_context and context.learning_context.insights else 0
@@ -1253,6 +1263,26 @@ DO NOT provide a conversational response when a tool call is required. ONLY outp
             reasoning_config = {"effort": "none"}
 
         try:
+            # Native tools: the schemas travel in the API parameter (W2-37).
+            # A provider error (for example 400 "tools not supported") falls
+            # back to the text call for this round.
+            if native_tools:
+                try:
+                    return await self.client.complete_with_tools(
+                        messages=messages,
+                        model=settings.active_l3_model,
+                        tools=to_openai_tools(tools),
+                        temperature=settings.inference_temperature,
+                        top_p=settings.inference_top_p,
+                        max_tokens=settings.inference_max_tokens,
+                        reasoning=reasoning_config,
+                        **(self._get_sglang_extra_params("l3") or self._get_cloud_sampling_extras()),
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"L3 native tool call failed; falling back to text: {e}"
+                    )
+
             # Always read active_l3_model and inference params at call-time (hot-swap safe)
             # SGLang params take precedence over cloud extras (mutually exclusive via `or`)
             response = await self.client.complete(
@@ -1406,11 +1436,15 @@ If you include any text before or after the JSON, the system will fail."""
         self,
         context: SynthesisContext,
         reasoning_enabled: bool = False,
+        tools: list | None = None,
     ):
         """
         Stream L3 synthesis for real-time response generation.
 
-        Yields text chunks as they're generated.
+        Yields text chunks as they're generated. When ``tools`` and
+        ``settings.l3_native_tools`` are truthy, the schemas travel in the
+        API's ``tools`` parameter and one final :class:`NativeCalls` marker is
+        yielded after the text chunks; otherwise behaviour is unchanged.
         
         FIXED: Now uses the same rich XML-structured context as standard L3.
         Previously, streaming used a stripped down prompt. Now it uses the full context.
@@ -1418,7 +1452,9 @@ If you include any text before or after the JSON, the system will fail."""
         Args:
             context: Complete synthesis context
             reasoning_enabled: Enable deep reasoning (Grok/DeepSeek R1)
+            tools: Tools offered to the model this turn
         """
+        native_tools = bool(tools and settings.l3_native_tools)
         # JIT memory retrieval with emotional resonance scoring (same as standard L3)
         memory_xml = ""
         if context.packet is not None:
@@ -1450,7 +1486,7 @@ If you include any text before or after the JSON, the system will fail."""
             time_str = now.strftime('%Y-%m-%d %H:%M:%S UTC')
 
         # Full rich context (same as standard L3)
-        system_prompt = self._build_l3_system_prompt(context, time_str, memory_xml or None)
+        system_prompt = self._build_l3_system_prompt(context, time_str, memory_xml or None, include_tools=not native_tools)
 
         messages = [{"role": "system", "content": system_prompt}]
         # Apply context length truncation (3090 VRAM safeguard — inference cockpit slider)
@@ -1462,6 +1498,33 @@ If you include any text before or after the JSON, the system will fail."""
 
         # Configure Reasoning for OpenRouter
         reasoning_config = {"effort": "high"} if reasoning_enabled else {"effort": "none"}
+
+        # Native tools: the schemas travel in the API parameter (W2-37).
+        # A provider error (for example 400 "tools not supported") falls back
+        # to the text stream for this round.
+        if native_tools:
+            try:
+                native_calls: list[dict] = []
+                async for kind, payload in self.client.stream_with_tools(
+                    messages=messages,
+                    model=settings.active_l3_model,
+                    tools=to_openai_tools(tools),
+                    temperature=settings.inference_temperature,
+                    top_p=settings.inference_top_p,
+                    max_tokens=settings.inference_max_tokens,
+                    reasoning=reasoning_config,
+                    **(self._get_sglang_extra_params("l3") or self._get_cloud_sampling_extras()),
+                ):
+                    if kind == "text":
+                        yield payload
+                    elif kind == "tool_calls":
+                        native_calls = payload
+                yield NativeCalls(native_calls)
+                return
+            except Exception as e:
+                logger.warning(
+                    f"L3 native tool stream failed; falling back to text: {e}"
+                )
 
         try:
             # Always read active_l3_model and inference params at call-time (hot-swap safe)
