@@ -614,6 +614,37 @@ class Settings(BaseSettings):
                     "lexical channels fused with RRF (PRD 6.3 steps 2-4) instead of "
                     "retrieve_for_l3_parts. Off by default.",
     )
+    recall_gate_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_GATE_ENABLED",
+        description="When true, a turn that is only a greeting or acknowledgement "
+                    "reuses the previous packet's memories block instead of running "
+                    "retrieval (PRD 6.3 step 1). Off by default.",
+    )
+    recall_gate_phrases: list[str] = Field(
+        default_factory=lambda: [
+            "hi",
+            "hello",
+            "hey",
+            "thanks",
+            "thank you",
+            "ok",
+            "okay",
+            "cool",
+            "nice",
+            "great",
+            "got it",
+            "good morning",
+            "good night",
+            "bye",
+            "lol",
+            "yes",
+            "no",
+        ],
+        validation_alias="AURA_RECALL_GATE_PHRASES",
+        description="Greetings and acknowledgements that never need memory retrieval "
+                    "when the recall gate is enabled.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(

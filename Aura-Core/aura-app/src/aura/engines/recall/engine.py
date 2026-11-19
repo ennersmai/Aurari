@@ -31,6 +31,7 @@ from aura.models.memory import Memory
 from .assembly import assemble, normalise_text
 from .channels import dense_channel, lexical_channel
 from .fusion import rrf
+from .gate import needs_recall
 from .models import (
     Block,
     BlockKind,
@@ -43,6 +44,10 @@ from .query import build_queries
 from .render import render_insights
 
 logger = logging.getLogger(__name__)
+
+# W3-06: how many ``(user_id, session_id)`` memories results the gate keeps for
+# reuse. The card fixes this at 200 entries; the oldest is dropped first.
+_GATE_CACHE_MAX = 200
 
 
 class RecallEngine:
@@ -59,6 +64,11 @@ class RecallEngine:
         self._memory_manager = memory_manager
         self._latent_engine = latent_engine
         self._traces: "collections.OrderedDict[str, RecallTrace]" = (
+            collections.OrderedDict()
+        )
+        # W3-06: last memories-channel result per ``(user_id, session_id)``, so
+        # a gate-skipped turn can reuse it instead of retrieving again.
+        self._gate_cache: "collections.OrderedDict[tuple[str, str | None], tuple]" = (
             collections.OrderedDict()
         )
 
@@ -134,17 +144,34 @@ class RecallEngine:
             channel_errors["cold_start"] = str(e)
             logger.debug("Recall cold_start channel failed (non-critical): %s", e)
 
-        # --- memories channel ---------------------------------------
-        try:
-            memory_candidates, memory_renderer, cluster_data = await self._build_memories(
-                request, channel_errors
-            )
-            candidates.extend(memory_candidates)
-            if memory_renderer is not None:
-                renderers["memories"] = memory_renderer
-        except Exception as e:
-            channel_errors["memories"] = str(e)
-            logger.debug("Recall memories channel failed (non-critical): %s", e)
+        # --- memories channel (W3-06: the gate may reuse the last result) ---
+        gate: str | None = None
+        if settings.recall_gate_enabled:
+            gate = "ran" if needs_recall(request.user_input) else "skipped"
+        if gate == "skipped":
+            cached = self._take_cached_memories(request.user_id, request.session_id)
+            if cached is not None:
+                memory_candidates, memory_renderer, _cluster_data = cached
+                candidates.extend(memory_candidates)
+                if memory_renderer is not None:
+                    renderers["memories"] = memory_renderer
+        else:
+            try:
+                memory_candidates, memory_renderer, cluster_data = await self._build_memories(
+                    request, channel_errors
+                )
+                candidates.extend(memory_candidates)
+                if memory_renderer is not None:
+                    renderers["memories"] = memory_renderer
+                if gate == "ran":
+                    self._store_cached_memories(
+                        request.user_id,
+                        request.session_id,
+                        (memory_candidates, memory_renderer, cluster_data),
+                    )
+            except Exception as e:
+                channel_errors["memories"] = str(e)
+                logger.debug("Recall memories channel failed (non-critical): %s", e)
 
         # --- assemble ------------------------------------------------
         budget_tokens = request.token_budget or settings.recall_token_budget
@@ -183,6 +210,7 @@ class RecallEngine:
             tokens_after=tokens_after,
             items=trace_items,
             channel_errors=channel_errors,
+            gate=gate,
         )
         self._store_trace(trace)
 
@@ -492,6 +520,35 @@ class RecallEngine:
             return memory_manager._format_memories_xml(payloads, cluster_data)
 
         return candidates, _renderer, cluster_data
+
+    # ------------------------------------------------------------------
+    # Gate cache (W3-06)
+    # ------------------------------------------------------------------
+
+    def _take_cached_memories(
+        self, user_id: str, session_id: str | None
+    ) -> tuple | None:
+        """Return the last memories-channel result for the pair, if kept.
+
+        A hit is moved to the end so that the cap drops the least recently
+        used entry first.
+        """
+        key = (user_id, session_id)
+        cached = self._gate_cache.get(key)
+        if cached is None:
+            return None
+        self._gate_cache.move_to_end(key)
+        return cached
+
+    def _store_cached_memories(
+        self, user_id: str, session_id: str | None, result: tuple
+    ) -> None:
+        """Keep a memories-channel result, dropping oldest entries past 200."""
+        key = (user_id, session_id)
+        self._gate_cache[key] = result
+        self._gate_cache.move_to_end(key)
+        while len(self._gate_cache) > _GATE_CACHE_MAX:
+            self._gate_cache.popitem(last=False)
 
     # ------------------------------------------------------------------
     # Trace storage

@@ -1445,3 +1445,23 @@
 - **Test result:** `tests/unit/test_tool_registry.py` passes against `HEAD` (27 passed, 2 warnings). The full suite passed during this session at 288 passed / 81 warnings, with the exploratory edits present; after reverting to `HEAD` the W2-30 file itself still passes.
 - **Why I stopped:** The task said W2-30 was the card to do, but the repository shows it was already completed in an earlier session, and the rules say earlier committed cards must not be redone or changed. No new W2-30 commit was made.
 - **Unsure about:** Nothing about the implementation; only that the session's starting point did not match the repository state.
+
+## W3-06: The recall gate (flagged)
+- **Status:** DONE
+- **PRD:** memory 6.3 step 1, M3
+- **Tier:** bulk
+- **Files changed:** new `src/aura/engines/recall/gate.py`, `src/aura/engines/recall/engine.py`, `src/aura/engines/recall/models.py`, `src/aura/config.py`, new `tests/unit/test_recall_gate.py`
+- **Test result:** full suite passes (325 passed, 83 warnings); `tests/unit/test_recall_gate.py` 37 passed
+- **What I did:**
+  1. Added `recall_gate_enabled` (default `False`, alias `AURA_RECALL_GATE_ENABLED`) and `recall_gate_phrases` (the card's 17 greetings/acknowledgements, `AURA_RECALL_GATE_PHRASES`) to `config.py` after `recall_channels_enabled`.
+  2. Created `gate.py` with `needs_recall(user_input)`. It lowercases the input, removes every character that is neither a word character nor whitespace with a Unicode regex, and strips the surrounding whitespace; the same normalisation is applied to each configured phrase. Empty results and phrase matches return `False`; everything else returns `True`. No classifier and no model call.
+  3. `RecallTrace` gained the optional last field `gate: str | None = None`.
+  4. In `RecallEngine.recall`, when the flag is on the trace value is `"ran"` or `"skipped"`; with the flag off it stays `None`. On a skipped turn the engine reuses the last memories-channel result for `(user_id, session_id)` from an `OrderedDict` on the engine; with no cached result the memories block is simply absent and retrieval is not called. The other three channels are built as before. A turn that ran retrieval stores its `(candidates, renderer, cluster_data)` tuple in the cache, and the cache is capped at a module constant of 200 entries, dropping the oldest first.
+  5. The new tests cover: config defaults; every phrase skipping; punctuation, case and empty input; questions and real turns running; a greeting reusing the previous memories with `retrieve_for_l3_parts` awaited only once; no previous packet giving an empty block; no reuse across sessions; eviction past 200; the flag-off ablation (retrieval still runs, `gate` is `None`, cache untouched); and insights/latent/cold-start still built on a skipped turn.
+- **"Done when" verified:** The new tests pass and the full suite passes (325 passed).
+- **Do-not checks respected:** No classifier and no model call. The flag is off by default. `_build_memories` and the non-gated channels are unchanged.
+- **Unsure about:**
+  - "Oldest dropped first" is implemented as least-recently-used: a cache read (reuse on a skipped turn) also moves the entry to the end. With the test's sequential distinct sessions this matches insertion order; a long-lived session that is only ever greeted keeps its entry longer than a pure FIFO would.
+  - A run with the gate on caches its memories result even when the retrieval found nothing (an empty tuple). That is the last packet built for the pair, so a following greeting yields an empty block rather than retrying; the card says "with no previous packet, the block is empty", and I read an empty packet as a previous packet.
+  - The normaliser removes `-` as punctuation, so `"good-morning"` becomes `"goodmorning"` and does not match `"good morning"`. This follows the card's literal "stripped of punctuation" rule; I did not add word-boundary repair.
+  - The 200-entry cap is a module constant in `engine.py` rather than a config setting, because the card names only the two new config fields and gives 200 exactly.

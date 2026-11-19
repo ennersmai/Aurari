@@ -118,6 +118,9 @@ class RecallTrace:
     tokens_after: int
     items: list[TraceItem]
     channel_errors: dict[str, str]
+    # W3-06: "skipped" when the gate reused a previous memories block, "ran"
+    # when retrieval ran, None when the gate flag is off.
+    gate: str | None = None
 
 
 # ---------------------------------------------------------------------------
