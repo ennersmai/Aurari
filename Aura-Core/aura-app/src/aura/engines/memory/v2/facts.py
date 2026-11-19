@@ -17,8 +17,11 @@ This module turns one validated extraction into ``fact`` records:
   (PRD rule 6).
 
 Each stored fact gets ``derived_from`` to its episode and ``about`` to the
-entities it concerns. The conflict check that may supersede an older fact is
-W3-16; until it lands every fact is stored as new.
+entities it concerns. Before a fact is stored it goes through the conflict
+check (W3-16): a duplicate raises the existing fact's confidence and stores
+nothing new, an update closes the old fact with ``valid_to`` and links
+``supersedes``, and a contradiction links ``contradicts`` and opens a
+``question``. Facts are never deleted.
 
 Every value is bound as a query parameter.
 """
@@ -33,6 +36,7 @@ from surrealdb.types import RecordID
 from aura.clock import get_clock
 from aura.config import settings
 from aura.db.query_utils import to_record_id
+from aura.engines.memory.v2.conflicts import classify
 from aura.engines.memory.v2.entities import resolve_entity
 from aura.engines.memory.v2.extraction import (
     ExtractedEntity,
@@ -194,8 +198,28 @@ async def write_facts(
             "recorded_at": now,
             "embedding": await embeddings.embed(fact.content),
         }
-        # W3-16 will check this candidate against earlier facts and may
-        # supersede or contradict one. Until it lands, store it as new.
+        classification, existing_id = await classify(
+            db,
+            {**data, "subject_id": subject_id, "negates": fact.negates},
+            about_ids,
+        )
+
+        if classification == "duplicate":
+            # The same statement was heard again: raise the existing fact's
+            # confidence and link it to this episode, but store nothing new.
+            await db.query(
+                "UPDATE $fact SET confidence = math::min([1.0, confidence + $step])",
+                {
+                    "fact": existing_id,
+                    "step": settings.memory_duplicate_confidence_step,
+                },
+            )
+            await db.query(
+                "RELATE $fact->derived_from->$episode",
+                {"fact": existing_id, "episode": episode["id"]},
+            )
+            continue
+
         rows = await db.query("CREATE fact CONTENT $data", {"data": data})
         fact_id = rows[0]["id"]
         created.append(fact_id)
@@ -208,6 +232,38 @@ async def write_facts(
             await db.query(
                 "RELATE $fact->about->$entity",
                 {"fact": fact_id, "entity": entity_id},
+            )
+
+        if classification == "update":
+            await db.query(
+                "UPDATE $fact SET valid_to = $now",
+                {"fact": existing_id, "now": now},
+            )
+            await db.query(
+                "RELATE $fact->supersedes->$old",
+                {"fact": fact_id, "old": existing_id},
+            )
+        elif classification == "contradiction":
+            await db.query(
+                "RELATE $fact->contradicts->$old",
+                {"fact": fact_id, "old": existing_id},
+            )
+            old_rows = await db.query(
+                "SELECT content FROM $fact",
+                {"fact": existing_id},
+            )
+            old_content = old_rows[0].get("content") if old_rows else ""
+            await db.query(
+                "CREATE question CONTENT $data",
+                {
+                    "data": {
+                        "content": (
+                            f"Which is true: {old_content} or {fact.content}?"
+                        ),
+                        "visibility": data["visibility"],
+                        "recorded_at": now,
+                    }
+                },
             )
 
     logger.info(

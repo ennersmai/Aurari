@@ -589,6 +589,26 @@ class Settings(BaseSettings):
         description="Confidence for a fact Aura inferred rather than heard stated.",
     )
 
+    # Memory v2 conflict check (W3-16)
+    memory_duplicate_similarity: float = Field(
+        default=0.95,
+        validation_alias="AURA_MEMORY_DUPLICATE_SIMILARITY",
+        description="Embedding cosine similarity at or above which a new fact "
+                    "is a duplicate of an existing fact.",
+    )
+    memory_contradiction_similarity: float = Field(
+        default=0.8,
+        validation_alias="AURA_MEMORY_CONTRADICTION_SIMILARITY",
+        description="Embedding cosine similarity at or above which a negated "
+                    "fact contradicts an existing fact.",
+    )
+    memory_duplicate_confidence_step: float = Field(
+        default=0.1,
+        validation_alias="AURA_MEMORY_DUPLICATE_CONFIDENCE_STEP",
+        description="Confidence added to an existing fact when the same "
+                    "statement is stored again.",
+    )
+
     # Memory v2 owner identity (W3-15a)
     owner_display_name: str = Field(
         default="",
