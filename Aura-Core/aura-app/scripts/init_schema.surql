@@ -29,6 +29,19 @@ DEFINE FIELD volatility ON emotion_state TYPE float;
 DEFINE FIELD description ON emotion_state TYPE string;
 DEFINE INDEX emotion_state_timestamp ON emotion_state FIELDS timestamp;
 
+DEFINE TABLE emotion_event SCHEMAFULL;
+DEFINE FIELD at ON emotion_event TYPE datetime;
+DEFINE FIELD kind ON emotion_event TYPE string;
+DEFINE FIELD source ON emotion_event TYPE string;
+DEFINE FIELD ref ON emotion_event TYPE option<string>;
+DEFINE FIELD person_id ON emotion_event TYPE option<string>;
+DEFINE FIELD venue ON emotion_event TYPE option<string>;
+DEFINE FIELD appraisal ON emotion_event TYPE object FLEXIBLE;
+DEFINE FIELD impulses ON emotion_event TYPE object FLEXIBLE;
+DEFINE FIELD deviation_change ON emotion_event TYPE object FLEXIBLE;
+DEFINE FIELD dominant_change ON emotion_event TYPE option<string>;
+DEFINE INDEX emotion_event_at ON emotion_event FIELDS at;
+
 -- ============================================================================
 -- MEMORY SYSTEM TABLES
 -- ============================================================================

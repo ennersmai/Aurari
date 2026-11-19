@@ -782,6 +782,15 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in self.cors_origins.split(",")]
 
     # =========================================================================
+    # EMOTION APPRAISAL (W3-20)
+    # =========================================================================
+    emotion_appraisal_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_EMOTION_APPRAISAL_ENABLED",
+        description="Enable the appraisal pathway (Emotion PRD 5.3). When on, every turn is appraised and an emotion_event record is written. Off by default.",
+    )
+
+    # =========================================================================
     # SYSTEM STATE MACHINE (Sleep/Wake Cycle)
     # =========================================================================
     system_idle_after_minutes: int = Field(

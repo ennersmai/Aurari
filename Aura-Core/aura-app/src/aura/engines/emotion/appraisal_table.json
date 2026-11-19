@@ -75,7 +75,6 @@
       "certainty": [0.0, 0.3]
     },
     "impulse": {
-      "sadness": 0.7,
       "fear": 0.6
     }
   },
@@ -89,17 +88,6 @@
       "shame": 0.7,
       "doubt": 0.5
     }
-  },
-  {
-    "name": "low_novelty_low_intensity_boredom",
-    "when": {
-      "novelty": [0.0, 0.3],
-      "intensity": [0.0, 0.3]
-    },
-    "impulse": {
-      "boredom": 0.5
-    },
-    "note": "The 'repeated' part of boredom needs habituation (E3a); left out"
   },
   {
     "name": "low_certainty",

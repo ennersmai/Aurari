@@ -184,7 +184,7 @@ class TestAppraisalTable:
         assert dominant == "sadness"
 
     def test_negative_congruence_low_control_low_certainty_fear(self):
-        """Negative congruence + low control + low certainty produces sadness and fear."""
+        """Negative congruence + low control + low certainty produces fear (from this row) and sadness (from row above, not double-counted)."""
         appraisal = Appraisal(
             congruence=-0.5,
             novelty=0.0,
@@ -196,11 +196,12 @@ class TestAppraisalTable:
             intensity=1.0,
         )
         result = impulses_for(appraisal)
-        assert "sadness" in result
         assert "fear" in result
-        # sadness should be dominant (0.7 > 0.6)
+        assert "sadness" in result  # From negative_congruence_low_control row (not double-counted)
+        # fear should be dominant (0.6) vs sadness (0.7) - but wait, sadness is 0.7 from first row
+        # Actually the first row gives sadness=0.7, second row gives fear=0.6
         dominant = max(result.items(), key=lambda x: x[1])[0]
-        assert dominant == "sadness"
+        assert dominant == "sadness"  # Sadness (0.7) > fear (0.6)
 
     def test_negative_congruence_agency_self(self):
         """Negative congruence + agency self produces shame and doubt."""
@@ -219,23 +220,6 @@ class TestAppraisalTable:
         assert "doubt" in result
         dominant = max(result.items(), key=lambda x: x[1])[0]
         assert dominant == "shame"
-
-    def test_low_novelty_low_intensity_boredom(self):
-        """Low novelty + low intensity produces boredom."""
-        appraisal = Appraisal(
-            congruence=0.0,
-            novelty=0.2,
-            certainty=0.5,
-            control=0.5,
-            agency="circumstance",
-            warmth=0.0,
-            beauty=0.0,
-            intensity=0.2,
-        )
-        result = impulses_for(appraisal)
-        assert "boredom" in result
-        dominant = max(result.items(), key=lambda x: x[1])[0]
-        assert dominant == "boredom"
 
     def test_low_certainty(self):
         """Low certainty produces confusion and doubt."""

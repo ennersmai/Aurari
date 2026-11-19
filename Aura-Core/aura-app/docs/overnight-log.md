@@ -1769,3 +1769,34 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes.
 - **Do-not checks respected:** No engine or physics code was touched. No rows beyond PRD 5.3 were invented. The empathy rows match on `user_state` distress (sadness or fear >= 0.5) as specified. The "repeated" boredom and "positive relationship" empathy notes are included as `"note"` fields on those rows.
 - **Unsure about:** Nothing. The change is scoped to the four new files only; no existing code was modified.
+
+---
+
+## W3-20: `appraise` and cause records (flagged)
+- **Status:** DONE
+- **PRD:** emotion 5.3 (impulse through coupling and inertia), 5.7 (causes), 9 (`appraise` is the only way state changes), T9
+- **Tier:** frontier
+- **Depends on:** W3-19
+- **Files changed:** `src/aura/config.py`, `scripts/init_schema.surql`, `src/aura/engines/emotion/engine.py`, `src/aura/engines/emotion/appraisal_table.json`, `tests/unit/test_appraisal_table.py`, new `tests/unit/test_emotion_appraise.py`
+- **Test result:** full suite passes (443 passed)
+- **Supervisor fixes from W3-19 applied first (committed as part of this card):**
+  1. In `src/aura/engines/emotion/appraisal_table.json`, row "negative_congruence_low_control_low_certainty_fear" now has only `{"fear": 0.6}` as its impulse. Sadness already comes from the row above it ("negative_congruence_low_control"), so listing it again would double-count it.
+  2. Removed the row "low_novelty_low_intensity_boredom" entirely. Without the "repeated" condition (habituation, milestone E3a), it fires on nearly every routine event (default novelty is 0, and system events have intensity 0.3 or less). Habituation will bring it back.
+  3. Updated the T8 tests in `tests/unit/test_appraisal_table.py` that assert on those two rows to match.
+- **W3-20 changes:**
+  1. Config: added `emotion_appraisal_enabled: bool = False` (`AURA_EMOTION_APPRAISAL_ENABLED`).
+  2. Schema: added `DEFINE TABLE emotion_event SCHEMAFULL` with fields `at` (datetime), `kind` (string), `source` (string), `ref` (option<string>), `person_id` (option<string>), `venue` (option<string>), `appraisal` (object FLEXIBLE), `impulses` (object FLEXIBLE), `deviation_change` (object FLEXIBLE), `dominant_change` (option<string>); index on `at`.
+  3. `EmotionEngine.appraise(event: AppraisalEvent) -> EmotionState`: calls `impulses_for(...)`; if empty, logs at DEBUG and returns current state without writing; otherwise applies through the same physics call `apply_influence` uses today (coupling and inertia included), clamps as today, computes per-dimension change in deviation from baseline, writes one `emotion_event` (time from `get_clock()`), broadcasts as today, and returns the state. Database failure while writing the record is logged and does not undo the state change.
+- **Tests added in `tests/unit/test_emotion_appraise.py`:**
+  - Positive-congruence, agency-self event raises joy and writes one `emotion_event` with the appraisal, impulses, and deviation change.
+  - Event matching no row writes nothing and changes nothing.
+  - T9: over a scripted sequence of ten events, every dimension whose deviation changed by more than 0.1 in a step has an `emotion_event` for that step (uses fake database that records writes).
+  - Database failure is logged and does not undo state change.
+  - Appraisal disabled returns current state.
+  - Impulses applied through physics with coupling and inertia.
+  - Values clamped to [0, 1].
+  - Event timestamp comes from clock.
+  - Deviation change computed correctly.
+- **Done when:** satisfied — the new tests pass and the full suite passes.
+- **Do-not checks respected:** Did not remove `apply_influence` (W3-23 moves its callers). Did not change the physics.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.

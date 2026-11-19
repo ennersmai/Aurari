@@ -22,6 +22,7 @@ from aura.models.emotion import (
     EmotionState,
     EmotionVector,
 )
+from aura.models.appraisal import AppraisalEvent
 from aura.models.messages import EngineMessage, MessagePriority
 
 if TYPE_CHECKING:
@@ -257,6 +258,100 @@ class EmotionEngine(BaseEngine):
         self.current_vector = EmotionVector(**clamped_dict)
 
         # Broadcast immediate state update
+        await self._broadcast_state_update(priority=MessagePriority.URGENT)
+
+        return await self.get_current_state()
+
+    async def appraise(self, event: AppraisalEvent) -> EmotionState:
+        """
+        Appraise an event and update emotional state accordingly.
+
+        This is the only way emotional state changes (PRD section 9).
+        Uses the appraisal table to compute impulses, applies them through
+        the same physics as apply_influence (coupling and inertia), writes
+        an emotion_event record, and broadcasts the new state.
+
+        Args:
+            event: The appraisal event containing appraisal variables
+
+        Returns:
+            Updated emotional state (or current state if no impulses matched)
+        """
+        # Check if appraisal is enabled
+        if not settings.emotion_appraisal_enabled:
+            self.logger.debug("Appraisal disabled; returning current state")
+            return await self.get_current_state()
+
+        # Compute impulses from the appraisal table
+        from aura.engines.emotion.appraisal import impulses_for
+
+        impulses = impulses_for(event.appraisal, event.user_state)
+
+        # If no impulses matched, log at DEBUG and return current state
+        if not impulses:
+            self.logger.debug(
+                f"No appraisal match for event kind={event.kind} source={event.source}; "
+                f"appraisal={event.appraisal.model_dump()}"
+            )
+            return await self.get_current_state()
+
+        # Store baseline before applying influence
+        baseline = self.config.baseline
+        old_vector = self.current_vector.model_copy()
+
+        # Apply impulses through physics (same as apply_influence)
+        self.previous_vector = self.current_vector.model_copy()
+        self.current_vector = self.physics.apply_influence(
+            self.current_vector, impulses, event.appraisal.intensity
+        )
+
+        # Apply state normalization clamp (same as apply_influence)
+        vector_dict = self.current_vector.model_dump()
+        clamped_dict = {k: max(0.0, min(1.0, v)) for k, v in vector_dict.items()}
+        self.current_vector = EmotionVector(**clamped_dict)
+
+        # Compute per-dimension deviation change from baseline
+        new_vector_dict = self.current_vector.model_dump()
+        old_vector_dict = old_vector.model_dump()
+        baseline_dict = baseline.model_dump()
+
+        deviation_change = {}
+        for emotion in new_vector_dict:
+            old_deviation = old_vector_dict.get(emotion, 0.0) - baseline_dict.get(emotion, 0.0)
+            new_deviation = new_vector_dict.get(emotion, 0.0) - baseline_dict.get(emotion, 0.0)
+            deviation_change[emotion] = new_deviation - old_deviation
+
+        # Find dominant change
+        dominant_change = None
+        max_change = 0.0
+        for emotion, change in deviation_change.items():
+            if abs(change) > max_change:
+                max_change = abs(change)
+                dominant_change = emotion
+
+        # Write emotion_event record
+        at = get_clock().now()
+        try:
+            await self.db.create(
+                "emotion_event",
+                {
+                    "at": at,
+                    "kind": event.kind,
+                    "source": event.source,
+                    "ref": event.ref,
+                    "person_id": event.person_id,
+                    "venue": event.venue,
+                    "appraisal": event.appraisal.model_dump(),
+                    "impulses": impulses,
+                    "deviation_change": deviation_change,
+                    "dominant_change": dominant_change,
+                },
+            )
+        except Exception as e:
+            # Database failure is logged but does not undo the state change
+            self.logger.error(f"Failed to write emotion_event: {e}")
+
+        # Broadcast state update
         await self._broadcast_state_update(priority=MessagePriority.URGENT)
 
         return await self.get_current_state()
