@@ -17,6 +17,7 @@ database directly (PRD 6.1).
 
 from __future__ import annotations
 
+import asyncio
 import collections
 import logging
 import uuid
@@ -24,8 +25,12 @@ from typing import Any
 
 from aura.clock import get_clock
 from aura.config import settings
+from aura.db.query_utils import to_record_id
+from aura.models.memory import Memory
 
 from .assembly import assemble, normalise_text
+from .channels import dense_channel, lexical_channel
+from .fusion import rrf
 from .models import (
     Block,
     BlockKind,
@@ -34,6 +39,7 @@ from .models import (
     RecallRequest,
     RecallTrace,
 )
+from .query import build_queries
 from .render import render_insights
 
 logger = logging.getLogger(__name__)
@@ -131,7 +137,7 @@ class RecallEngine:
         # --- memories channel ---------------------------------------
         try:
             memory_candidates, memory_renderer, cluster_data = await self._build_memories(
-                request
+                request, channel_errors
             )
             candidates.extend(memory_candidates)
             if memory_renderer is not None:
@@ -340,15 +346,111 @@ class RecallEngine:
         return candidates, _renderer
 
     async def _build_memories(
-        self, request: RecallRequest
+        self,
+        request: RecallRequest,
+        channel_errors: dict[str, str] | None = None,
     ) -> tuple[list[Candidate], Any, dict[str, dict]]:
-        """Memories channel: retrieved memories via ``retrieve_for_l3_parts``.
+        """Memories channel.
 
-        The renderer calls ``memory_manager._format_memories_xml`` on the kept
+        With ``settings.recall_channels_enabled`` off (the default) this is
+        today's path: retrieved memories via ``retrieve_for_l3_parts``, with the
+        renderer calling ``memory_manager._format_memories_xml`` on the kept
         payloads (in the same order) using the cluster data gathered during
         retrieval. Returns ``([], None, {})`` when no memories are found.
+
+        With the flag on, the dense and lexical channels run together, their
+        hits are fused with RRF (PRD 6.3 steps 2-4), and the fused memories are
+        rendered without thought clusters.
         """
         memory_manager = await self._get_memory_manager()
+
+        if settings.recall_channels_enabled:
+            queries = build_queries(request.user_input, request.recent_turns)
+            embedding = await memory_manager.embeddings.embed(queries.dense_text)
+
+            dense_result, lexical_result = await asyncio.gather(
+                dense_channel(
+                    memory_manager.db,
+                    embedding,
+                    request.user_id,
+                    request.namespace,
+                ),
+                lexical_channel(
+                    memory_manager.db,
+                    queries.lexical_text,
+                    request.user_id,
+                    request.namespace,
+                ),
+                return_exceptions=True,
+            )
+
+            channels: dict[str, list[Any]] = {}
+            for name, result in (("dense", dense_result), ("lexical", lexical_result)):
+                if isinstance(result, Exception):
+                    if channel_errors is not None:
+                        channel_errors[f"memories.{name}"] = str(result)
+                    logger.debug(
+                        "Recall memories %s channel failed (non-critical): %s",
+                        name,
+                        result,
+                    )
+                    channels[name] = []
+                else:
+                    channels[name] = result
+
+            fused = rrf(channels)[: request.limit]
+            if not fused:
+                return [], None, {}
+
+            rows = await memory_manager.db.query(
+                "SELECT * FROM memory WHERE id IN $ids",
+                {
+                    "ids": [
+                        # ``str(RecordID)`` wraps ids that start with a digit
+                        # in ``⟨...⟩`` for SurrealQL quoting; strip that display
+                        # quoting before rebuilding the typed record id.
+                        to_record_id(
+                            hit.memory_id.replace("⟨", "").replace("⟩", "")
+                        )
+                        for hit in fused
+                    ]
+                },
+            )
+            rows_by_id = {str(row["id"]): row for row in (rows or [])}
+
+            candidates: list[Candidate] = []
+            for rank, hit in enumerate(fused):
+                row = rows_by_id.get(hit.memory_id)
+                if row is None:
+                    continue
+                memory = Memory.model_validate(row)
+                memory_id = getattr(memory, "memory_id", None) or hit.memory_id
+                content = getattr(memory, "content", "") or ""
+                candidates.append(
+                    Candidate(
+                        block="memories",
+                        key=memory_id,
+                        dedup_keys=(
+                            "mem:" + memory_id,
+                            "text:" + normalise_text(content),
+                        ),
+                        payload=memory,
+                        rank=rank,
+                        source="recall.channels",
+                        channel_ranks=dict(hit.channel_ranks),
+                        fused_score=hit.score,
+                    )
+                )
+            if not candidates:
+                return [], None, {}
+
+            def _renderer(payloads: list[Any]) -> str:
+                if not payloads:
+                    return ""
+                return memory_manager._format_memories_xml(payloads, {})
+
+            return candidates, _renderer, {}
+
         emotional_state = request.emotional_state
         current_emotions: dict[str, float] | None = None
         if emotional_state is not None:

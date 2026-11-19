@@ -204,6 +204,8 @@ def assemble(
                     tokens=_tokens_for(cand),
                     fate=fate,
                     duplicate_of=dup_of,
+                    channel_ranks=cand.channel_ranks,
+                    fused_score=cand.fused_score,
                 )
             )
 

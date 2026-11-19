@@ -86,6 +86,8 @@ class Candidate:
     payload: Any
     rank: int
     source: str
+    channel_ranks: dict[str, int] | None = None
+    fused_score: float | None = None
 
 
 @dataclass
@@ -99,6 +101,8 @@ class TraceItem:
     tokens: int
     fate: Literal["kept", "duplicate", "over_budget"]
     duplicate_of: str | None = None
+    channel_ranks: dict[str, int] | None = None
+    fused_score: float | None = None
 
 
 @dataclass

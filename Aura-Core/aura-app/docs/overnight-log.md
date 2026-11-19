@@ -1417,6 +1417,27 @@
   - `rrf` reads `hit.rank` rather than the hit's position in the list; the channels set `rank` from `enumerate`, so the two agree today. If a later card ever reorders a list without re-ranking it, `rrf` would follow `rank`, per the card's wording.
   - A repeated `memory_id` inside a single channel would accumulate two score terms and the later rank would overwrite the earlier one in `channel_ranks`; the channels return each id at most once, so this is not exercised.
 
+## W3-05: The memories block runs on the new channels (flagged)
+- **Status:** DONE
+- **PRD:** memory 6.3 steps 2 to 4, rule 7, M3
+- **Tier:** frontier
+- **Files changed:** `src/aura/config.py`, `src/aura/engines/recall/models.py`, `src/aura/engines/recall/assembly.py`, `src/aura/engines/recall/engine.py`, new `tests/scenarios/test_recall_channels_wired_embedded.py`
+- **Test result:** full suite passes (288 passed, 81 warnings); `tests/scenarios/test_recall_channels_wired_embedded.py` 4 passed
+- **What I did:**
+  1. Added `recall_channels_enabled` (default `False`, alias `AURA_RECALL_CHANNELS_ENABLED`) to `config.py` after `recall_rrf_k`.
+  2. Added `channel_ranks: dict[str, int] | None = None` and `fused_score: float | None = None` as the last fields of `Candidate` and `TraceItem` in `models.py`; `assemble` copies both from the candidate into the trace item.
+  3. In `_build_memories`, the flag-on branch calls `build_queries(request.user_input, request.recent_turns)`, embeds `dense_text` with `memory_manager.embeddings.embed`, and runs `dense_channel` and `lexical_channel` together with `asyncio.gather(..., return_exceptions=True)` (dense gets the embedding, lexical gets `lexical_text`; both get the request's `user_id` and `namespace`). The two hit lists are fused with `rrf` as `{"dense": ..., "lexical": ...}`, cut to `request.limit`, loaded with one parameterised `SELECT * FROM memory WHERE id IN $ids`, and rebuilt as `Memory.model_validate(row)` in the fused order. Candidates use `source="recall.channels"`, carry `channel_ranks` and `fused_score`, and the renderer calls `memory_manager._format_memories_xml(payloads, {})` (no thought clusters).
+  4. A channel exception records `channel_errors["memories.dense"]` / `["memories.lexical"]` and that channel contributes an empty list, so the other channel's hits still flow through. To record those keys, `_build_memories` takes the turn's `channel_errors` dict as an optional second argument; `recall` passes it in.
+  5. With the flag off, `_build_memories` takes today's `retrieve_for_l3_parts` path unchanged (same emotions, limit, namespace, depth, candidates, renderer and cluster data).
+  6. Four tests on the embedded engine with the runner's stub embeddings and seeded memories: a lexical-only name reaches the block; the block's trace items carry non-empty `channel_ranks` and float `fused_score`; a raising dense channel records `memories.dense` and still renders the lexical target; with the flag off `retrieve_for_l3_parts` is called once and both channels are forbidden.
+- **"Done when" verified:** The new tests pass and the full suite passes (288 passed). `grep -n "settings.recall_channels_enabled" src/aura/engines/recall/engine.py` prints the branch line (367).
+- **Do not checks respected:** The flag stays off by default. `MemoryManager` and the other three blocks are untouched. No model call is added.
+- **Unsure about:**
+  - The fused-id load needs a typed `RecordID` for the embedded engine: binding plain strings returns no rows, and the SDK renders ids that start with a digit as `memory:⟨...⟩`. I strip those display angle brackets before `to_record_id(...)` (a private helper already used for such conversions) so the one parameterised query matches; without this, an id such as `memory:⟨6tw...⟩` silently dropped its row. Flagging in case the review wants that conversion handled in `db/query_utils.py` instead.
+  - `_build_memories` gained an optional `channel_errors` argument so it can record the per-channel keys the card names; the call site is the only caller and the flag-off behaviour is unchanged.
+  - The `channel_ranks` keys are `"dense"` and `"lexical"`, matching the error-key suffixes; the card does not name them.
+  - The lexical-only test gives the target an unrelated stored embedding and sets `recall_dense_k = 1` so the dense channel provably omits it; the runner's stub would otherwise rank a name by its tokens just as well as BM25 does.
+
 ## W2-30: Tool selection: the top few by similarity and recent success
 - **Status:** STOPPED — already committed before this session
 - **What I found:** W2-30 is already implemented and committed on this branch as `fd9a35c` ("W2-30: Tool selection: the top few by similarity and recent success"), and it is an ancestor of HEAD (the branch is already at `ce4ae35 W3-04`). `docs/overnight-log.md` already has a W2-30 entry above (line 1130). `HEAD` already contains the three `tool_selection_*` fields in `src/aura/config.py` and the `ToolRegistry.select_tools` method with its tests.

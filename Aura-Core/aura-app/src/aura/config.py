@@ -607,6 +607,13 @@ class Settings(BaseSettings):
         validation_alias="AURA_RECALL_RRF_K",
         description="Constant k in Reciprocal Rank Fusion's 1 / (k + rank + 1) score.",
     )
+    recall_channels_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_CHANNELS_ENABLED",
+        description="When true, the memories block retrieves through the dense and "
+                    "lexical channels fused with RRF (PRD 6.3 steps 2-4) instead of "
+                    "retrieve_for_l3_parts. Off by default.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(
