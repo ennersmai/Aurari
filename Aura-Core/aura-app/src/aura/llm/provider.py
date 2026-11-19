@@ -7,6 +7,11 @@ from typing import Any
 import httpx
 
 from aura.config import settings
+from aura.llm.tool_calls import (
+    ModelTurn,
+    StreamToolCallAccumulator,
+    parse_openai_tool_calls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +171,31 @@ class OpenRouterClient:
                 
                 raise last_error or e
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> ModelTurn:
+        """Completion that offers ``tools`` and returns text plus tool calls.
+
+        Routing through :meth:`complete` keeps its retry and fallback policy:
+        the tools travel in the payload, and with them present the request
+        executor returns a :class:`ModelTurn` instead of text.
+        """
+        return await self.complete(
+            messages,
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice="auto",
+            **kwargs,
+        )
+
     async def _execute_complete(
         self,
         messages: list[dict[str, str]],
@@ -202,9 +232,17 @@ class OpenRouterClient:
         response.raise_for_status()
         data = response.json()
 
+        with_tools = kwargs.get("tools") is not None
         if "choices" in data and len(data["choices"]) > 0:
             msg = data["choices"][0].get("message", {}) if isinstance(data["choices"][0], dict) else {}
             content = msg.get("content") if isinstance(msg, dict) else None
+            if with_tools:
+                return ModelTurn(
+                    text=content if isinstance(content, str) else "",
+                    tool_calls=parse_openai_tool_calls(
+                        msg.get("tool_calls") if isinstance(msg, dict) else None
+                    ),
+                )
             if content is None or (isinstance(content, str) and content.strip() == ""):
                 # Exponential fallback: content → reasoning → reasoning_details
                 # Reasoning models (e.g. qwen3.6-27b, grok-4.3) may return output in
@@ -280,6 +318,32 @@ class OpenRouterClient:
             
             raise e
 
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ):
+        """Stream text deltas and, at the end, the joined tool calls.
+
+        Routing through :meth:`stream_complete` keeps its fallback policy;
+        with ``tools`` in the payload the stream yields ``("text", chunk)``
+        items and one final ``("tool_calls", calls)`` item.
+        """
+        async for item in self.stream_complete(
+            messages,
+            model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            tool_choice="auto",
+            **kwargs,
+        ):
+            yield item
+
     async def _execute_stream(
         self,
         messages: list[dict[str, str]],
@@ -291,6 +355,9 @@ class OpenRouterClient:
         """Internal streaming method."""
         if not self.api_key:
             raise ValueError("OpenRouter API key not configured")
+
+        with_tools = kwargs.get("tools") is not None
+        accumulator = StreamToolCallAccumulator() if with_tools else None
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -331,16 +398,21 @@ class OpenRouterClient:
                             delta = data["choices"][0].get("delta", {})
                             content = delta.get("content", "")
                             if content:
-                                yield content
+                                yield ("text", content) if with_tools else content
                             else:
                                 # Exponential fallback: content → reasoning → reasoning_details
                                 for fallback_key in ("reasoning", "reasoning_details"):
                                     fallback = delta.get(fallback_key, "")
                                     if fallback:
-                                        yield fallback
+                                        yield ("text", fallback) if with_tools else fallback
                                         break
+                            if accumulator is not None:
+                                accumulator.add(delta.get("tool_calls") or [])
                     except json.JSONDecodeError:
                         continue
+
+        if accumulator is not None:
+            yield ("tool_calls", accumulator.calls())
 
     async def close(self) -> None:
         """Close the HTTP client."""

@@ -1293,3 +1293,25 @@
 - **Unsure about:**
   - Placement of `get_tool_registry().refresh(db)` in `main.py`: the card says "after the database is connected". I put it after the schema bootstrap loop (still after connection) because that loop runs `register_local_tools.surql`, whose `local_function` skill rows `refresh` needs; putting it immediately after `connect()` would miss them on a fresh boot.
   - Stage 7's `_cache_system_prompt` (and `_gather_turn_context`'s `synthesis_context`) still has no `offered_tools`, so the prompt cached for debugging shows no `<available_tools>`. The card only asked to pass the list into both `_round` loop contexts and not to change anything else, so I left that path alone.
+
+## W2-36: Native function calling in the model clients
+- **Status:** DONE
+- **Files changed:** new `src/aura/llm/tool_calls.py`, `src/aura/llm/provider.py`, `src/aura/llm/router.py`, `src/aura/llm/unified_provider.py`, `src/aura/llm/ollama_provider.py`, `src/aura/config.py` (`l3_native_tools`), new `tests/unit/test_native_tool_calls.py`
+- **Test result:** full suite passes (254 passed, 81 warnings); `tests/unit/test_native_tool_calls.py` 7 passed
+- **What I did:**
+  1. `tool_calls.py`: `ModelTurn(text, tool_calls)`; `to_openai_tools(records)` maps `ToolRecord`s by duck typing to `{"type": "function", "function": {name, description, parameters: input_schema}}`; `parse_openai_tool_calls(raw)` reads `message.tool_calls` into `{"tool", "arguments", "id"}` and, on invalid JSON (or non-object JSON), warns and keeps the call with `arguments == {}`; `StreamToolCallAccumulator` joins `delta.tool_calls` fragments by `index`.
+  2. `OpenRouterClient.complete_with_tools` calls the existing `complete` with `tools`/`tool_choice: "auto"` in the payload, so its retry and fallback loop runs unchanged; `_execute_complete` returns a `ModelTurn` when `tools` is present instead of raising on empty `content`. `stream_with_tools` likewise delegates to `stream_complete`, and `_execute_stream` yields `("text", chunk)` and one final `("tool_calls", calls)` when `tools` is present.
+  3. `OllamaClient` and `LocalInferenceClient` got the same two methods using their existing payload sanitiser and error mapping (`LocalInferenceClient`/`OllamaClient` have no retry of their own). `ContextModeRouter` dispatches `generate_with_tools` / `generate_stream_with_tools` by `context_mode` like `generate` / `generate_stream`.
+  4. `UnifiedLLMClient.complete_with_tools` / `stream_with_tools` route like `complete` / `stream_complete`, keeping the local→cloud fallback (`local/` models go to `OllamaClient`, which is why that provider was changed).
+  5. Config: `l3_native_tools: bool = False` (`AURA_L3_NATIVE_TOOLS`). Nothing reads it yet; W2-37 wires it.
+  6. Tests (MockTransport, no network): blocking `tool_calls` -> the exact `ModelTurn`; three streamed argument fragments -> one joined call; malformed argument JSON -> `arguments == {}` plus a warning record; captured payload contains `tools` and `tool_choice == "auto"`; helper mapping tests; `complete` without tools still returns text.
+- **"Done when" verified:**
+  - New tests and the full suite pass.
+  - `git diff` contains no edits inside any `complete` or `stream_complete`: in `ollama_provider.py` and `router.py` the diff has no deleted lines at all, and in `provider.py` / `unified_provider.py` the only changed lines are the new methods plus the bodies of `_execute_complete` / `_execute_stream`.
+- **Do not checks respected:** Did not wire anything into `layers.py` or the loop (W2-37), did not change `SynthesisContext`, did not add a dependency.
+- **Unsure about:**
+  - The reuse requirement ("reuse the existing retry and fallback code; do not copy it") conflicts with "complete / stream_complete unchanged". I resolved it by having `complete_with_tools` go through `complete` (and `stream_with_tools` through `stream_complete`) with the tools in the payload, and by teaching the private `_execute_*` methods to return the richer shape when `tools` is present. Consequence: `complete(...)` returns a `ModelTurn` rather than `str` only when called with a `tools` kwarg; no current caller does that. If the supervisor prefers two separately named execution paths, that is the line to revisit.
+  - `config.py` is not in the card's Files list, but Change step 5 requires the setting, so I added it there.
+  - The card's step 4 names only `unified_provider` routing; I also added the two `ContextModeRouter` dispatch methods because `router.py` is listed and its `generate` / `generate_stream` are the router's equivalents.
+  - `ollama_provider.py` was changed (not only read) because `UnifiedLLMClient` routes `local/` L3 models to `OllamaClient`; without the methods the unified routing would have no local implementation to call.
+  - There is no unit test for the unified local→cloud fallback of the new methods; the four behaviours the card lists are covered, plus helper tests.

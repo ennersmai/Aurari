@@ -23,6 +23,11 @@ import httpx
 from aura.config import settings
 from aura.llm.provider import OpenRouterClient
 from aura.llm.ollama_provider import OllamaClient
+from aura.llm.tool_calls import (
+    ModelTurn,
+    StreamToolCallAccumulator,
+    parse_openai_tool_calls,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +123,59 @@ class LocalInferenceClient:
                 f"Local inference endpoint timed out ({self._timeout}s) at {self._base_url}."
             )
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> ModelTurn:
+        """Completion that offers ``tools`` and returns text plus tool calls.
+
+        Same payload shape and error mapping as :meth:`complete`; the local
+        endpoint keeps no retry or fallback of its own.
+        """
+        client = await self._get_client()
+
+        sanitized = {k: v for k, v in kwargs.items() if k not in ("reasoning",)}
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+            "tools": tools,
+            "tool_choice": "auto",
+            **sanitized,
+        }
+
+        try:
+            resp = await client.post(self._base_url, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if "choices" in data and len(data["choices"]) > 0:
+                msg = data["choices"][0].get("message", {})
+                content = msg.get("content")
+                return ModelTurn(
+                    text=content if isinstance(content, str) else "",
+                    tool_calls=parse_openai_tool_calls(msg.get("tool_calls")),
+                )
+            raise ValueError("No completion returned from local inference endpoint")
+
+        except httpx.ConnectError:
+            raise ConnectionError(
+                f"Local inference endpoint unreachable at {self._base_url}. "
+                "Ensure your local LLM server (llama.cpp, vLLM, Ollama) is running."
+            )
+        except httpx.TimeoutException:
+            raise ConnectionError(
+                f"Local inference endpoint timed out ({self._timeout}s) at {self._base_url}."
+            )
+
     async def stream_complete(
         self,
         messages: list[dict[str, str]],
@@ -170,6 +228,69 @@ class LocalInferenceClient:
             raise ConnectionError(
                 f"Local inference endpoint unreachable at {self._base_url}."
             )
+
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ):
+        """Stream ``("text", chunk)`` items and one final ``("tool_calls", calls)``.
+
+        Same endpoint and error mapping as :meth:`stream_complete`; argument
+        fragments are joined by index as they arrive.
+        """
+        client = await self._get_client()
+
+        sanitized = {k: v for k, v in kwargs.items() if k not in ("reasoning",)}
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "tools": tools,
+            "tool_choice": "auto",
+            **sanitized,
+        }
+
+        accumulator = StreamToolCallAccumulator()
+
+        try:
+            async with client.stream("POST", self._base_url, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk_data = json.loads(data_str)
+                            if "choices" in chunk_data and len(chunk_data["choices"]) > 0:
+                                delta = chunk_data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield ("text", content)
+                                else:
+                                    # Exponential fallback: content → reasoning → reasoning_details
+                                    for fallback_key in ("reasoning", "reasoning_details"):
+                                        fallback = delta.get(fallback_key, "")
+                                        if fallback:
+                                            yield ("text", fallback)
+                                            break
+                                accumulator.add(delta.get("tool_calls") or [])
+                        except json.JSONDecodeError:
+                            continue
+        except httpx.ConnectError:
+            raise ConnectionError(
+                f"Local inference endpoint unreachable at {self._base_url}."
+            )
+
+        yield ("tool_calls", accumulator.calls())
 
     async def is_available(self) -> bool:
         """Probe whether the local endpoint is live."""
@@ -286,6 +407,64 @@ class ContextModeRouter:
         else:
             async for chunk in self._stream_cloud(messages, model, temperature, max_tokens, **kwargs):
                 yield chunk
+
+    # ------------------------------------------------------------------
+    # Native tool calls (dispatched by context_mode)
+    # ------------------------------------------------------------------
+
+    async def generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> ModelTurn:
+        """Complete with ``tools``, routed like :meth:`generate`."""
+        client = self._local if self._mode == "private_rp" else self._cloud
+        try:
+            return await client.complete_with_tools(
+                messages=messages, model=model, tools=tools,
+                temperature=temperature, max_tokens=max_tokens, **kwargs,
+            )
+        except ConnectionError:
+            raise
+        except Exception as e:
+            if client is self._local:
+                logger.error(f"Local inference failed: {e}")
+                raise ConnectionError(
+                    f"Local inference endpoint failed: {e}. "
+                    "The private_rp context mode requires a running local LLM server."
+                )
+            raise
+
+    async def generate_stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Stream with ``tools``, routed like :meth:`generate_stream`."""
+        client = self._local if self._mode == "private_rp" else self._cloud
+        try:
+            async for item in client.stream_with_tools(
+                messages=messages, model=model, tools=tools,
+                temperature=temperature, max_tokens=max_tokens, **kwargs,
+            ):
+                yield item
+        except ConnectionError:
+            raise
+        except Exception as e:
+            if client is self._local:
+                logger.error(f"Local inference stream failed: {e}")
+                raise ConnectionError(
+                    f"Local inference endpoint failed: {e}."
+                )
+            raise
 
     # ------------------------------------------------------------------
     # Internal dispatch helpers

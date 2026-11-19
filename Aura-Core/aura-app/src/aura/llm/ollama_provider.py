@@ -7,6 +7,12 @@ from typing import Any
 
 import httpx
 
+from aura.llm.tool_calls import (
+    ModelTurn,
+    StreamToolCallAccumulator,
+    parse_openai_tool_calls,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -140,6 +146,63 @@ class OllamaClient:
             logger.error(f"Ollama HTTP error: {e.response.status_code} - {e.response.text[:500]}")
             raise
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> ModelTurn:
+        """Completion that offers ``tools`` and returns text plus tool calls.
+
+        Same payload and error mapping as :meth:`complete`; Ollama keeps no
+        retry or fallback of its own, so the unified client supplies those.
+        """
+        sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in ("reasoning",)}
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": False,
+            "tools": tools,
+            "tool_choice": "auto",
+            **sanitized_kwargs,
+        }
+
+        try:
+            response = await self.client.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+
+            if "choices" in data and len(data["choices"]) > 0:
+                msg = data["choices"][0].get("message", {})
+                content = msg.get("content")
+                return ModelTurn(
+                    text=content if isinstance(content, str) else "",
+                    tool_calls=parse_openai_tool_calls(msg.get("tool_calls")),
+                )
+            raise ValueError("No completion returned from Ollama")
+
+        except httpx.ConnectError:
+            logger.error(
+                "❌ Cannot connect to Ollama. Is it running? "
+                f"Tried: {self.base_url}"
+            )
+            raise ConnectionError(
+                f"Ollama server not reachable at {self.base_url}. "
+                "Start it with: ollama serve"
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Ollama HTTP error: {e.response.status_code} - {e.response.text[:500]}")
+            raise
+
     async def stream_complete(
         self,
         messages: list[dict[str, str]],
@@ -212,6 +275,79 @@ class OllamaClient:
                 f"Ollama server not reachable at {self.base_url}. "
                 "Start it with: ollama serve"
             )
+
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ):
+        """Stream ``("text", chunk)`` items and one final ``("tool_calls", calls)``.
+
+        Same endpoint and error mapping as :meth:`stream_complete`; argument
+        fragments are joined by index as they arrive.
+        """
+        sanitized_kwargs = {k: v for k, v in kwargs.items() if k not in ("reasoning",)}
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "tools": tools,
+            "tool_choice": "auto",
+            **sanitized_kwargs,
+        }
+
+        accumulator = StreamToolCallAccumulator()
+
+        try:
+            async with self.client.stream(
+                "POST",
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+            ) as response:
+                response.raise_for_status()
+
+                async for line in response.aiter_lines():
+                    if line.startswith("data: "):
+                        data_str = line[6:]
+
+                        if data_str.strip() == "[DONE]":
+                            break
+
+                        try:
+                            import json
+
+                            data = json.loads(data_str)
+                            if "choices" in data and len(data["choices"]) > 0:
+                                delta = data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+                                if content:
+                                    yield ("text", content)
+                                else:
+                                    # Exponential fallback: content → reasoning → reasoning_details
+                                    for fallback_key in ("reasoning", "reasoning_details"):
+                                        fallback = delta.get(fallback_key, "")
+                                        if fallback:
+                                            yield ("text", fallback)
+                                            break
+                                accumulator.add(delta.get("tool_calls") or [])
+                        except json.JSONDecodeError:
+                            continue
+
+        except httpx.ConnectError:
+            logger.error(f"❌ Cannot connect to Ollama at {self.base_url}")
+            raise ConnectionError(
+                f"Ollama server not reachable at {self.base_url}. "
+                "Start it with: ollama serve"
+            )
+
+        yield ("tool_calls", accumulator.calls())
 
     async def complete_with_images(
         self,

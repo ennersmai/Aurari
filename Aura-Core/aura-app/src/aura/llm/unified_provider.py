@@ -6,6 +6,7 @@ from typing import Any
 from aura.config import settings
 from aura.llm.ollama_provider import OllamaClient
 from aura.llm.provider import OpenRouterClient
+from aura.llm.tool_calls import ModelTurn
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,50 @@ class UnifiedLLMClient:
                     )
             raise
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ) -> ModelTurn:
+        """Completion with ``tools``, routed like :meth:`complete`.
+
+        A local failure falls back to cloud exactly as :meth:`complete` does.
+        """
+        client, actual_model, provider = self._resolve_provider(model)
+        logger.debug(f"Routing tools to {provider}: {actual_model}")
+
+        try:
+            return await client.complete_with_tools(
+                messages=messages,
+                model=actual_model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+        except (ConnectionError, Exception) as e:
+            # If local fails and fallback is enabled, try cloud
+            if provider == "ollama" and settings.local_llm_fallback_to_cloud:
+                cloud_model = self._get_cloud_fallback(model)
+                if cloud_model:
+                    logger.warning(
+                        f"⚠️ Local model {actual_model} failed ({e}). "
+                        f"Falling back to cloud: {cloud_model}"
+                    )
+                    return await self.cloud.complete_with_tools(
+                        messages=messages,
+                        model=cloud_model,
+                        tools=tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    )
+            raise
+
     async def stream_complete(
         self,
         messages: list[dict[str, str]],
@@ -155,6 +200,53 @@ class UnifiedLLMClient:
                         **kwargs,
                     ):
                         yield chunk
+                    return
+            raise
+
+    async def stream_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        tools: list[dict],
+        temperature: float = 0.7,
+        max_tokens: int = 2000,
+        **kwargs: Any,
+    ):
+        """Stream with ``tools``, routed like :meth:`stream_complete`.
+
+        Yields ``("text", chunk)`` items and one final ``("tool_calls", calls)``;
+        a local failure falls back to cloud exactly as :meth:`stream_complete`.
+        """
+        client, actual_model, provider = self._resolve_provider(model)
+        logger.debug(f"Streaming tools from {provider}: {actual_model}")
+
+        try:
+            async for item in client.stream_with_tools(
+                messages=messages,
+                model=actual_model,
+                tools=tools,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            ):
+                yield item
+        except (ConnectionError, Exception) as e:
+            if provider == "ollama" and settings.local_llm_fallback_to_cloud:
+                cloud_model = self._get_cloud_fallback(model)
+                if cloud_model:
+                    logger.warning(
+                        f"⚠️ Local stream {actual_model} failed ({e}). "
+                        f"Falling back to cloud: {cloud_model}"
+                    )
+                    async for item in self.cloud.stream_with_tools(
+                        messages=messages,
+                        model=cloud_model,
+                        tools=tools,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        **kwargs,
+                    ):
+                        yield item
                     return
             raise
 

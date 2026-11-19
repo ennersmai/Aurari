@@ -395,6 +395,11 @@ class Settings(BaseSettings):
         le=32768,
         description="Max new tokens to generate per L3 response.",
     )
+    l3_native_tools: bool = Field(
+        default=False,
+        validation_alias="AURA_L3_NATIVE_TOOLS",
+        description="Offer L3 tools through the model API's native tools parameter (W2-36). Off unless the model supports tools.",
+    )
 
     # =========================================================================
     # LAYER ENABLE / DISABLE — Per-layer cognitive bypass
