@@ -1096,7 +1096,7 @@ W2-20 changes the first two points on purpose. See that card.
     - `src/aura/main.py`: only the `l5_animation` import (line 32) and its `include_router` line (line 490)
   - **Read:** `frontend/src/components/SpiralAvatar.tsx`, and the `FloatingAvatarWindow.tsx` collapsed-state `Box` (around lines 160 to 180, for the position values) before deleting it.
 - **Change:**
-  1. Setup: from `frontend/`, run `npm ci` first. `node_modules` is not installed in this checkout. Then run `npm run build` once **before** any change, and record whether it passes. If it fails before the change, stop and report the errors. Do not fix unrelated build errors.
+  1. Setup: from `frontend/`, run `npm ci` first. `node_modules` is not installed in this checkout. Then run `npm run build` once **before** any change, and record whether it passes. Mai decided on 2026-11-20 to remove the VRM feature without restoring its missing files: the pre-change build is expected to fail on unresolved imports of `lib/VRMAnimation/...` and `lib/VRMLookAtSmootherLoaderPlugin/...`, which only files inside `vrm-engine/` import, and this card deletes that directory. Record the pre-change errors in the log. If the pre-change build fails for any other reason, stop and report those errors. Do not recreate, stub or download the missing files, and do not fix unrelated build errors. The build must pass after the change.
   2. Delete the files and directories listed above with `git rm -r`. `public/vrm-assets/` holds:
      - 10 `.vrm` models: `Aera`, `AvatarSample_A` to `AvatarSample_D`, `Dhahlia`, `Epithet`, `Lara Lightland`, `Onyx` and `Velara`
      - 15 `.vrma` clips
