@@ -6,25 +6,25 @@ This is a standalone script (standard library only: http.server and threading)
 that prints the two lines (URL and password) and serves /api/info behind
 Basic auth, with the version taken from a command-line argument.
 
-Extended for W3-31 to also support:
-- PATCH /api/experimental/config for agent configuration
-- GET /api/agent for agent listing
+Extended for W3-31a to read agents from XDG_CONFIG_HOME/opencode/opencode.jsonc
+and serve GET /api/agent and GET /api/agent/{id}.
 
 Usage:
     python tests/fixtures/fake_opencode_server.py --version 2.3.2
     python tests/fixtures/fake_opencode_server.py --version 3.0.0 --exit-immediately
-    python tests/fixtures/fake_opencode_server.py --version 2.3.2 --agents '{"aura-explore": {...}}'
-    python tests/fixtures/fake_opencode_server.py --version 2.3.2 --reject-patch
+    XDG_CONFIG_HOME=/path/to/config python tests/fixtures/fake_opencode_server.py --version 2.3.2
 """
 
 import argparse
 import base64
 import http.server
 import json
+import os
 import sys
 import threading
 import time
 from http import HTTPStatus
+from pathlib import Path
 from typing import Any, ClassVar
 
 
@@ -37,27 +37,28 @@ def record_request(path: str) -> None:
     _request_paths.append(path)
 
 
-# Global agent store (configured via PATCH /api/experimental/config)
+# Global agent store (loaded from XDG_CONFIG_HOME/opencode/opencode.jsonc)
 _configured_agents: dict[str, dict[str, Any]] = {}
-# Flag to reject PATCH requests
-_reject_patch: bool = False
 
 
-def set_configured_agents(agents: dict[str, dict[str, Any]]) -> None:
-    """Set the configured agents for testing."""
-    global _configured_agents
-    _configured_agents = agents
+def load_agents_from_config_dir(config_dir: str | None) -> dict[str, dict[str, Any]]:
+    """Load agents from <config_dir>/opencode/opencode.jsonc."""
+    if not config_dir:
+        return {}
+    config_path = Path(config_dir) / "opencode" / "opencode.jsonc"
+    if not config_path.exists():
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        return config.get("agents", {})
+    except Exception:
+        return {}
 
 
 def get_configured_agents() -> dict[str, dict[str, Any]]:
     """Get the currently configured agents."""
     return _configured_agents
-
-
-def set_reject_patch(reject: bool) -> None:
-    """Set whether to reject PATCH requests."""
-    global _reject_patch
-    _reject_patch = reject
 
 
 class FakeOpenCodeHandler(http.server.BaseHTTPRequestHandler):
@@ -130,61 +131,32 @@ class FakeOpenCodeHandler(http.server.BaseHTTPRequestHandler):
                 "data": agent_list,
             }
             self.wfile.write(json.dumps(response).encode("utf-8"))
-        else:
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
-            self.wfile.write(b"Not found")
-
-    def do_PATCH(self) -> None:
-        """Handle PATCH requests."""
-        record_request(self.path)
-
-        # Check Basic auth
-        auth_header = self.headers.get("Authorization", "")
-        if not auth_header.startswith("Basic "):
-            self.send_response(HTTPStatus.UNAUTHORIZED)
-            self.send_header("WWW-Authenticate", 'Basic realm="opencode"')
-            self.end_headers()
-            self.wfile.write(b"Unauthorized")
-            return
-
-        # Verify credentials
-        try:
-            encoded = auth_header[6:]
-            decoded = base64.b64decode(encoded).decode("utf-8")
-            username, password = decoded.split(":", 1)
-            if username != "opencode" or password != self.server.password:  # type: ignore[attr-defined]
-                self.send_response(HTTPStatus.UNAUTHORIZED)
+        # Handle GET /api/agent/{id}
+        elif self.path.startswith("/api/agent/"):
+            agent_id = self.path.split("/api/agent/")[1]
+            agents = get_configured_agents()
+            if agent_id in agents:
+                agent_def = agents[agent_id]
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
-                self.wfile.write(b"Invalid credentials")
-                return
-        except Exception:
-            self.send_response(HTTPStatus.UNAUTHORIZED)
-            self.end_headers()
-            self.wfile.write(b"Invalid auth format")
-            return
-
-        # Handle PATCH /api/experimental/config
-        if self.path == "/api/experimental/config":
-            if _reject_patch:
-                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                response = {
+                    "id": agent_id,
+                    "name": agent_def.get("description", agent_id),
+                    "model": agent_def.get("model", ""),
+                    "system": agent_def.get("system", ""),
+                    "description": agent_def.get("description", ""),
+                    "mode": agent_def.get("mode", "primary"),
+                    "hidden": False,
+                    "color": "#000000",
+                    "steps": 0,
+                    "permissions": agent_def.get("permissions", []),
+                }
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+            else:
+                self.send_response(HTTPStatus.NOT_FOUND)
                 self.end_headers()
-                self.wfile.write(b"PATCH rejected for testing")
-                return
-
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length).decode("utf-8")
-            try:
-                payload = json.loads(body)
-                # Accept agents field in the patch
-                if "agents" in payload:
-                    set_configured_agents(payload["agents"])
-                self.send_response(HTTPStatus.NO_CONTENT)
-                self.end_headers()
-            except Exception:
-                self.send_response(HTTPStatus.BAD_REQUEST)
-                self.end_headers()
-                self.wfile.write(b"Invalid JSON")
+                self.wfile.write(b"Agent not found")
         else:
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
@@ -202,21 +174,14 @@ def run_server(
     password: str,
     exit_immediately: bool = False,
     exit_before_output: bool = False,
-    agents_json: str | None = None,
-    reject_patch: bool = False,
 ) -> None:
     """Run the fake OpenCode server."""
     FakeOpenCodeHandler.version = version
 
-    # Pre-configure agents if provided
-    if agents_json:
-        try:
-            set_configured_agents(json.loads(agents_json))
-        except Exception:
-            pass
-
-    # Set reject patch flag
-    set_reject_patch(reject_patch)
+    # Load agents from XDG_CONFIG_HOME
+    config_dir = os.environ.get("XDG_CONFIG_HOME")
+    global _configured_agents
+    _configured_agents = load_agents_from_config_dir(config_dir)
 
     server = http.server.HTTPServer((host, port), FakeOpenCodeHandler)
     server.password = password  # type: ignore[attr-defined]
@@ -279,17 +244,6 @@ def main() -> None:
         action="store_true",
         help="Exit immediately before printing URL and password (simulates crash before output)",
     )
-    parser.add_argument(
-        "--agents",
-        type=str,
-        default=None,
-        help="JSON string of initial agents to configure",
-    )
-    parser.add_argument(
-        "--reject-patch",
-        action="store_true",
-        help="Reject PATCH /api/experimental/config requests (for testing missing agents)",
-    )
     # Ignore unknown arguments (like 'serve', '--hostname', etc. from OpenCodeProcess)
     args, _ = parser.parse_known_args()
 
@@ -300,8 +254,6 @@ def main() -> None:
         args.password,
         args.exit_immediately,
         args.exit_before_output,
-        args.agents,
-        args.reject_patch,
     )
 
 

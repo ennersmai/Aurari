@@ -7,7 +7,71 @@ Config.AgentEncoded shape as defined by the OpenCode v2.3.2 spec.
 
 from __future__ import annotations
 
+import json
+import os
+import tempfile
+from pathlib import Path
 from typing import Any
+
+from aura.config import settings
+
+
+def write_config(config_dir: Path) -> Path:
+    """
+    Write the OpenCode config file to <config_dir>/opencode/opencode.jsonc.
+
+    The config contains exactly two top-level keys:
+    - "provider": the sluice provider with baseURL from settings.opencode_router_base_url
+    - "agents": the three Aura agent definitions from agent_definitions()
+
+    Writes atomically (temp file then replace) and creates directories as needed.
+    Returns the path to the written config file.
+    """
+    # Build the provider configuration
+    provider_config = {
+        "npm": "@ai-sdk/openai-compatible",
+        "name": "Sluice",
+        "options": {"baseURL": settings.opencode_router_base_url},
+        "models": {
+            "coder": {"name": "coder"},
+            "chat": {"name": "chat"},
+        },
+    }
+
+    # Get agent definitions and replace model placeholder
+    definitions = agent_definitions()
+    model = settings.opencode_agent_model
+    for agent in definitions.values():
+        if agent.get("model") == "{{opencode_agent_model}}":
+            agent["model"] = model
+
+    # Build the full config
+    config = {
+        "provider": provider_config,
+        "agents": definitions,
+    }
+
+    # Create the config directory
+    opencode_dir = config_dir / "opencode"
+    opencode_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write atomically: temp file then replace
+    config_path = opencode_dir / "opencode.jsonc"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        dir=opencode_dir,
+        prefix=".opencode.jsonc.tmp.",
+        suffix="",
+        delete=False,
+        encoding="utf-8",
+    ) as f:
+        json.dump(config, f, indent=2)
+        temp_path = Path(f.name)
+
+    # Atomic replace
+    temp_path.replace(config_path)
+
+    return config_path
 
 
 def agent_definitions() -> dict[str, dict[str, Any]]:

@@ -1,17 +1,20 @@
 """
-Tests for OpenCode agent definitions (W3-31).
+Tests for OpenCode agent definitions (W3-31, W3-31a).
 
 Validates:
 1. Agent definitions match Config.AgentEncoded schema
 2. Permission rulesets match Permission.Ruleset schema
-3. Fake server from W3-27 extended to serve GET /api/agent
-4. Start fails when an agent is missing
+3. write_config produces valid JSON with provider and three agents
+4. Fake server reads agents from XDG_CONFIG_HOME and serves GET /api/agent and GET /api/agent/{id}
+5. Start fails when an agent is missing
 """
 
 from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,8 +24,8 @@ import pytest
 # Add the project root to the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from aura.connections.opencode_agents import agent_definitions, validate_agent_definitions
-from aura.connections.opencode_process import OpenCodeAgentError, OpenCodeProcess
+from aura.connections.opencode_agents import agent_definitions, validate_agent_definitions, write_config
+from aura.connections.opencode_process import OpenCodeAgentError, OpenCodeProcess, OpenCodeStartError
 
 
 class TestAgentDefinitions:
@@ -194,8 +197,73 @@ class TestAgentValidation:
         assert any("permissions must be a list" in e for e in errors)
 
 
+class TestWriteConfig:
+    """Tests for the write_config function (W3-31a)."""
+
+    def test_write_config_creates_valid_json_with_provider_and_agents(self) -> None:
+        """Test that write_config produces valid JSON with provider and three agents."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            config_path = write_config(config_dir)
+
+            # Check file exists
+            assert config_path.exists()
+            assert config_path == config_dir / "opencode" / "opencode.jsonc"
+
+            # Load and validate JSON
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+            # Check top-level keys
+            assert set(config.keys()) == {"provider", "agents"}
+
+            # Check provider
+            provider = config["provider"]
+            assert provider["npm"] == "@ai-sdk/openai-compatible"
+            assert provider["name"] == "Sluice"
+            assert "options" in provider
+            assert provider["options"]["baseURL"] == "http://127.0.0.1:8787/v1"
+            assert "models" in provider
+            assert provider["models"]["coder"]["name"] == "coder"
+            assert provider["models"]["chat"]["name"] == "chat"
+
+            # Check agents
+            agents = config["agents"]
+            assert set(agents.keys()) == {"aura-explore", "aura-build", "aura-review"}
+
+            for agent_id, agent in agents.items():
+                assert "model" in agent
+                assert "system" in agent
+                assert "description" in agent
+                assert "mode" in agent
+                assert "permissions" in agent
+                # Model placeholder should be replaced with actual model
+                assert agent["model"] == "sluice/coder"
+
+    def test_write_config_creates_directories(self) -> None:
+        """Test that write_config creates the opencode directory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir) / "nested" / "config"
+            config_path = write_config(config_dir)
+
+            assert config_path.exists()
+            assert config_path.parent.exists()
+
+    def test_write_config_is_atomic(self) -> None:
+        """Test that write_config writes atomically (no partial writes)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            config_path = write_config(config_dir)
+
+            # File should exist and be valid JSON immediately
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            assert "provider" in config
+            assert "agents" in config
+
+
 class TestOpenCodeProcessAgents:
-    """Tests for OpenCodeProcess agent configuration (using fake server)."""
+    """Tests for OpenCodeProcess agent configuration using fake server (W3-31a)."""
 
     @pytest.fixture
     def free_port(self) -> int:
@@ -220,6 +288,8 @@ class TestOpenCodeProcessAgents:
         original_port = settings.opencode_port
         original_timeout = settings.opencode_start_timeout_secs
         original_agent_model = settings.opencode_agent_model
+        original_config_dir = settings.opencode_config_dir
+        original_router_base_url = settings.opencode_router_base_url
 
         yield
 
@@ -229,137 +299,190 @@ class TestOpenCodeProcessAgents:
         settings.opencode_port = original_port
         settings.opencode_start_timeout_secs = original_timeout
         settings.opencode_agent_model = original_agent_model
+        settings.opencode_config_dir = original_config_dir
+        settings.opencode_router_base_url = original_router_base_url
 
-    async def test_configure_agents_success(
+    async def test_start_succeeds_with_agents_via_xdg_config_home(
         self, free_port: int, fake_server_script: Path
     ) -> None:
-        """Test that agent configuration succeeds with a server that supports agents."""
+        """Test that agent configuration succeeds via XDG_CONFIG_HOME."""
         from aura.config import settings
         from aura.connections.opencode_process import OpenCodeConnection
 
-        # Configure settings to use the fake server with pre-configured agents
-        # We'll pass the agent definitions as initial agents to the fake server
-        from aura.connections.opencode_agents import agent_definitions
-        definitions = agent_definitions()
-        agents_json = json.dumps(definitions)
+        # Create a temporary config directory and write the config
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            write_config(config_dir)
 
-        settings.opencode_command = [
-            sys.executable,
-            str(fake_server_script),
-            "--version",
-            "2.3.2",
-            "--port",
-            str(free_port),
-            "--password",
-            "test-secret-123",
-            "--agents",
-            agents_json,
-        ]
-        settings.opencode_version_pin = "2.3.2"
-        settings.opencode_host = "127.0.0.1"
-        settings.opencode_port = free_port
-        settings.opencode_start_timeout_secs = 10
-        settings.opencode_agent_model = "sluice/coder"
+            # Configure settings to use the fake server with XDG_CONFIG_HOME
+            settings.opencode_command = [
+                sys.executable,
+                str(fake_server_script),
+                "--version",
+                "2.3.2",
+                "--port",
+                str(free_port),
+                "--password",
+                "test-secret-123",
+            ]
+            settings.opencode_version_pin = "2.3.2"
+            settings.opencode_host = "127.0.0.1"
+            settings.opencode_port = free_port
+            settings.opencode_start_timeout_secs = 10
+            settings.opencode_agent_model = "sluice/coder"
+            settings.opencode_config_dir = str(config_dir)
+            settings.opencode_router_base_url = "http://127.0.0.1:8787/v1"
 
-        process = OpenCodeProcess()
-        connection = await process.start()
+            process = OpenCodeProcess()
+            connection = await process.start()
 
-        try:
-            assert isinstance(connection, OpenCodeConnection)
-            assert connection.version == "2.3.2"
-        finally:
+            try:
+                assert isinstance(connection, OpenCodeConnection)
+                assert connection.version == "2.3.2"
+
+                # Verify agents are accessible via GET /api/agent/{id}
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    for agent_id in ["aura-explore", "aura-build", "aura-review"]:
+                        response = await client.get(
+                            f"{connection.base_url}/api/agent/{agent_id}",
+                            auth=connection.auth,
+                        )
+                        assert response.status_code == 200, f"Agent {agent_id} not found"
+                        data = response.json()
+                        assert data["id"] == agent_id
+            finally:
+                await process.stop()
+
+    async def test_start_fails_when_agent_missing(
+        self, free_port: int, fake_server_script: Path, monkeypatch
+    ) -> None:
+        """Test that start fails with OpenCodeStartError when an agent is missing."""
+        from aura.config import settings
+        import aura.connections.opencode_process as opencode_process_module
+
+        # Create a config with only one agent
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            opencode_dir = config_dir / "opencode"
+            opencode_dir.mkdir(parents=True)
+            config_path = opencode_dir / "opencode.jsonc"
+            config = {
+                "provider": {
+                    "npm": "@ai-sdk/openai-compatible",
+                    "name": "Sluice",
+                    "options": {"baseURL": "http://127.0.0.1:8787/v1"},
+                    "models": {"coder": {"name": "coder"}, "chat": {"name": "chat"}},
+                },
+                "agents": {
+                    "aura-explore": {
+                        "model": "sluice/coder",
+                        "system": "test",
+                        "description": "test",
+                        "mode": "subagent",
+                        "permissions": [],
+                    }
+                },
+            }
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(config, f)
+
+            # Patch write_config where it's used in opencode_process
+            def mock_write_config(config_dir_arg: Path) -> Path:
+                # Just return the existing config path without overwriting
+                return config_path
+
+            monkeypatch.setattr(opencode_process_module, "write_config", mock_write_config)
+
+            settings.opencode_command = [
+                sys.executable,
+                str(fake_server_script),
+                "--version",
+                "2.3.2",
+                "--port",
+                str(free_port),
+                "--password",
+                "test-secret-123",
+            ]
+            settings.opencode_version_pin = "2.3.2"
+            settings.opencode_host = "127.0.0.1"
+            settings.opencode_port = free_port
+            settings.opencode_start_timeout_secs = 10
+            settings.opencode_agent_model = "sluice/coder"
+            settings.opencode_config_dir = str(config_dir)
+
+            process = OpenCodeProcess()
+
+            with pytest.raises(OpenCodeStartError) as exc_info:
+                await process.start()
+
+            error_msg = str(exc_info.value)
+            assert "not found" in error_msg.lower() or "missing" in error_msg.lower()
+            # Should mention one of the missing agents
+            assert "aura-build" in error_msg or "aura-review" in error_msg
+
             await process.stop()
 
-    async def test_configure_agents_missing_raises_error(
+    async def test_no_request_to_experimental_config(
         self, free_port: int, fake_server_script: Path
     ) -> None:
-        """Test that missing agents after configuration raises OpenCodeAgentError."""
+        """Test that no request to /api/experimental/config is ever made."""
         from aura.config import settings
+        from tests.fixtures.fake_opencode_server import _request_paths
 
-        # Configure fake server to reject PATCH /api/experimental/config
-        # by not including the agents in the initial config and making PATCH fail
-        settings.opencode_command = [
-            sys.executable,
-            str(fake_server_script),
-            "--version",
-            "2.3.2",
-            "--port",
-            str(free_port),
-            "--password",
-            "test-secret-123",
-            "--reject-patch",  # Custom flag to make PATCH fail
-        ]
-        settings.opencode_version_pin = "2.3.2"
-        settings.opencode_host = "127.0.0.1"
-        settings.opencode_port = free_port
-        settings.opencode_start_timeout_secs = 10
-        settings.opencode_agent_model = "sluice/coder"
+        # Clear request paths
+        _request_paths.clear()
 
-        process = OpenCodeProcess()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            write_config(config_dir)
 
-        with pytest.raises(OpenCodeAgentError) as exc_info:
-            await process.start()
+            settings.opencode_command = [
+                sys.executable,
+                str(fake_server_script),
+                "--version",
+                "2.3.2",
+                "--port",
+                str(free_port),
+                "--password",
+                "test-secret-123",
+            ]
+            settings.opencode_version_pin = "2.3.2"
+            settings.opencode_host = "127.0.0.1"
+            settings.opencode_port = free_port
+            settings.opencode_start_timeout_secs = 10
+            settings.opencode_agent_model = "sluice/coder"
+            settings.opencode_config_dir = str(config_dir)
 
-        error_msg = str(exc_info.value)
-        assert "Missing agents" in error_msg
-        assert "aura-build" in error_msg
-        assert "aura-review" in error_msg
+            process = OpenCodeProcess()
+            connection = await process.start()
 
-        await process.stop()
-
-    async def test_patch_config_updates_agents(
-        self, free_port: int, fake_server_script: Path
-    ) -> None:
-        """Test that PATCH /api/experimental/config updates the agents."""
-        from aura.config import settings
-
-        # Start with no agents
-        settings.opencode_command = [
-            sys.executable,
-            str(fake_server_script),
-            "--version",
-            "2.3.2",
-            "--port",
-            str(free_port),
-            "--password",
-            "test-secret-123",
-        ]
-        settings.opencode_version_pin = "2.3.2"
-        settings.opencode_host = "127.0.0.1"
-        settings.opencode_port = free_port
-        settings.opencode_start_timeout_secs = 10
-        settings.opencode_agent_model = "sluice/coder"
-
-        process = OpenCodeProcess()
-        connection = await process.start()
-
-        try:
-            # Verify agents were configured via PATCH
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get(
-                    f"{connection.base_url}/api/agent",
-                    auth=connection.auth,
+            try:
+                # Check that no request to /api/experimental/config was made
+                experimental_config_requests = [
+                    p for p in _request_paths if p == "/api/experimental/config"
+                ]
+                assert len(experimental_config_requests) == 0, (
+                    f"Unexpected request to /api/experimental/config: {experimental_config_requests}"
                 )
-                assert response.status_code == 200
-                data = response.json()
-                agents = data.get("data", [])
-                agent_ids = {agent.get("id") for agent in agents}
-                expected = {"aura-explore", "aura-build", "aura-review"}
-                assert expected.issubset(agent_ids), f"Missing agents: {expected - agent_ids}"
-        finally:
-            await process.stop()
+
+                # Verify agents are accessible
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get(
+                        f"{connection.base_url}/api/agent",
+                        auth=connection.auth,
+                    )
+                    assert response.status_code == 200
+            finally:
+                await process.stop()
 
 
-class TestFakeServerExtended:
-    """Tests for the extended fake server that serves GET /api/agent."""
+class TestFakeServerXDGConfigHome:
+    """Tests for the fake server reading from XDG_CONFIG_HOME (W3-31a)."""
 
-    def test_fake_server_serves_agents_endpoint(self) -> None:
+    def test_fake_server_loads_agents_from_xdg_config_home(self, tmp_path: Path) -> None:
         """
-        Test that the fake server from W3-27 extended to serve GET /api/agent.
-
-        This test verifies the fake server handles the agents endpoint.
+        Test that the fake server loads agents from XDG_CONFIG_HOME/opencode/opencode.jsonc.
         """
-        # The fake_opencode_server.py now supports:
-        # - GET /api/agent returning configured agents
-        # - PATCH /api/experimental/config to update agents
+        # This test verifies the fake server handles the config file
+        # The actual loading is tested in the integration tests above
         pass

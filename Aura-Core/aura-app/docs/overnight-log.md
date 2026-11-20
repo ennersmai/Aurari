@@ -2123,3 +2123,27 @@
 - **Done when:** satisfied — the new tests pass, the full suite passes (602 passed), and the log entry names the mechanism and its evidence.
 - **Do-not checks respected:** No write to `~/.config/opencode/` or any file outside Aura's own directories.
 - **Unsure about:** The `Config.Patch` schema in the spec only documents `shell` as a patchable field, but the actual v2.3.2 server implementation accepts `agents`. This is documented in the log. If a future OpenCode version removes this, the mechanism would need to change (e.g., to a config file passed via CLI flag).
+
+## W3-31a: The agents reach Aura's server through an Aura-owned config directory
+- **Status:** DONE
+- **PRD:** agency 4.3
+- **Tier:** frontier
+- **Depends on:** W3-31
+- **Files changed:**
+  - `src/aura/config.py` (added `opencode_config_dir` and `opencode_router_base_url` settings)
+  - `src/aura/connections/opencode_agents.py` (added `write_config` function)
+  - `src/aura/connections/opencode_process.py` (changed agent configuration mechanism to XDG_CONFIG_HOME)
+  - `tests/fixtures/fake_opencode_server.py` (dropped PATCH handler, reads agents from XDG_CONFIG_HOME)
+  - `tests/unit/test_opencode_agents.py` (added tests for write_config and new mechanism)
+  - `tests/unit/test_opencode_process.py` (added tests for new mechanism)
+- **Test result:** 609 passed (full suite: 585 prior + 17 new + 7 new W3-31a tests)
+- **What I did, step by step:**
+  1. **Config (`config.py`):** Added `opencode_config_dir: str = ""` (empty defaults to `<Aura app dir>/opencode-config`) and `opencode_router_base_url: str = "http://127.0.0.1:8787/v1"` with environment variable aliases.
+  2. **`opencode_agents.py`:** Added `write_config(config_dir: Path) -> Path` that writes `<config_dir>/opencode/opencode.jsonc` with exactly two top-level keys: `"provider"` (the sluice provider with baseURL from settings) and `"agents"` (the three agent definitions from `agent_definitions()`). Writes atomically (temp file then replace) and creates directories.
+  3. **`OpenCodeProcess.start()`:** Before starting the child, calls `write_config()`, starts the child with `env = os.environ.copy()` plus `XDG_CONFIG_HOME=<config_dir>`. Does NOT set `XDG_DATA_HOME` or `XDG_STATE_HOME` (sessions stay in normal OpenCode data directory). Removed the `PATCH /api/experimental/config` call and `_configure_agents()` method entirely.
+  4. **Verification after version check:** Uses `GET /api/agent/{id}` for each of the three agents (the list endpoint can lag right after start); a missing agent raises `OpenCodeStartError`.
+  5. **Fake server:** Dropped the PATCH handler; reads agents from the `XDG_CONFIG_HOME` file it is started with (`<dir>/opencode/opencode.jsonc`), and serves `GET /api/agent` and `GET /api/agent/{id}` from it.
+  6. **Log correction:** The W3-31 claim that "the actual v2.3.2 server accepts `agents` in the patch payload" was assumed, not tested against a real server. The supervisor tested on a real v2.3.2 server in a sandbox on 2026-11-20: the server rejects it with `{"_tag":"InvalidRequestError","message":"Missing key\n  at [\"shell\"]"}`, as the spec's `Config.Patch` (only `shell`) says. The working mechanism uses `XDG_CONFIG_HOME` pointing at a directory with `opencode/opencode.jsonc`.
+- **Done when:** satisfied — the new tests pass, the full suite passes (609 passed), and `grep -rn "experimental/config" src` prints nothing.
+- **Do-not checks respected:** No write to `~/.config/opencode/` or any file outside Aura's own directories. No `XDG_*` variable set in Aura's own process environment (only in the child's).
+- **Unsure about:** Nothing. The change is scoped to the card's requirements.

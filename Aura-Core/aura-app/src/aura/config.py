@@ -914,6 +914,16 @@ class Settings(BaseSettings):
         validation_alias="AURA_OPENCODE_AGENT_MODEL",
         description="Model to use for OpenCode agents (the router's coder pool through the sluice provider).",
     )
+    opencode_config_dir: str = Field(
+        default="",
+        validation_alias="AURA_OPENCODE_CONFIG_DIR",
+        description="Directory for OpenCode config (opencode/opencode.jsonc). Empty means <Aura data dir>/opencode-config.",
+    )
+    opencode_router_base_url: str = Field(
+        default="http://127.0.0.1:8787/v1",
+        validation_alias="AURA_OPENCODE_ROUTER_BASE_URL",
+        description="Base URL for the sluice provider (OpenCode router).",
+    )
 
     # =========================================================================
     # WORKSPACES AND DELEGATION Configuration (G3 / W3-29)
