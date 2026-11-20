@@ -12,7 +12,8 @@ Settings go in Aura's `.env` unless noted.
 | M4 memory v2: episodes, extracted facts, entities, visibility | `AURA_MEMORY_V2_WRITE_ENABLED=true`, `AURA_MEMORY_V2_RECALL_ENABLED=true` (recall also needs the M3 channels flag) | Set the owner name and choose the extraction model (section 2). Results: docs/metrics/m4.md |
 | E2/E3 emotion appraisal: emotions from appraised events, never from Aura's own reply; causes recorded | `AURA_EMOTION_APPRAISAL_ENABLED=true` | Emotion PRD open items (section 2). Results: docs/metrics/e2e3.md. The old keyword fallback is already gone on both paths. |
 | Native function calling for L3 | `AURA_L3_NATIVE_TOOLS=true` | Fix first: in streaming mode, if the native call fails after some text was streamed, the text fallback repeats it. |
-| Delegating work to OpenCode (G3, in progress) | `AURA_DELEGATION_ENABLED=true` | Register workspaces and confirm the policy (section 2). |
+| Delegating work to OpenCode (G3) | `AURA_DELEGATION_ENABLED=true` | Register workspaces and confirm the policy (section 2). |
+| Avatar stage with a placeholder head (V1 without MetaHuman, V2 to V4) | `NEXT_PUBLIC_AVATAR_STAGE=1` in the frontend environment | It is a code-built placeholder head, not the real character. The three.js upgrade, WebGPU and the asset build script (budgets, shape pruning) wait for the real asset. |
 
 ## 2. Decisions
 
