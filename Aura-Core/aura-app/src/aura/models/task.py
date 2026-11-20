@@ -26,6 +26,7 @@ class TaskStatus(str, Enum):
     WAITING_APPROVAL = "waiting_approval"
     COMPLETE = "complete"
     FAILED = "failed"
+    NEEDS_OWNER = "needs_owner"
 
 
 class EmotionalSnapshot(BaseModel):

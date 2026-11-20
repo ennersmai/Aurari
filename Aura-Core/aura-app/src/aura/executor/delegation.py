@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any, Optional
 
 from aura.clock import get_clock
 from aura.config import settings
-from aura.connections.opencode_client import OpenCodeClient, OpenCodeUnavailable
+from aura.connections.opencode_client import OpenCodeClient, OpenCodeUnavailable, WorkResult
 from aura.connections.opencode_process import OpenCodeProcess
 from aura.executor.decisions import get_decision_service
 from aura.executor.policy import decide, risk_for_action
@@ -205,12 +206,8 @@ class DelegationRunner:
                             return
 
                 elif event.kind == "succeeded":
-                    # Mark task for review (W3-33 will handle the review)
-                    await task_queue.db.merge(task_id, {
-                        "status": TaskStatus.COMPLETE.value,
-                        "updated_at": get_clock().now().isoformat(),
-                    })
-                    logger.info(f"Delegation succeeded: {task_id}")
+                    # Session succeeded - now handle review and close task
+                    await self._handle_session_success(task_queue, task_id)
                     return
 
                 elif event.kind in ("failed", "interrupted"):
@@ -231,6 +228,244 @@ class DelegationRunner:
         except Exception as e:
             logger.error(f"Delegation monitor error for {task_id}: {e}")
             await task_queue.fail_task(task_id, reason=f"Monitor error: {e}")
+
+    async def _handle_session_success(self, task_queue: Any, task_id: str) -> None:
+        """Handle a successful session completion with optional review."""
+        if not self._client or not self._session_id:
+            return
+
+        # Get the result from the completed session
+        try:
+            result: WorkResult = await self._client.result(self._session_id)
+        except Exception as e:
+            logger.error(f"Failed to get result for session {self._session_id}: {e}")
+            await task_queue.fail_task(task_id, reason=f"Failed to get session result: {e}")
+            return
+
+        files_changed = result.files_changed or []
+        additions = result.additions or 0
+        deletions = result.deletions or 0
+
+        # No changed files: close as succeeded without review
+        if not files_changed:
+            await task_queue.db.merge(task_id, {
+                "status": TaskStatus.COMPLETE.value,
+                "updated_at": get_clock().now().isoformat(),
+            })
+            logger.info(f"Delegation succeeded (no files changed): {task_id}")
+            await self._finalize_task(task_queue, task_id, "succeeded", "No files changed")
+            return
+
+        # There are changed files - start a review session with aura-review agent
+        logger.info(f"Delegation succeeded with {len(files_changed)} files changed, starting review: {task_id}")
+        verdict, reason = await self._run_review(task_queue, task_id, result)
+
+        # Close the task based on verdict
+        if verdict == "PASS":
+            await self._finalize_task(task_queue, task_id, "succeeded", "Review passed")
+        elif verdict == "FAIL":
+            await self._finalize_task(task_queue, task_id, "failed", f"Review failed: {reason}")
+        else:  # needs_owner (no verdict or expired)
+            await self._finalize_task(task_queue, task_id, "needs_owner", f"Review needs owner: {reason}")
+
+    async def _run_review(self, task_queue: Any, task_id: str, result: WorkResult) -> tuple[str, str]:
+        """Run an aura-review session and return (verdict, reason).
+
+        Verdict is one of: "PASS", "FAIL", "needs_owner"
+        """
+        if not self._client:
+            return "needs_owner", "No client available for review"
+
+        workspace_path = self._resolve_workspace_path()
+        if workspace_path is None:
+            return "needs_owner", "Workspace not available for review"
+
+        # Build review brief
+        files_list = "\n".join(f"  - {f}" for f in result.files_changed)
+        diff_stats = f"{len(result.files_changed)} files changed, +{result.additions} -{result.deletions} lines"
+
+        review_brief = "\n".join([
+            "=== REVIEW REQUEST ===",
+            "You are reviewing a completed delegated task. Your job is to evaluate whether the work meets the success criteria.",
+            "",
+            "=== ORIGINAL GOAL ===",
+            self.config.goal,
+            "",
+            "=== SUCCESS CRITERIA ===",
+            self.config.success_criteria,
+            "",
+            "=== DIFF STATISTICS ===",
+            diff_stats,
+            "",
+            "=== FILES CHANGED ===",
+            files_list,
+            "",
+            "=== DELEGATE'S SUMMARY ===",
+            result.summary or "(no summary provided)",
+            "",
+            "=== YOUR TASK ===",
+            "Review the work against the success criteria. At the end of your response, you MUST include exactly one verdict line:",
+            "  VERDICT: PASS",
+            "or",
+            "  VERDICT: FAIL: <reason>",
+            "A missing verdict will be treated as NEEDS_OWNER.",
+        ])
+
+        try:
+            # Create review session with aura-review agent
+            review_session_id = await self._client.create_session(
+                workspace=workspace_path,
+                agent="aura-review",
+                title=f"Review: {self.config.goal[:50]}",
+            )
+
+            # Send the review brief
+            await self._client.send(review_session_id, review_brief)
+
+            # Collect events until review session completes
+            review_summary = ""
+            async for event in self._client.events(review_session_id):
+                if event.kind == "succeeded":
+                    # Get the review result
+                    review_result = await self._client.result(review_session_id)
+                    review_summary = review_result.summary or ""
+                    break
+                elif event.kind in ("failed", "interrupted"):
+                    logger.warning(f"Review session {event.kind}: {event.data.get('error', 'unknown')}")
+                    return "needs_owner", f"Review session {event.kind}"
+
+            # Parse verdict from review summary
+            verdict, reason = self._parse_verdict(review_summary)
+            return verdict, reason
+
+        except Exception as e:
+            logger.error(f"Review session error for task {task_id}: {e}")
+            return "needs_owner", f"Review error: {e}"
+
+    def _parse_verdict(self, summary: str) -> tuple[str, str]:
+        """Parse verdict from review summary.
+
+        Returns (verdict, reason) where verdict is "PASS", "FAIL", or "needs_owner".
+        """
+        if not summary:
+            return "needs_owner", "Empty review summary"
+
+        # Look for VERDICT: PASS or VERDICT: FAIL: <reason> anywhere in the summary
+        import re
+        # Match VERDICT: PASS or VERDICT: FAIL: <reason>
+        pass_match = re.search(r"VERDICT:\s*PASS\b", summary)
+        if pass_match:
+            return "PASS", ""
+
+        fail_match = re.search(r"VERDICT:\s*FAIL:\s*(.*)", summary)
+        if fail_match:
+            reason = fail_match.group(1).strip()
+            return "FAIL", reason if reason else "No reason provided"
+
+        # No verdict found
+        return "needs_owner", "No verdict in review summary"
+
+    async def _finalize_task(self, task_queue: Any, task_id: str, outcome: str, reason: str) -> None:
+        """Finalize the task with outcome and write memory/appraisal if enabled."""
+        # Update task status
+        if outcome == "succeeded":
+            await task_queue.db.merge(task_id, {
+                "status": TaskStatus.COMPLETE.value,
+                "updated_at": get_clock().now().isoformat(),
+            })
+        elif outcome == "failed":
+            await task_queue.fail_task(task_id, reason=reason)
+        elif outcome == "needs_owner":
+            await task_queue.db.merge(task_id, {
+                "status": TaskStatus.NEEDS_OWNER.value,
+                "updated_at": get_clock().now().isoformat(),
+                "blocker": reason,
+            })
+            logger.info(f"Task {task_id} marked as needs_owner: {reason}")
+
+        # Memory v2 write (4.8): store episode and fact when enabled
+        if settings.memory_v2_write_enabled:
+            await self._write_delegation_memory(task_queue, task_id, outcome, reason)
+
+        # Emit appraisal event (E2) when emotion_appraisal_enabled
+        if settings.emotion_appraisal_enabled:
+            await self._emit_appraisal(outcome)
+
+        logger.info(f"Delegation {outcome}: {task_id} — {reason}")
+
+    async def _write_delegation_memory(self, task_queue: Any, task_id: str, outcome: str, reason: str) -> None:
+        """Write episode and fact for the completed delegation."""
+        try:
+            from aura.engines.memory.v2.episodes import store_episode
+
+            db = task_queue.db
+            # Get embeddings client
+            from aura.llm.embeddings import get_embeddings_client
+            embeddings = get_embeddings_client()
+
+            # Build aura_text (outcome summary)
+            aura_text = f"Delegation {outcome}: {self.config.goal}. {reason}"
+
+            # Store episode
+            episode_id = await store_episode(
+                db=db,
+                embeddings=embeddings,
+                user_text=self.config.goal,
+                aura_text=aura_text,
+                speaker="owner",
+                venue="app",
+                conversation_id=None,
+                emotional_signature={},  # Empty for now
+                salience=0.5,
+                display_name="owner",
+            )
+
+            # One fact with provenance "external" (agency PRD 4.8). It is written
+            # directly rather than through write_facts, whose provenance rules
+            # (observed / hearsay / inferred) are for things people said.
+            fact_content = f"Aura delegated: {self.config.goal} in {self.config.workspace}: {outcome}"
+            now = get_clock().now()
+            rows = await db.query(
+                "CREATE fact CONTENT $data",
+                {
+                    "data": {
+                        "content": fact_content,
+                        "kind": "event",
+                        "subject": "Aura",
+                        "predicate": "delegated",
+                        "object": self.config.goal,
+                        "provenance": "external",
+                        "visibility": "owner",
+                        "confidence": settings.memory_observed_confidence,
+                        "valid_from": now,
+                        "recorded_at": now,
+                        "embedding": await embeddings.embed(fact_content),
+                    }
+                },
+            )
+            fact_id = rows[0]["id"]
+            await db.query(
+                "RELATE $fact->derived_from->$episode",
+                {"fact": fact_id, "episode": episode_id},
+            )
+
+        except Exception as e:
+            logger.warning(f"Failed to write delegation memory for {task_id}: {e}")
+
+    async def _emit_appraisal(self, outcome: str) -> None:
+        """Emit an appraisal event for the delegation outcome."""
+        try:
+            from aura.engines.emotion.system_events import tool_succeeded, tool_failed
+            from aura.engines.emotion.engine import get_emotion_engine
+
+            engine = get_emotion_engine()
+            if outcome == "succeeded":
+                event = tool_succeeded("delegation")
+            else:
+                event = tool_failed("delegation", retryable=False)
+            await engine.appraise(event)
+        except Exception as e:
+            logger.warning(f"Failed to emit appraisal for delegation outcome: {e}")
 
     async def _persist_step_from_event(
         self, task_queue: Any, task_id: str, event: WorkEvent
