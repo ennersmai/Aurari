@@ -21,6 +21,12 @@
 - **Sluice (separate repo):** billing safety (SL-01..SL-16a), failover on content-shape 400s and error-opening streams; new free providers on 2026-11-20 (Token Harbor, Inferbase, Gonka, Novai).
 - **Supervisor fixes:** baselines restored twice (bccf884, 6668d2f) before BF-03; the overnight log restored once (3db9728).
 
+## W3-34: A frontend unit test runner
+- **Status:** DONE
+- **Files changed:** `frontend/package.json`, `frontend/package-lock.json`, `frontend/vitest.config.ts`, `frontend/src/avatar/__tests__/smoke.test.ts`
+- **Test result:** `npm test` passes (1 test passed); `npm run build` passes.
+- **Notes:** Added `vitest` as dev dependency (^2.1.9), added `"test": "vitest run"` script to package.json, created `vitest.config.ts` with `node` environment, `src/**/*.test.ts` include pattern, and `@/` path alias pointing to `./src`, and created a smoke test (`1 + 1 === 2`) at `src/avatar/__tests__/smoke.test.ts`. Both `npm test` and `npm run build` pass from `frontend/`. No other dependencies were added.
+
 ---
 
 ## W0-01: Remove the database from the repository
