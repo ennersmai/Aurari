@@ -2334,6 +2334,97 @@ Written by the supervisor on 2026-11-20. Mai excluded the MetaHuman steps (the e
 ---
 
 
+### Wave 4: cards for M5 (entity, graph and temporal channels, rerank, recall tools, feedback)
+
+Written by the supervisor on 2026-11-20 against the code after wave 3. All of it works on the v2 fact path (`_build_fact_memories` in `engines/recall/engine.py`, used when `recall_channels_enabled` and `memory_v2_recall_enabled` are on). Each new channel and mechanism has its own flag, off by default, and an ablation test (memory PRD rule 7). Weights and thresholds live in config (rule 8). No model call on the fast path (rule 9). Every query is parameterised; the KNN `k`/`ef` integer rule from the M3 notes still applies. Visibility filtering (`visible_in_venue`) applies to every channel before ranking.
+
+---
+
+**W4-01 The entity channel**
+- **PRD:** memory 6.3 step 2 (entities by alias in the last two turns) and step 3 (entity channel: current facts `about` each matched entity)
+- **Tier:** bulk
+- **Files:** `src/aura/engines/recall/query.py`, `src/aura/engines/recall/channels.py`, `src/aura/engines/recall/engine.py` (`_build_fact_memories`), `src/aura/config.py`, new `tests/scenarios/test_recall_entity_channel_embedded.py`
+- **Change:**
+  1. Config: `recall_entity_channel_enabled: bool = False`, `recall_entity_k: int = 20`.
+  2. `RecallQueries` gains `entity_aliases: list[str]` (default empty): every lowercased word and adjacent word pair of the input and the previous user turn, minus stop words, capped at 30. `build_queries` stays free of database access.
+  3. `channels.py`: `async def fact_entity_channel(db, aliases: list[str], venue: str) -> list[ChannelHit]`: entities whose `aliases` contain any of the candidates (`aliases CONTAINSANY $aliases`), then current, visible facts `about` them, newest `recorded_at` first, up to `recall_entity_k`; score 1.0 for every hit (rank carries the order).
+  4. In `_build_fact_memories`, when the flag is on, run it in the same `asyncio.gather` as dense and lexical, and fuse it as channel `"entity"`.
+- **Tests:** on the embedded engine with the runner: a question naming an entity by an alias ("what does Pixel eat?") finds facts about that entity that share no words with the question; another venue's fact about the same entity is not returned; the flag off gives exactly the M4 behaviour (ablation).
+- **Done when:** the new tests pass and the full suite passes (the supervisor runs the suite).
+
+---
+
+**W4-02 The temporal channel**
+- **PRD:** memory 6.3 step 2 (a date range when the input contains a time expression) and step 3 (temporal channel)
+- **Tier:** bulk
+- **Files:** new `src/aura/engines/recall/timeexpr.py`, `src/aura/engines/recall/query.py`, `src/aura/engines/recall/channels.py`, `src/aura/engines/recall/engine.py`, `src/aura/config.py`, new `tests/unit/test_timeexpr.py`, new `tests/scenarios/test_recall_temporal_channel_embedded.py`
+- **Change:**
+  1. `timeexpr.py`: `def parse_range(text: str, now: datetime) -> tuple[datetime, datetime] | None` for English rules only: `today`, `yesterday`, `last week`, `this week`, `last month`, `this month`, `N days/weeks/months ago` (a day, week or month window around that point), weekday names (`on Monday` = the most recent past Monday), month names (`in March` = the most recent past March), ISO dates (`2026-11-02`). `now` comes from `get_clock()` at the call site.
+  2. `RecallQueries` gains `time_range: tuple[datetime, datetime] | None`.
+  3. `fact_temporal_channel(db, time_range, venue)`: visible facts whose `valid_from` or `recorded_at` falls in the range (superseded ones included, because a question about a time is a question about the past), newest first, capped by `recall_temporal_k: int = 20`. Flag `recall_temporal_channel_enabled: bool = False`.
+- **Tests:** each rule with a fixed `now`; no range for text without a time expression; on the embedded engine with the runner's clock, "what did I say yesterday?" returns yesterday's facts and not older ones; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-03 The graph channel: Personalised PageRank**
+- **PRD:** memory 6.3 step 3 (graph channel: PPR from the hits of the first three channels over typed edges, subgraph capped at 500 nodes, `supersedes` never followed forward, `co_used` and `about` strong, `mentions` weak, high-degree nodes damped)
+- **Tier:** frontier
+- **Depends on:** W4-01
+- **Files:** new `src/aura/engines/recall/graph.py`, `src/aura/engines/recall/channels.py`, `src/aura/engines/recall/engine.py`, `src/aura/config.py`, `scripts/schema_v2.surql` (only the `co_used` relation, fact to fact, with a `weight` float default 1), new `tests/unit/test_recall_graph.py`, new `tests/scenarios/test_recall_graph_channel_embedded.py`
+- **Change:**
+  1. `graph.py` (pure, no I/O): `def personalised_pagerank(edges: list[tuple[str, str, float]], seeds: dict[str, float], alpha: float, iterations: int, degree_damping: float) -> dict[str, float]` over an undirected weighted graph, where each node's outgoing weight is divided by `degree ** degree_damping`.
+  2. Loader: starting from the seed facts (the dense, lexical and entity hits), expand breadth-first through `about` (fact to entity and back), `co_used`, `derived_from` (fact to episode and back) and `mentions`, never following `supersedes` from old to new, until 500 nodes. Edge weights from config: `recall_graph_weights = {"about": 1.0, "co_used": 1.0, "derived_from": 0.5, "mentions": 0.2}`; `recall_graph_alpha = 0.15`, `recall_graph_iterations = 20`, `recall_graph_degree_damping = 0.5`.
+  3. `fact_graph_channel`: the visible, current facts ranked by PPR score, excluding the seeds themselves, capped by `recall_graph_k: int = 20`; flag `recall_graph_channel_enabled: bool = False`; runs after the first three channels and is fused as `"graph"`.
+- **Tests:** PPR on a hand-built graph: a node two hops from the seed through strong edges outranks one through weak edges; a hub's score is damped; `supersedes` is not followed forward. Multi-hop on the embedded engine: "where does my sister live?" finds "Ana lives in Porto" through "My sister is called Ana" (seed found by dense/lexical, target reached through the shared entity), which no other channel finds; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-04 Rerank on features**
+- **PRD:** memory 6.3 step 5
+- **Tier:** frontier
+- **Depends on:** W4-03
+- **Files:** new `src/aura/engines/recall/rerank.py`, `src/aura/engines/recall/engine.py`, `src/aura/config.py`, new `tests/unit/test_recall_rerank.py`
+- **Change:** after fusion and before the limit, when `recall_rerank_enabled: bool = False`: drop superseded facts unless a time range was detected (W4-02); drop `imagined` facts unless `request.mode == "creative"`; multiply the fused score by a provenance weight (`observed 1.0`, `external 0.9`, `inferred 0.8`, `hearsay 0.6` in config), by `0.5 + 0.5 * confidence`, by `1 + 0.2 * salience`, and by a slow decay `exp(-age_days / recall_rerank_decay_days)` with `recall_rerank_decay_days = 365`; add emotional resonance `0.10 * cosine(fact signature minus baseline, current deviation)`, capped at zero when the current state's negative dimensions dominate (sum of fear, sadness, anger, shame, disgust deviations above the positive ones); then maximal marginal relevance (`lambda = 0.7`) on the fact embeddings to pick the final order. All numbers in config.
+- **Tests:** each rule on hand-built candidates; MMR keeps one of five near-identical facts in the top three; ablation (flag off leaves the fused order).
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-05 Recall tools**
+- **PRD:** memory 6.4
+- **Tier:** bulk
+- **Files:** new `src/aura/tools/recall_tools.py`, `src/aura/executor/tool_registry.py` (`BUILTIN_MODULES`; the tool counts in `tests/unit/test_tool_registry.py` change with it), `src/aura/engines/recall/engine.py` (`timeline` and `evidence` reimplemented on v2 tables when `memory_v2_recall_enabled` is on), new `tests/scenarios/test_recall_tools_embedded.py`
+- **Change:** tools, risk `read`, all filtered by the caller's venue visibility: `recall(query, filters)` (ranked facts with provenance, through the Recall Engine's fact path), `timeline(entity or date range)` (ordered episodes and facts), `evidence(fact_id)` (the episodes the fact was `derived_from`), `what_changed(entity)` (the `supersedes` chain for facts about that entity, oldest first). `pin(fact_id)` and `unpin(fact_id)` are risk `write` and owner-only (the existing role check). Each returns plain text the model can read. The old `timeline`/`evidence` behaviour stays when the v2 flag is off.
+- **Tests:** each tool on the embedded engine with seeded facts and edges; `what_changed` returns Lisbon then Porto; a guest venue cannot see an owner fact through any tool; a guest cannot pin.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-06 Feedback: which recalled facts the reply used**
+- **PRD:** memory 6.5
+- **Tier:** frontier
+- **Depends on:** W4-03 (the `co_used` relation)
+- **Files:** new `src/aura/engines/recall/feedback.py`, `src/aura/orchestrator/coordinator.py` (`_post_response_chain`: call it with the turn's packet and the reply), `src/aura/config.py`, `scripts/schema_v2.surql` (`unused_streak` int DEFAULT 0 on `fact`), new `tests/scenarios/test_recall_feedback_embedded.py`
+- **Change:** when `recall_feedback_enabled: bool = False` is on and the packet came from the fact path: a fact counts as used when the lexical overlap between the reply and the fact's content (content words, stop words removed) is at least `recall_feedback_min_overlap = 0.3`, or the embedding similarity of the reply and the fact is at least `recall_feedback_min_similarity = 0.6`. For used facts, one atomic update: `use_count += 1`, `last_used_at = now`, `unused_streak = 0`; relate or strengthen `co_used` (weight `+ 1`) between every pair of used facts. For injected but unused facts, `unused_streak += 1`; W4-04's rerank multiplies by `recall_unused_penalty = 0.9` when `unused_streak >= 5`. Never on Aura's text alone: the reply is compared with facts, nothing from the reply is stored.
+- **Tests:** a reply quoting one of three injected facts marks only that one used; two used facts get a `co_used` edge whose weight grows on repetition; five unused turns trigger the penalty; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-07 M5 probes: multi-hop and temporal**
+- **PRD:** memory M5 gate ("multi-hop and temporal probes pass")
+- **Tier:** bulk
+- **Depends on:** W4-01..W4-06
+- **Files:** new `tests/scenarios/test_memory_m5_embedded.py`, new `docs/metrics/m5.md`
+- **Change:** scenarios through the runner with every M3, M4 and M5 flag on and scripted extractions: five multi-hop questions (answers two hops away through an entity) and five temporal questions ("yesterday", "last week", "in March", "3 days ago", an ISO date). Record the share answered (the right fact in the memories block) for each set, with and without the M5 flags, to `docs/metrics/m5.md` only when `RECORD_BASELINE=1` (use `write_baseline`).
+- **Tests:** these are the tests: with the flags on, at least 4 of 5 in each set; the numbers are recorded either way.
+- **Done when:** the tests pass and the full suite passes; the supervisor records the metrics.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
