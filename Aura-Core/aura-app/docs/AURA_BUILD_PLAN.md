@@ -2127,6 +2127,94 @@ Facts checked on the v2.3.2 server on 2026-11-20:
 ---
 
 
+### Wave 3: cards for G3 (`delegate_work`, the three agents, briefs, task records, policy and approvals)
+
+Written by the supervisor on 2026-11-20 against the code after G2. Agency PRD open items 11.2 (workspaces) and 11.3 (the default policy table) are Mai's: the defaults below are the PRD's recommendation, and no workspace is registered by default, so nothing can be delegated until Mai registers one. Everything is behind `delegation_enabled` (off).
+
+OpenCode v2.3.2 facts from `docs/opencode/openapi-v2.3.2.json`: the config has an `agents` map whose entries (`Config.AgentEncoded`) take `model` (for example `"sluice/coder"`), `system`, `description`, `mode` (`subagent`, `primary`, `all`), `steps`, `disabled` and `permissions` (`Permission.Ruleset`); a session is created with an `agent` id; permission requests carry `action` and `resources`.
+
+---
+
+**W3-29 Workspaces and the policy table**
+- **PRD:** agency 4.5 (policy table; workspaces registered explicitly; Aura's own source tree is not a workspace unless registered), 11.2, 11.3, rule 4
+- **Tier:** frontier
+- **Files:** new `src/aura/executor/policy.py`, `src/aura/config.py`, new `tests/unit/test_policy.py`
+- **Change:**
+  1. Config: `workspaces: dict[str, str] = {}` (`AURA_WORKSPACES`, JSON object of name to absolute path); `delegation_enabled: bool = False` (`AURA_DELEGATION_ENABLED`); `policy_table: dict[str, dict[str, str]]` defaulting to the PRD 11.3 recommendation for the owner, `{"read": "allow", "write": "allow", "execute": "ask", "send": "ask"}`, keyed by role, with `trusted` = read allow and everything else deny, and `guest` = deny for every risk.
+  2. `policy.py`: `def workspace_path(name: str) -> Path | None` (resolved, must exist and be a directory; `None` otherwise); `def inside_workspace(path: str | Path, workspace: str) -> bool` (resolved path is the workspace or below it; symlinks and `..` resolved first); `def decide(risk: Risk, workspace: str | None, role: str, resources: list[str] = []) -> Literal["allow", "ask", "deny"]`: unknown role or risk is `deny`; an unregistered workspace is `deny`; for `write`, any resource outside the workspace is `deny`; otherwise the table value. This is the one function every delegated permission decision goes through (rule 4).
+  3. `def risk_for_action(action: str) -> Risk`: map OpenCode permission actions to risk classes (`read`, `glob`, `grep`, `list` style actions to `read`; `edit`, `write`, `patch` to `write`; `bash`, `shell`, `execute` to `execute`; `webfetch`, `websearch`, network actions to `send`); anything unknown is `execute` (the strictest class that can still be approved). Read the action names actually used in the spec's permission schemas and examples and list them in the log entry.
+- **Tests:** every cell of the default table for each role; a guest is denied everything; an unregistered workspace is denied; `..` and a symlink pointing outside the workspace are both denied for `write`; unknown actions map to `execute`.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** register any workspace by default, and never register Aura's own repository.
+
+---
+
+**W3-30 Pending decisions: owner approvals**
+- **PRD:** agency 4.5 (`ask` creates a decision item with the exact action shown; only the runtime calls `answer_permission`, on a recorded owner decision), test T3 (store part)
+- **Tier:** frontier
+- **Depends on:** W3-28, W3-29
+- **Files:** `scripts/init_schema.surql` (new table), new `src/aura/executor/decisions.py`, new `src/aura/api/routes/decisions.py`, `src/aura/main.py` (include the router), new `tests/unit/test_decisions.py`
+- **Change:**
+  1. Schema: `decision` SCHEMAFULL with `kind` string, `task_id` option<string>, `session_id` string, `request_id` string, `action` string, `resources` array<string>, `risk` string, `workspace` option<string>, `message` option<string>, `status` string DEFAULT "pending" ASSERT in `pending, allowed, denied, expired`, `created_at` datetime, `decided_at` option<datetime>, `decided_by` option<string>; index on `status`.
+  2. `DecisionService(db, client)`: `create(...)` stores a pending decision; `pending()` lists them newest first; `answer(decision_id, allow: bool, decided_by: str)` records the decision and only then calls `client.answer_permission(session_id, request_id, allow)`; answering a decision that is not pending raises; `expire_for_session(session_id)` marks a closed session's pending decisions `expired`.
+  3. Routes: `GET /decisions` (pending) and `POST /decisions/{id}` with `{"allow": bool}`. Follow how the other owner-only routes in `src/aura/api/routes/` are protected; if there is no owner check on the HTTP API, add the routes like the others and say so in the log (the app is local; Discord cannot reach these routes).
+- **Tests:** create, list and answer with a fake client: the client is called only after the record says allowed or denied, with the right ids and value; a second answer raises; expiry; the routes with FastAPI's test client if the project already uses it, otherwise by calling the handlers.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add any approval argument to a tool schema (rule 3).
+
+---
+
+**W3-31 The three agents for Aura's OpenCode server**
+- **PRD:** agency 4.3
+- **Tier:** frontier
+- **Depends on:** W3-27
+- **Files:** new `src/aura/connections/opencode_agents.py`, `src/aura/connections/opencode_process.py` (only to pass the agent config to the server it starts), `src/aura/config.py`, new `tests/unit/test_opencode_agents.py`
+- **Change:**
+  1. Config: `opencode_agent_model: str = "sluice/coder"` (the router's coder pool through the `sluice` provider in Mai's OpenCode config).
+  2. `opencode_agents.py`: `def agent_definitions() -> dict[str, dict]` returning the three agents in the `Config.AgentEncoded` shape: `aura-explore` (description, `mode: "subagent"` or `"primary"` as fits a session started directly, read-only permissions: read and search allowed, edits denied, shell denied except safe listing commands if the ruleset can express that, otherwise denied), `aura-build` (edits allowed, shell `ask`), `aura-review` (read-only plus the test command `ask`). Each has a short `system` prompt saying what it is for and that the brief is the source of truth. Read `Permission.Ruleset` in the spec for the exact rule shape.
+  3. How Aura's server gets these agents: find, from the spec (`/api/config`, `/api/experimental/config`, `Config.*`), the CLI help (`opencode serve --help`, `opencode debug --help`) and the v2.3.2 binary's behaviour, a way that applies only to the server Aura starts: for example a config file in a directory Aura owns passed through an environment variable or flag, or `PATCH /api/experimental/config` on Aura's own server after it starts. Write it up in the log with the evidence. **If the only way is to edit Mai's global OpenCode config (`~/.config/opencode/`), stop and report instead**: that file is also used by Mai's desktop app.
+  4. Apply it in `OpenCodeProcess.start()` (or right after, before the process is returned as ready), and verify with `GET /api/agent` that the three agents exist; a missing agent raises `OpenCodeStartError`.
+- **Tests:** the definitions validate against the spec's `Config.AgentEncoded` and `Permission.Ruleset` schemas (load the JSON schema pieces from the saved spec and check required keys and enums by hand; no new dependency); the fake server from W3-27 extended to accept the chosen mechanism and to serve `GET /api/agent`; start fails when an agent is missing.
+- **Done when:** the new tests pass, the full suite passes, and the log entry names the mechanism and its evidence.
+- **Do not:** write to `~/.config/opencode/` or any file outside Aura's own directories.
+
+---
+
+**W3-32 `delegate_work`: brief, task record, session, event folding, budget**
+- **PRD:** agency 4.4 steps 1 to 3 and 5, 4.5, 4.1 parity (live step log, abort), rule 8, tests T3 and T5
+- **Tier:** frontier
+- **Depends on:** W3-28, W3-29, W3-30, W3-31
+- **Files:** new `src/aura/tools/delegate.py`, `src/aura/executor/tool_registry.py` (`BUILTIN_MODULES`), new `src/aura/executor/delegation.py`, `src/aura/models/task.py` (fields only if needed), new `tests/unit/test_delegation.py`
+- **Change:**
+  1. The `delegate_work` tool (risk `execute`, transport `builtin`) with arguments `goal`, `workspace`, `agent` (enum of the three), `success_criteria`, `budget` (`{"tokens": int, "minutes": int}`, both optional with config defaults `delegation_default_tokens: int = 200000`, `delegation_default_minutes: int = 30`), `skill` (optional string, recorded only; skills are G5). No approval-related argument. When `delegation_enabled` is off, the tool returns a clear "delegation is turned off" result and does nothing.
+  2. `delegation.py`, `class DelegationRunner`:
+     - **Brief:** goal, success criteria, and the Recall Engine's packet in `agent` mode for the goal (`RecallRequest(mode="agent", ...)`), rendered as plain text sections.
+     - **Task record:** through the existing `TaskQueueService.create_task` with the workspace path and, once created, the OpenCode session id in the task's `session_id` field.
+     - **Session:** `ensure_running`, `create_session(workspace path, agent, title)`, `send(brief)`.
+     - **Monitor** (a background task per delegation; rule 8: no model reads the stream): fold events into task steps with `persist_step` (one step per `session.step.ended` or tool call, with a one-line summary built from the event data); on `permission.asked`, take the request, compute `risk_for_action` and `decide(...)` (role `owner`, since only the owner can call tools): `allow` and `deny` answer at once through the client, `ask` creates a decision (W3-30) and sets the task to waiting approval; track tokens from usage events and elapsed time from the clock, and on exceeding the budget call `abort`, then `fail_task(reason="budget exceeded: ...")` (T5); on `session.execution.succeeded` mark the task for review (W3-33); on `failed` or `interrupted`, fail the task with the reason; on `OpenCodeUnavailable` mark the task interrupted (T6) so it can be re-attached.
+  3. The tool call returns at once with the task id and "started"; the work continues in the background.
+- **Tests:** with a fake `OpenCodeClient` that scripts events: a guest cannot call the tool (the existing role check); flag off does nothing; T3: a `permission.asked` for a shell command creates a pending decision and the task waits, and the session continues only after `DecisionService.answer` (the fake records the reply); a read request is allowed at once; a write outside the workspace is denied at once; T5: usage events past the token budget cause `abort` and a failed task with the reason; steps are persisted; the brief contains the goal, the criteria and the recall text.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** remove the agent loop or the IDE (G4). Do not let any model read the event stream.
+
+---
+
+**W3-33 Review, closing the task, and work into memory**
+- **PRD:** agency 4.4 steps 4 and 5, 4.8, test T4
+- **Tier:** frontier
+- **Depends on:** W3-32
+- **Files:** `src/aura/executor/delegation.py`, new `tests/unit/test_delegation_close.py`, new `tests/scenarios/test_delegation_embedded.py`
+- **Change:**
+  1. When a delegated session succeeds and `result()` shows changed files, start an `aura-review` session in the same workspace with a brief containing the original goal, the success criteria and the diff stats, and ask for a verdict line `VERDICT: PASS` or `VERDICT: FAIL: <reason>` at the end of its final message. Parse it from `result().summary` (a missing verdict counts as `needs_owner`). No changed files: no review.
+  2. Close the task as `succeeded` (pass, or no files changed and the session succeeded), `failed` (fail verdict, with the reason) or `needs_owner` (no verdict, or a decision expired), using `TaskQueueService` and adding a `needs_owner` status if the enum lacks one (say so in the log).
+  3. Memory (4.8): when `memory_v2_write_enabled` is on, store an episode for the task (user text: the goal; Aura text: the outcome and summary; speaker `owner`; venue `app`) and one fact with provenance `external` and visibility `owner`, "<Aura delegated: goal> in <workspace>: <outcome>", related `derived_from` to that episode. Emit an appraisal event (E2) for the outcome when `emotion_appraisal_enabled` is on: success like `tool_succeeded`, failure like `tool_failed`.
+- **Tests:** with the fake client: changed files plus a PASS verdict closes `succeeded`; FAIL closes `failed` with the reason; no verdict gives `needs_owner`; no changed files skips the review. T4 on the embedded engine with the runner: a succeeded task stores the episode and the external fact; skill statistics are G5 and are not asserted.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** start the review with any agent other than `aura-review`.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
