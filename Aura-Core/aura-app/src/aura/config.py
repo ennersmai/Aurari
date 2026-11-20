@@ -911,6 +911,32 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # WORKSPACES AND DELEGATION Configuration (G3 / W3-29)
+    # =========================================================================
+    workspaces: dict[str, str] = Field(
+        default_factory=dict,
+        validation_alias="AURA_WORKSPACES",
+        description="JSON object mapping workspace names to absolute paths. "
+                    "Workspaces must be explicitly registered; Aura's own source tree "
+                    "is NOT a workspace unless registered.",
+    )
+    delegation_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_DELEGATION_ENABLED",
+        description="Enable delegation to OpenCode agents. Off by default.",
+    )
+    policy_table: dict[str, dict[str, str]] = Field(
+        default_factory=lambda: {
+            "owner": {"read": "allow", "write": "allow", "execute": "ask", "send": "ask"},
+            "trusted": {"read": "allow", "write": "deny", "execute": "deny", "send": "deny"},
+            "guest": {"read": "deny", "write": "deny", "execute": "deny", "send": "deny"},
+        },
+        validation_alias="AURA_POLICY_TABLE",
+        description="Policy table keyed by role, mapping risk class to decision "
+                    "('allow', 'ask', 'deny'). Default follows PRD 11.3 recommendation.",
+    )
+
+    # =========================================================================
     # IDE / CODE EXECUTION Configuration
     # =========================================================================
     aura_workspace_path: str = Field(

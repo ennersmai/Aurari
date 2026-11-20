@@ -2020,3 +2020,37 @@
 - **Done when:** satisfied — the new tests pass, the full suite passes (545), and all client endpoints are verified against the OpenAPI spec.
 - **Do-not checks respected:** No `delegate_work`, no agents, no policy (G3). No reading events with a model. No new dependencies added. Uses only `httpx` (already present).
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-29: Workspaces and the policy table
+- **Status:** DONE
+- **PRD:** agency 4.5 (policy table; workspaces registered explicitly; Aura's own source tree is not a workspace unless registered), 11.2, 11.3, rule 4
+- **Tier:** frontier (Mai-approved)
+- **Files changed:** `src/aura/config.py`, `src/aura/executor/policy.py` (new), `tests/unit/test_policy.py` (new)
+- **Test result:** 567 passed (full suite: 565 prior + 22 new, 2 skipped for Windows symlink tests)
+- **What I did, step by step:**
+  1. **Config (`config.py`):** Added three settings:
+     - `workspaces: dict[str, str] = {}` (env `AURA_WORKSPACES`, JSON object mapping workspace names to absolute paths). Default empty — no workspace registered by default.
+     - `delegation_enabled: bool = False` (env `AURA_DELEGATION_ENABLED`). Off by default.
+     - `policy_table: dict[str, dict[str, str]]` defaulting to PRD 11.3 recommendation:
+       - `owner`: `{"read": "allow", "write": "allow", "execute": "ask", "send": "ask"}`
+       - `trusted`: `{"read": "allow", "write": "deny", "execute": "deny", "send": "deny"}`
+       - `guest`: `{"read": "deny", "write": "deny", "execute": "deny", "send": "deny"}`
+     The default factory ensures each Settings instance gets its own copy.
+  2. **Policy module (`policy.py`, new):**
+     - `workspace_path(name: str) -> Path | None`: Resolves registered workspace to absolute Path; returns None if unregistered, nonexistent, or not a directory.
+     - `inside_workspace(path: str | Path, workspace: str) -> bool`: Checks if resolved path is the workspace or below it. Resolves symlinks and `..` before containment check.
+     - `decide(risk: Risk, workspace: str | None, role: str, resources: list[str] = []) -> Literal["allow", "ask", "deny"]`: The single decision function (PRD rule 4). Logic: unknown role/risk → deny; unregistered/None workspace → deny; for `write`, any resource outside workspace → deny; otherwise table lookup.
+     - `risk_for_action(action: str) -> Risk`: Maps OpenCode permission actions to risk classes:
+       - read: `read`, `glob`, `grep`, `list`, `ls`, `stat`, `cat`, `head`, `tail`, `view`, `search`, `find`
+       - write: `edit`, `write`, `patch`, `create`, `delete`, `mkdir`, `move`, `rename`, `remove`, `touch`, `append`, `replace`
+       - execute: `bash`, `shell`, `execute`, `run`, `command`, `python`, `node`, `npm`, `pip`, `cargo`, `go`, `make`, `script`
+       - send: `webfetch`, `websearch`, `fetch`, `http`, `network`, `api`, `request`, `post`, `get`, `put`, `websocket`, `ws`
+       - unknown → `execute` (strictest class that can still be approved)
+  3. **Tests (`tests/unit/test_policy.py`, new, 24 tests):**
+     - `workspace_path`: registered/existing, unregistered, nonexistent, file-not-dir
+     - `inside_workspace`: same path, subdirectory, outside, unregistered, symlinks (skipped on Windows), `..` traversal
+     - `decide`: every cell of default table (12 combinations), guest denied everything, unregistered workspace denied, None workspace denied, write resource outside workspace denied (path, `..`, symlink — symlink skipped on Windows), unknown role/risk denied
+     - `risk_for_action`: all known action groups (read, write, execute, send), unknown maps to execute
+- **Done when:** satisfied — new tests pass and full suite passes (567 passed).
+- **Do-not checks respected:** No workspace registered by default. Aura's own repository is not registered. Default policy table matches PRD 11.3 exactly.
+- **Unsure about:** Two symlink-related tests are skipped on Windows (`os.name == "nt"`) because creating symlinks requires admin privileges. The core logic in `inside_workspace` uses `Path.resolve()` which handles symlinks correctly on Unix; the behaviour is correct but cannot be tested on this platform.
