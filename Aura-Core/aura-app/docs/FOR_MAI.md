@@ -54,3 +54,4 @@ Settings go in Aura's `.env` unless noted.
 - A retryable tool failure matches no appraisal row, so it produces no emotion.
 - The recall gate's cache is per user, not per session, because the pipeline does not pass a session id.
 - `AURA_OWNER_ALIASES` is parsed as a JSON list, not comma-separated as its description says.
+- Aura's HTTP API has no authentication on any route, including the new `/decisions` approval routes (W3-30). Fine while it only listens on localhost; needs an owner check before the API is ever exposed beyond this machine.
