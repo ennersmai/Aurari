@@ -14,6 +14,7 @@ from fastapi import APIRouter, status
 
 from aura.api.routes import chat as chat_routes
 from aura.api.routes import conversations as conversations_routes
+from aura.api.routes import decisions as decisions_routes
 from aura.api.routes import emotion as emotion_routes
 from aura.api.routes import goal as goal_routes
 from aura.api.routes import learning as learning_routes
@@ -498,6 +499,7 @@ app.include_router(school_routes.router, prefix="/school", tags=["school"])
 app.include_router(cognition_routes.router, tags=["cognition"])
 app.include_router(inference_config_routes.router, prefix="/system", tags=["inference-config"])
 app.include_router(discord_routes.router, tags=["discord"])
+app.include_router(decisions_routes.router, tags=["decisions"])
 
 # WebSocket endpoints
 @app.websocket("/ws/emotion")

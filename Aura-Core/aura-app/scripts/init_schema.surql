@@ -456,3 +456,24 @@ DEFINE FIELD max_concurrent_agents ON session TYPE int DEFAULT 3;
 DEFINE INDEX idx_session_status    ON session FIELDS status;
 DEFINE INDEX idx_session_owner     ON session FIELDS owner;
 DEFINE INDEX idx_session_namespace ON session FIELDS memory_namespace;
+
+-- ============================================================================
+-- DECISION SYSTEM (W3-30)
+-- ============================================================================
+
+DEFINE TABLE decision SCHEMAFULL;
+DEFINE FIELD kind ON decision TYPE string;
+DEFINE FIELD task_id ON decision TYPE option<string>;
+DEFINE FIELD session_id ON decision TYPE string;
+DEFINE FIELD request_id ON decision TYPE string;
+DEFINE FIELD action ON decision TYPE string;
+DEFINE FIELD resources ON decision TYPE array<string>;
+DEFINE FIELD risk ON decision TYPE string;
+DEFINE FIELD workspace ON decision TYPE option<string>;
+DEFINE FIELD message ON decision TYPE option<string>;
+DEFINE FIELD status ON decision TYPE string DEFAULT "pending" ASSERT $value IN ["pending", "allowed", "denied", "expired"];
+DEFINE FIELD created_at ON decision TYPE datetime DEFAULT time::now();
+DEFINE FIELD decided_at ON decision TYPE option<datetime>;
+DEFINE FIELD decided_by ON decision TYPE option<string>;
+DEFINE INDEX decision_status ON decision FIELDS status;
+DEFINE INDEX decision_session ON decision FIELDS session_id;

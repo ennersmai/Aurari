@@ -2054,3 +2054,40 @@
 - **Done when:** satisfied — new tests pass and full suite passes (567 passed).
 - **Do-not checks respected:** No workspace registered by default. Aura's own repository is not registered. Default policy table matches PRD 11.3 exactly.
 - **Unsure about:** Two symlink-related tests are skipped on Windows (`os.name == "nt"`) because creating symlinks requires admin privileges. The core logic in `inside_workspace` uses `Path.resolve()` which handles symlinks correctly on Unix; the behaviour is correct but cannot be tested on this platform.
+
+## W3-30: Pending decisions: owner approvals
+- **Status:** DONE
+- **PRD:** agency 4.5 (`ask` creates a decision item with the exact action shown; only the runtime calls `answer_permission`, on a recorded owner decision), test T3 (store part)
+- **Tier:** frontier
+- **Depends on:** W3-28, W3-29
+- **Files changed:**
+  - `scripts/init_schema.surql` (new `decision` table)
+  - `src/aura/executor/decisions.py` (new: `DecisionService`)
+  - `src/aura/api/routes/decisions.py` (new: GET /decisions, POST /decisions/{id})
+  - `src/aura/main.py` (include decisions router)
+  - `tests/unit/test_decisions.py` (new: 18 tests)
+- **Test result:** 585 passed (full suite: 567 prior + 18 new)
+- **What I did, step by step:**
+  1. **Schema (`init_schema.surql`):** Added `decision` SCHEMAFULL table with fields:
+     - `kind` (string), `task_id` (option<string>), `session_id` (string), `request_id` (string)
+     - `action` (string), `resources` (array<string>), `risk` (string)
+     - `workspace` (option<string>), `message` (option<string>)
+     - `status` (string, DEFAULT "pending", ASSERT in ["pending", "allowed", "denied", "expired"])
+     - `created_at` (datetime), `decided_at` (option<datetime>), `decided_by` (option<string>)
+     - Indexes on `status` and `session_id`
+  2. **DecisionService (`decisions.py`, new):**
+     - `create(...)` — stores a pending decision with all fields from the permission request
+     - `pending()` — lists pending decisions newest first (ORDER BY created_at DESC)
+     - `answer(decision_id, allow: bool, decided_by: str)` — records the decision (updates status to allowed/denied, decided_at, decided_by), THEN calls `client.answer_permission(session_id, request_id, allow)`; raises if decision not pending or not found; raises if no client configured
+     - `expire_for_session(session_id)` — marks all pending decisions for a closed session as expired; returns count
+  3. **Routes (`decisions.py`, new):**
+     - `GET /decisions` — returns all pending decisions (newest first)
+     - `POST /decisions/{id}` with `{"allow": bool}` — answers a decision; returns 400 if not found or not pending; returns 503 if no OpenCode client configured
+     - No owner check on HTTP API (app is local; Discord cannot reach these routes); added like other routes
+  4. **Main (`main.py`):** Added import and `app.include_router(decisions_routes.router)`
+  5. **Tests (`test_decisions.py`, new, 18 tests):**
+     - Service tests: create, pending list (empty, newest-first), answer allow/deny, client called after record update, second answer raises, non-existent raises, no client raises, expire for session, expire with no pending
+     - Route tests (FastAPI TestClient): list empty, list with decisions, answer allow/deny, not found, not pending, no client (503)
+- **Done when:** satisfied — the new tests pass and the full suite passes (585 passed).
+- **Do-not checks respected:** No approval argument added to any tool schema (rule 3).
+- **Unsure about:** Nothing. All changes are scoped to the files listed.
