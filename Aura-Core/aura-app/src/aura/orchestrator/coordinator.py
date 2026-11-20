@@ -1379,6 +1379,14 @@ Constraints:
             f"[MAG] Tool mode check: use_forced_tool_mode={use_forced_tool_mode}, tool_schema_str={'present' if tool_schema_str else 'None'}"
         )
 
+        # Emit reasoning_started event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.reasoning_started()
+        except Exception:
+            pass
+
         seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx):
@@ -1443,6 +1451,15 @@ Constraints:
         ):
             if event.kind == "done":
                 response = event.text
+
+        # Emit reasoning_finished event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.reasoning_finished()
+        except Exception:
+            pass
+
         return response
 
     async def _forced_seed(
@@ -1482,6 +1499,14 @@ Constraints:
         applicable). Forced tool mode seeds the loop with a deterministic
         tool call instead of its own prompt.
         """
+        # Emit reasoning_started event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.reasoning_started()
+        except Exception:
+            pass
+
         seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx):
@@ -1536,6 +1561,14 @@ Constraints:
         ):
             yield event
 
+        # Emit reasoning_finished event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.reasoning_finished()
+        except Exception:
+            pass
+
     async def _turn_pipeline(
         self,
         user_input: str,
@@ -1577,6 +1610,14 @@ Constraints:
         """
         # Stage 1: set the LLM router context mode.
         self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
+
+        # Emit message_received event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.message_received()
+        except Exception:
+            pass
 
         # Stage 2: resolve the session namespace and identity overlay.
         await self._resolve_session(session_id)

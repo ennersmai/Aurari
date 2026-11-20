@@ -123,6 +123,14 @@ class DreamingEngine(BaseEngine):
         """
         self.logger.info("[SLEEP] Entering REM Sleep (Full Cognitive Maintenance)...")
 
+        # Emit dreaming(true) event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.dreaming(True)
+        except Exception:
+            pass
+
         report = DreamConsolidationReport()
 
         # Phase 1: Tiered Pruning
@@ -182,6 +190,15 @@ class DreamingEngine(BaseEngine):
             f"reprocessed={report.reprocessed}, core={report.core_memories}, "
             f"total_active={report.total_active}"
         )
+
+        # Emit dreaming(false) event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.dreaming(False)
+        except Exception:
+            pass
+
         return report
 
     # =========================================================================

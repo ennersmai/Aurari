@@ -120,6 +120,15 @@ class RecallEngine:
         ``channel_errors[<channel>] = str(e)`` and the turn goes on with the
         other channels, mirroring the non-critical handlers today.
         """
+        # Emit recall_started event for avatar state machine
+        try:
+            from aura.avatar import AvatarStateMachine
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.recall_started()
+        except Exception:
+            pass  # Non-critical, don't break recall
+
         candidates: list[Candidate] = []
         channel_errors: dict[str, str] = {}
 
@@ -238,6 +247,16 @@ class RecallEngine:
             gate=gate,
         )
         self._store_trace(trace)
+
+        # Emit recall_finished event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                # Check if we have strong memories (non-abstain with results)
+                strong = not memory_abstain and (len(stable_blocks) > 0 or len(dynamic_blocks) > 0)
+                avatar_state_machine.recall_finished(abstain=memory_abstain, strong=strong)
+        except Exception:
+            pass  # Non-critical, don't break recall
 
         return ContextPacket(
             stable_blocks=stable_blocks,

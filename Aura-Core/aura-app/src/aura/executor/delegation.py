@@ -66,6 +66,14 @@ class DelegationRunner:
 
     async def run(self) -> str:
         """Start the delegation and return the task ID."""
+        # Emit delegation_running(true) event for avatar state machine
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.delegation_running(True)
+        except Exception:
+            pass
+
         # 1. Build the brief
         brief = await self._build_brief()
 
@@ -228,6 +236,14 @@ class DelegationRunner:
         except Exception as e:
             logger.error(f"Delegation monitor error for {task_id}: {e}")
             await task_queue.fail_task(task_id, reason=f"Monitor error: {e}")
+        finally:
+            # Emit delegation_running(false) event for avatar state machine
+            try:
+                from aura.main import avatar_state_machine
+                if avatar_state_machine is not None:
+                    avatar_state_machine.delegation_running(False)
+            except Exception:
+                pass
 
     async def _handle_session_success(self, task_queue: Any, task_id: str) -> None:
         """Handle a successful session completion with optional review."""

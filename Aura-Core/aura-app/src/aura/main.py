@@ -36,8 +36,9 @@ from aura.discord.bot import bot_instance as discord_bot
 from aura.executor.task_queue import get_task_queue
 from aura.orchestrator.session_runtime import get_session_runtime
 from aura.logging_config import setup_logging_filters
-from aura.api.websocket import emotion_stream_endpoint
+from aura.api.websocket import emotion_stream_endpoint, broadcast_avatar_state
 from aura.api.trace_socket_manager import get_trace_manager
+from aura.avatar import AvatarStateMachine
 from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.dreaming.engine import DreamingEngine
@@ -79,6 +80,7 @@ reflection_engine: ReflectionEngine | None = None
 dreaming_engine: DreamingEngine | None = None
 message_bus: MessageBus | None = None
 orchestrator: Orchestrator | None = None
+avatar_state_machine: AvatarStateMachine | None = None
 
 
 async def _apply_surql_file(db, file_name: str, label: str):
@@ -281,6 +283,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Subscribe orchestrator to message bus
     message_bus.subscribe("orchestrator", orchestrator._handle_message)
     logger.info("✓ Orchestrator initialized")
+
+    # Initialize Avatar State Machine (PRD avatar 8, 11, V4)
+    global avatar_state_machine
+    avatar_state_machine = AvatarStateMachine(
+        emotion_engine=emotion_engine,
+        broadcast_func=broadcast_avatar_state,
+    )
+    logger.info("✓ Avatar State Machine initialized")
 
     # Initialize SessionRuntime (V1PRD §4) — seeds MAIN session, hydrates persisted ones
     session_runtime = get_session_runtime()

@@ -2288,3 +2288,33 @@
   8. Wrote events tests: two controllers with same seed produce identical pulse sequences; different seeds produce different durations; pulses decay to zero within duration.
 - **Notes:** The supervisor fix for W3-35 (deterministic events) was done first: `events.ts` now uses `SeededRandom` with seed passed in, matching the pattern in `blink.ts` and `idle.ts`. The test `events.test.ts` verifies two controllers with the same seed produce identical event pulses.
 - **Unsure about:** The T3 test checks hysteresis on third-place replacement (newcomer must beat by 0.05 for 300ms) rather than top-two alternation, because the card's hysteresis spec applies specifically to third-place replacement. The top two can still swap freely; if the reviewer intended output-level smoothing, that would be a separate change.
+
+---
+
+## W3-37: `avatar_state` from the backend: cognitive states
+- **Status:** DONE
+- **PRD:** avatar 8 (cognitive states from the pipeline trace, no model call), 11 (`avatar_state` protocol), V4, test T7
+- **Tier:** frontier (Mai-approved)
+- **Files changed:**
+  - `src/aura/avatar/__init__.py` (new) — exports AvatarStateMachine
+  - `src/aura/avatar/state.py` (new) — AvatarStateMachine with states: attending, recalling, thinking, unsure, found_it, surprised, working, curious, resting, idle; events: message_received, recall_started, recall_finished(abstain, strong), reasoning_started, reasoning_finished, delegation_running(bool), dreaming(bool), prediction_error(size); builds PRD 11 payload with deviation from emotion engine, mood: null, cognitive_state, events, speaking: false, gaze_target; rate-limited broadcast at 10Hz (100ms coalesce)
+  - `src/aura/api/websocket.py` (modified) — added avatar_manager ConnectionManager and broadcast_avatar_state() helper
+  - `src/aura/main.py` (modified) — initialize AvatarStateMachine at startup with emotion_engine and broadcast_avatar_state
+  - `src/aura/engines/recall/engine.py` (modified) — emit recall_started at start of recall(), recall_finished(abstain, strong) at end
+  - `src/aura/orchestrator/coordinator.py` (modified) — emit message_received at start of _turn_pipeline; reasoning_started/reasoning_finished in _generate_blocking and _generate_streaming
+  - `src/aura/executor/delegation.py` (modified) — emit delegation_running(True) at start of DelegationRunner.run(), delegation_running(False) in _monitor() finally block
+  - `src/aura/engines/dreaming/engine.py` (modified) — emit dreaming(True) at start of enter_rem_sleep(), dreaming(False) at end
+  - `tests/unit/test_avatar_state.py` (new) — T7 tests: sequence produces attending→recalling→thinking→attending; abstain gives unsure; rate limit holds (20 changes in 100ms → ≤3 broadcasts); no model calls
+- **Test result:** All 15 new tests pass; full Python suite (658 tests) passes.
+- **What I did, step by step:**
+  1. Created `src/aura/avatar/__init__.py` and `src/aura/avatar/state.py` with AvatarStateMachine implementing the 10 cognitive states and 8 event types per PRD avatar 8
+  2. Added broadcast_avatar_state() to `src/aura/api/websocket.py` with a dedicated ConnectionManager (avatar_manager)
+  3. Initialized AvatarStateMachine in `src/aura/main.py` lifespan, passing emotion_engine and broadcast_avatar_state
+  4. Added event emitters at pipeline points:
+     - Recall Engine: recall_started at start of recall(), recall_finished with abstain/strong at end
+     - L3 reasoning: message_received at start of _turn_pipeline; reasoning_started/reasoning_finished in both _generate_blocking and _generate_streaming
+     - Delegation: delegation_running(True) at DelegationRunner.run() start, delegation_running(False) in _monitor() finally
+     - Dreaming: dreaming(True/False) at start/end of enter_rem_sleep()
+  5. Wrote comprehensive tests in `tests/unit/test_avatar_state.py` covering all T7 requirements
+- **Notes:** The state machine uses the emotion engine's current_vector and config.baseline to compute deviation synchronously (no await). The broadcast is rate-limited to 10Hz by coalescing state changes within 100ms. No model calls are made anywhere on this path - the state machine has no LLM client dependency.
+- **Unsure about:** The card mentions "the call sites that start and finish recall, L3 reasoning, delegation and dreaming" - I added events at the main entry points but there may be additional call sites (e.g., the coordinator also calls recall in the streaming path at line 1287, but the RecallEngine.recall() method itself emits the events so both paths are covered). The coordinator's _generate_streaming is an async generator, so reasoning_finished is emitted after the loop completes.

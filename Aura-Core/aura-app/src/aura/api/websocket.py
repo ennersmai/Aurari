@@ -60,6 +60,7 @@ class ConnectionManager:
 # Global connection manager
 emotion_manager = ConnectionManager()
 chat_manager = ConnectionManager()
+avatar_manager = ConnectionManager()
 
 
 async def emotion_stream_endpoint(
@@ -177,6 +178,21 @@ async def broadcast_emotion_update(state_data: dict[str, Any]) -> None:
             "tts_top_p": tts_params["top_p"],
             "tts_speaker": tts_params["speaker"],
             "tts_energy": tts_params["energy"],
+        }
+    )
+
+
+async def broadcast_avatar_state(payload: dict[str, Any]) -> None:
+    """
+    Broadcast avatar state update to all connected clients.
+
+    Called by the AvatarStateMachine when the cognitive state changes.
+    Payload should match the PRD 11 avatar_state protocol.
+    """
+    await avatar_manager.broadcast(
+        {
+            "type": "avatar_state",
+            **payload,
         }
     )
 
