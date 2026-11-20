@@ -47,6 +47,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] Review the provider-audit items in the Sluice repo, docs/night3-log.md.
 - [ ] Token Harbor is on cooldown until about 2026-11-26 14:30 your time (its free allowance was at 93%). Lift it early with `curl -X POST "http://127.0.0.1:8787/admin/cooldowns/clear?provider=tokenharbor"`.
 - [ ] Gonka's free tier answered with a 6 requests/minute limit (not 600); both Gonka entries are set to 3/min. Gonka's GLM-5.3-Flash is in `chat` only because it invents tool results.
+- [ ] Inferbase: its free plan allows only 8,192 input tokens per request (it returned a 402 for a 44k-token OpenCode request and Sluice blocked it). It is now capped at 8,192 input tokens, removed from `coder`, kept in `chat`, and unblocked (2026-11-20).
 - [ ] Novai: the 10 free calls are set to 10 per day; correct it if the period is different.
 
 ## 5. Known follow-ups (no decision needed, listed so they are not lost)
