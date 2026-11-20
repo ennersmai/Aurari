@@ -1,0 +1,72 @@
+{
+  "description": "Maps FACS action units to ARKit blend shapes with weights. Each AU can map to multiple ARKit shapes.",
+  "mappings": {
+    "au1": {
+      "browInnerUp": 1.0
+    },
+    "au2": {
+      "browOuterUpLeft": 1.0,
+      "browOuterUpRight": 1.0
+    },
+    "au4": {
+      "browDownLeft": 1.0,
+      "browDownRight": 1.0
+    },
+    "au5": {
+      "eyeWideLeft": 1.0,
+      "eyeWideRight": 1.0
+    },
+    "au6": {
+      "cheekSquintLeft": 1.0,
+      "cheekSquintRight": 1.0
+    },
+    "au7": {
+      "eyeSquintLeft": 1.0,
+      "eyeSquintRight": 1.0
+    },
+    "au9": {
+      "noseSneerLeft": 1.0,
+      "noseSneerRight": 1.0
+    },
+    "au10": {
+      "mouthUpperUpLeft": 1.0,
+      "mouthUpperUpRight": 1.0
+    },
+    "au12": {
+      "mouthSmileLeft": 1.0,
+      "mouthSmileRight": 1.0
+    },
+    "au14": {
+      "mouthDimpleLeft": 0.8,
+      "mouthDimpleRight": 0.8
+    },
+    "au15": {
+      "mouthLowerDownLeft": 1.0,
+      "mouthLowerDownRight": 1.0
+    },
+    "au17": {
+      "mouthRollLower": 1.0
+    },
+    "au20": {
+      "mouthStretchLeft": 1.0,
+      "mouthStretchRight": 1.0
+    },
+    "au23": {
+      "mouthPressLeft": 1.0,
+      "mouthPressRight": 1.0
+    },
+    "au25": {
+      "jawOpen": 1.0
+    },
+    "au26": {
+      "jawOpen": 1.0
+    },
+    "au54": {
+      "mouthPucker": 1.0
+    },
+    "au64": {
+      "eyeBlinkLeft": 0.5,
+      "eyeBlinkRight": 0.5
+    }
+  }
+}

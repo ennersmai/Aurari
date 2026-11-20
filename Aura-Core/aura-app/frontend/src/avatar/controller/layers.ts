@@ -45,6 +45,8 @@ export interface ControllerConfig {
     head: number;
     chest: number;
   };
+  /** Mood from emotion engine (valence: -1 to 1, arousal: 0 to 1). Null until E4. */
+  mood?: { valence: number; arousal: number } | null;
 }
 
 /** An event pulse (surprise, amusement, nod, etc.). */
@@ -128,4 +130,5 @@ export const DEFAULT_CONFIG: ControllerConfig = {
     head: 0.3,
     chest: 0.5,
   },
+  mood: null,
 };

@@ -1,0 +1,160 @@
+{
+  "description": "Maps each of the 27 emotion dimensions to facial action units (FACS AUs) with weights. Weights are 0-1.",
+  "inwardDimensions": ["curiosity", "confusion", "doubt", "certainty", "fascination", "boredom"],
+  "socialDimensions": ["joy", "love", "gratitude", "empathy", "compassion"],
+  "mappings": {
+    "surprise": {
+      "au1": 0.8,
+      "au2": 0.8,
+      "au5": 0.9,
+      "au26": 0.3
+    },
+    "confusion": {
+      "au1": 0.5,
+      "au4": 0.6,
+      "au7": 0.4
+    },
+    "certainty": {
+      "au4": 0.3,
+      "au7": 0.2
+    },
+    "doubt": {
+      "au1": 0.4,
+      "au4": 0.5,
+      "au14": 0.3
+    },
+    "boredom": {
+      "au4": 0.2,
+      "au14": 0.4,
+      "au64": 0.3
+    },
+    "interest": {
+      "au1": 0.6,
+      "au2": 0.4,
+      "au5": 0.3
+    },
+    "curiosity": {
+      "au1": 0.7,
+      "au2": 0.5,
+      "au5": 0.4
+    },
+    "fascination": {
+      "au1": 0.8,
+      "au2": 0.7,
+      "au5": 0.6,
+      "au6": 0.2
+    },
+    "joy": {
+      "au6": 0.9,
+      "au12": 0.9,
+      "au25": 0.4
+    },
+    "sadness": {
+      "au1": 0.4,
+      "au4": 0.3,
+      "au15": 0.6,
+      "au17": 0.5,
+      "au64": 0.4
+    },
+    "anger": {
+      "au4": 0.9,
+      "au5": 0.6,
+      "au7": 0.5,
+      "au23": 0.4
+    },
+    "fear": {
+      "au1": 0.7,
+      "au2": 0.7,
+      "au4": 0.5,
+      "au5": 0.6,
+      "au20": 0.4,
+      "au26": 0.3
+    },
+    "disgust": {
+      "au9": 0.8,
+      "au10": 0.6,
+      "au17": 0.3
+    },
+    "awe": {
+      "au1": 0.6,
+      "au2": 0.6,
+      "au5": 0.5,
+      "au26": 0.4
+    },
+    "beauty": {
+      "au1": 0.4,
+      "au2": 0.4,
+      "au6": 0.5,
+      "au12": 0.5
+    },
+    "wonder": {
+      "au1": 0.7,
+      "au2": 0.6,
+      "au5": 0.5,
+      "au26": 0.3
+    },
+    "serenity": {
+      "au6": 0.3,
+      "au12": 0.3,
+      "au25": 0.2
+    },
+    "melancholy": {
+      "au1": 0.3,
+      "au4": 0.2,
+      "au15": 0.5,
+      "au17": 0.4,
+      "au64": 0.3
+    },
+    "nostalgia": {
+      "au1": 0.2,
+      "au6": 0.3,
+      "au12": 0.3,
+      "au15": 0.3
+    },
+    "empathy": {
+      "au1": 0.3,
+      "au4": 0.2,
+      "au6": 0.4,
+      "au12": 0.4,
+      "au15": 0.3
+    },
+    "gratitude": {
+      "au6": 0.5,
+      "au12": 0.7,
+      "au25": 0.3
+    },
+    "pride": {
+      "au12": 0.6,
+      "au14": 0.3,
+      "au25": 0.4
+    },
+    "shame": {
+      "au1": 0.2,
+      "au4": 0.3,
+      "au15": 0.4,
+      "au17": 0.3,
+      "au54": 0.3
+    },
+    "envy": {
+      "au4": 0.4,
+      "au9": 0.3,
+      "au14": 0.4
+    },
+    "compassion": {
+      "au1": 0.3,
+      "au6": 0.5,
+      "au12": 0.4,
+      "au15": 0.3
+    },
+    "love": {
+      "au6": 0.6,
+      "au12": 0.7,
+      "au25": 0.4
+    },
+    "trust": {
+      "au6": 0.3,
+      "au12": 0.4,
+      "au25": 0.3
+    }
+  }
+}

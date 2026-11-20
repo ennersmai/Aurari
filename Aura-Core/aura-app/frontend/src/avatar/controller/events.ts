@@ -1,11 +1,13 @@
 /**
  * Events Layer (Layer 4): short additive pulses (200-600ms) that return to exactly zero.
  * Includes surprise, amusement, nod pulses. Uses BlinkGenerator for blinks.
+ * Deterministic: uses seeded random for pulse durations.
  */
 
 import type { Layer, LayerOutput, ControllerInput, EventPulse } from "./layers.js";
 import { Channel, CHANNELS_BY_GROUP } from "./channels.js";
 import { BlinkGenerator, BlinkConfig, DEFAULT_BLINK_CONFIG } from "./blink.js";
+import { SeededRandom } from "./idle.js";
 
 /** Configuration for event pulses. */
 export interface EventsConfig {
@@ -13,12 +15,15 @@ export interface EventsConfig {
   blink: BlinkConfig;
   /** Default pulse duration range [min, max] in seconds. */
   pulseDurationRange: [number, number];
+  /** Seed for deterministic randomness. */
+  seed: number;
 }
 
 /** Default events configuration. */
 export const DEFAULT_EVENTS_CONFIG: EventsConfig = {
   blink: DEFAULT_BLINK_CONFIG,
   pulseDurationRange: [0.2, 0.6],
+  seed: 12345,
 };
 
 /** Active event pulse with computed curve. */
@@ -31,6 +36,7 @@ interface ActivePulse {
 /**
  * EventsLayer produces short additive pulses for expressions like surprise, amusement, nods.
  * Pulses return to exactly zero after their duration.
+ * Deterministic given the same seed and time inputs.
  */
 export class EventsLayer implements Layer {
   readonly name = "events" as const;
@@ -40,10 +46,12 @@ export class EventsLayer implements Layer {
   private blinkGenerator: BlinkGenerator;
   private activePulses: ActivePulse[] = [];
   private pulseIdCounter = 0;
+  private random: SeededRandom;
 
   constructor(config: EventsConfig = DEFAULT_EVENTS_CONFIG) {
     this.config = config;
     this.blinkGenerator = new BlinkGenerator(config.blink);
+    this.random = new SeededRandom(config.seed);
   }
 
   update(t: number, dt: number, input: ControllerInput): LayerOutput {
@@ -73,7 +81,7 @@ export class EventsLayer implements Layer {
   /** Add a new event pulse. */
   addPulse(pulse: EventPulse, currentTime: number): void {
     const duration = pulse.duration ?? 
-      (this.config.pulseDurationRange[0] + Math.random() * (this.config.pulseDurationRange[1] - this.config.pulseDurationRange[0]));
+      (this.config.pulseDurationRange[0] + this.random.next() * (this.config.pulseDurationRange[1] - this.config.pulseDurationRange[0]));
     this.activePulses.push({
       pulse: { ...pulse, duration },
       startTime: currentTime,
@@ -88,7 +96,7 @@ export class EventsLayer implements Layer {
       type: "surprise",
       strength,
       startTime: currentTime,
-      duration: 0.3 + Math.random() * 0.2, // 300-500ms
+      duration: 0.3 + this.random.next() * 0.2, // 300-500ms
       channels: {
         browInnerUp: strength * 0.8,
         browOuterUpLeft: strength * 0.6,
@@ -110,7 +118,7 @@ export class EventsLayer implements Layer {
       type: "amusement",
       strength,
       startTime: currentTime,
-      duration: 0.4 + Math.random() * 0.2, // 400-600ms
+      duration: 0.4 + this.random.next() * 0.2, // 400-600ms
       channels: {
         mouthSmileLeft: strength * 0.8,
         mouthSmileRight: strength * 0.8,
@@ -130,7 +138,7 @@ export class EventsLayer implements Layer {
       type: "nod",
       strength,
       startTime: currentTime,
-      duration: 0.3 + Math.random() * 0.15, // 300-450ms
+      duration: 0.3 + this.random.next() * 0.15, // 300-450ms
       channels: {
         head: -strength * 0.3, // Head down
         neck: -strength * 0.2,
@@ -216,6 +224,7 @@ export class EventsLayer implements Layer {
   reset(): void {
     this.activePulses = [];
     this.blinkGenerator.reset();
+    this.random = new SeededRandom(this.config.seed);
     this.pulseIdCounter = 0;
   }
 

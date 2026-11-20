@@ -13,6 +13,7 @@ export { SeededRandom } from "./idle.js";
 export * from "./blink.js";
 export * from "./lookat.js";
 export * from "./events.js";
+export * from "./affect.js";
 
 import type { Layer, LayerName, ControllerInput, ControllerConfig } from "./layers.js";
 import type { MixResult } from "./mixer.js";
@@ -20,14 +21,17 @@ import { CHANNEL_GROUPS, ALL_CHANNELS, Channel } from "./channels.js";
 import { Mixer } from "./mixer.js";
 import { IdleLayer } from "./idle.js";
 import { EventsLayer } from "./events.js";
+import { AffectLayer, AffectConfig, DEFAULT_AFFECT_CONFIG } from "./affect.js";
 import { LookAtSystem, LookAtConfig, DEFAULT_LOOKAT_CONFIG } from "./lookat.js";
 import { DEFAULT_CONFIG } from "./layers.js";
+import { DEFAULT_EVENTS_CONFIG } from "./events.js";
 
 /** Main controller that orchestrates all layers. */
 export class AvatarController {
   private mixer: Mixer;
   private idleLayer: IdleLayer;
   private eventsLayer: EventsLayer;
+  private affectLayer: AffectLayer;
   private lookAtSystem: LookAtSystem;
   private config: ControllerConfig;
   private lookAtConfig: LookAtConfig;
@@ -40,14 +44,17 @@ export class AvatarController {
 
     this.mixer = new Mixer(this.config);
     this.idleLayer = new IdleLayer(this.config);
-    this.eventsLayer = new EventsLayer();
+    this.eventsLayer = new EventsLayer({ ...DEFAULT_EVENTS_CONFIG, seed: this.config.noiseSeed + 2000 });
+    this.affectLayer = new AffectLayer({ ...DEFAULT_AFFECT_CONFIG, seed: this.config.noiseSeed + 3000 });
     this.lookAtSystem = new LookAtSystem(this.lookAtConfig);
 
-    // Register core layers (affect, cognitive, speech, gesture are added later)
+    // Register core layers (cognitive, speech, gesture are added later)
     this.mixer.registerLayer(this.idleLayer);
     this.mixer.registerLayer(this.eventsLayer);
+    this.mixer.registerLayer(this.affectLayer);
     this.layers.set("idle", this.idleLayer);
     this.layers.set("events", this.eventsLayer);
+    this.layers.set("affect", this.affectLayer);
   }
 
   /** Register additional layers (affect, cognitive, speech, gesture). */
@@ -130,6 +137,11 @@ export class AvatarController {
     return this.eventsLayer;
   }
 
+  /** Get the affect layer. */
+  getAffectLayer(): AffectLayer {
+    return this.affectLayer;
+  }
+
   /** Get the look-at system. */
   getLookAtSystem(): LookAtSystem {
     return this.lookAtSystem;
@@ -165,3 +177,5 @@ export { DEFAULT_CONFIG } from "./layers.js";
 export { DEFAULT_LOOKAT_CONFIG } from "./lookat.js";
 export { DEFAULT_EVENTS_CONFIG } from "./events.js";
 export { DEFAULT_BLINK_CONFIG } from "./blink.js";
+export { DEFAULT_AFFECT_CONFIG } from "./affect.js";
+export type { AffectConfig } from "./affect.js";

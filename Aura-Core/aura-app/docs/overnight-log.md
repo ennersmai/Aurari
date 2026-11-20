@@ -2259,3 +2259,32 @@
 - **Test result:** 16 tests pass (all new tests + smoke test); `npm test` passes from `frontend/`; `npm run build` passes.
 - **Notes:** Time is passed in (`t`, `dt`); no `Date.now()` or `performance.now()` inside the controller, so tests are deterministic. The six layers are: idle, affect, cognitive, events, speech, gesture. The affect, cognitive, speech, and gesture layers are registered as stubs (not fully implemented — those come in later cards W3-36, W3-37, W3-38, etc.), but the ownership table, mixer, idle, blink, look-at, and events are fully functional and tested.
 - **Unsure about:** The `DEFAULT_LOOKAT_CONFIG` and `DEFAULT_BLINK_CONFIG` are exported from their respective modules and re-exported from `index.ts`; the `AvatarController` constructor accepts partial configs but the `DEFAULT_CONFIG` from `layers.ts` doesn't include look-at or blink settings — this is intentional since the full config will be expanded in later cards. The `SeededRandom` class is exported from `idle.ts` and used by `blink.ts` and `events.ts` for deterministic randomness.
+
+---
+
+## W3-36: The affect layer
+- **Status:** DONE
+- **PRD:** avatar 7.1, V3, tests T3 and T4
+- **Tier:** frontier (Mai-approved)
+- **Depends on:** W3-35
+- **Files changed:**
+  - `frontend/src/avatar/controller/affect.ts` (new) — AffectLayer mapping 27 emotion dimensions to facial expressions and posture
+  - `frontend/src/avatar/controller/tables/dimension_to_au.json` (new) — 27 dimensions → FACS action units with weights
+  - `frontend/src/avatar/controller/tables/au_to_arkit.json` (new) — action units → ARKit blend shapes with weights
+  - `frontend/src/avatar/controller/events.ts` (fixed) — replaced `Math.random()` with `SeededRandom` for deterministic pulse durations
+  - `frontend/src/avatar/controller/layers.ts` (modified) — added optional `mood` field to `ControllerConfig`
+  - `frontend/src/avatar/controller/index.ts` (modified) — exports AffectLayer, DEFAULT_AFFECT_CONFIG; registers affect layer in AvatarController
+  - `frontend/src/avatar/controller/affect.test.ts` (new) — tests for T4 (neutral at rest), T3 (hysteresis on third-place replacement), table validation, determinism
+  - `frontend/src/avatar/controller/events.test.ts` (new) — tests for deterministic pulse durations with seeded random
+- **Test result:** 42 tests pass (15 affect + 9 events + existing); `npm test` passes from `frontend/`; `npm run build` passes.
+- **What I did, step by step:**
+  1. Created `affect.ts` implementing the AffectLayer (Layer 2) per PRD 7.1: takes emotion deviation (27 dimensions) and mood (null until E4); computes top 3 dominant emotions by absolute deviation with hysteresis (newcomer replaces third only after beating by 0.05 margin for 300ms); maps dimensions → AUs → ARKit shapes via JSON tables; applies zones (inward dimensions weight upper face, social dimensions weight lower face); applies deterministic 5-10% left/right asymmetry per expression (seeded by dimension name); upper-face channels lead lower-face by 150-250ms; posture from mood valence/arousal (skipped while mood is null).
+  2. Created `dimension_to_au.json` with all 27 dimensions mapped to FACS AUs (au1-au64) with weights.
+  3. Created `au_to_arkit.json` mapping AUs to valid ARKit blend shape names from `channels.ts`.
+  4. Fixed `events.ts`: added `seed` to `EventsConfig` and `DEFAULT_EVENTS_CONFIG`; replaced all `Math.random()` calls in `addPulse`, `triggerSurprise`, `triggerAmusement`, `triggerNod` with `this.random.next()` using `SeededRandom` from `idle.ts`; added `reset()` for the random generator.
+  5. Added optional `mood?: { valence: number; arousal: number } | null` to `ControllerConfig` in `layers.ts` with default `null`.
+  6. Updated `index.ts` to export and register the AffectLayer in `AvatarController`.
+  7. Wrote tests: T4 (zero deviation → neutral face/pose); T3 (newcomer to third place requires margin+hold time); table validation (all 27 dimensions in table, all ARKit shapes valid); determinism (same seed → identical output).
+  8. Wrote events tests: two controllers with same seed produce identical pulse sequences; different seeds produce different durations; pulses decay to zero within duration.
+- **Notes:** The supervisor fix for W3-35 (deterministic events) was done first: `events.ts` now uses `SeededRandom` with seed passed in, matching the pattern in `blink.ts` and `idle.ts`. The test `events.test.ts` verifies two controllers with the same seed produce identical event pulses.
+- **Unsure about:** The T3 test checks hysteresis on third-place replacement (newcomer must beat by 0.05 for 300ms) rather than top-two alternation, because the card's hysteresis spec applies specifically to third-place replacement. The top two can still swap freely; if the reviewer intended output-level smoothing, that would be a separate change.
