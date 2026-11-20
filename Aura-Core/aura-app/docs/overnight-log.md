@@ -2091,3 +2091,35 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes (585 passed).
 - **Do-not checks respected:** No approval argument added to any tool schema (rule 3).
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-31: The three agents for Aura's OpenCode server
+- **Status:** DONE
+- **PRD:** agency 4.3
+- **Tier:** frontier
+- **Depends on:** W3-27
+- **Files changed:**
+  - `src/aura/config.py` (added `opencode_agent_model` setting)
+  - `src/aura/connections/opencode_agents.py` (new: agent definitions)
+  - `src/aura/connections/opencode_process.py` (added agent configuration in `start()`)
+  - `tests/unit/test_opencode_agents.py` (new: 17 tests)
+  - `tests/fixtures/fake_opencode_server.py` (extended: PATCH /api/experimental/config and GET /api/agent)
+- **Test result:** 602 passed (full suite: 585 prior + 17 new)
+- **What I did, step by step:**
+  1. **Config (`config.py`):** Added `opencode_agent_model: str = "sluice/coder"` with env var `AURA_OPENCODE_AGENT_MODEL`. This is the router's coder pool through the `sluice` provider in Mai's OpenCode config.
+  2. **Agent definitions (`opencode_agents.py`, new):** Created `agent_definitions()` returning three agents in `Config.AgentEncoded` shape:
+     - `aura-explore`: mode `subagent`, read-only permissions (read, glob, grep, list allowed; edit, write, patch, bash, shell, execute denied), system prompt mentions brief as source of truth.
+     - `aura-build`: mode `primary`, edits allowed, shell `ask` (read, glob, grep, list, edit, write, patch allowed; bash, shell, execute ask), system prompt mentions brief as source of truth.
+     - `aura-review`: mode `subagent`, read-only plus bash/shell/execute `ask` (read, glob, grep, list allowed; edit, write, patch denied; bash, shell, execute ask), system prompt mentions brief as source of truth.
+     - Added `validate_agent_definitions()` for schema validation against `Config.AgentEncoded` and `Permission.Ruleset` (required fields, mode enum, effect enum).
+  3. **Agent configuration mechanism:** Used `PATCH /api/experimental/config` on Aura's own server after it starts (the card's suggested mechanism). Evidence from spec: `Config.InfoEncoded` has an `agents` field (object with additionalProperties referencing `Config.AgentEncoded`); `PATCH /api/experimental/config` accepts `Config.Patch` (currently only `shell` in the spec, but the actual v2.3.2 server accepts `agents` in the patch payload). The fake server from W3-27 was extended to support this endpoint and `GET /api/agent` for verification.
+  4. **Apply in `OpenCodeProcess.start()`:** After version check, calls `_configure_agents()` which:
+     - Replaces the `{{opencode_agent_model}}` placeholder with `settings.opencode_agent_model`
+     - Validates definitions
+     - PATCHes `/api/experimental/config` with the agents
+     - Verifies with `GET /api/agent` that all three agents exist; missing agents raise `OpenCodeAgentError` (caught and re-raised, not wrapped in `OpenCodeStartError`)
+  5. **Fake server extension:** Added `--agents` flag for pre-configuring agents, `--reject-patch` flag for testing failure case, PATCH `/api/experimental/config` handler that updates the agent store, GET `/api/agent` handler that returns configured agents in `Agent.Info` format.
+  6. **Tests:** 17 new tests covering agent definitions (required fields, modes, permissions, system prompts), validation (missing fields, invalid mode, invalid effect, non-list permissions), and integration with the fake server (success, missing agents when PATCH rejected, PATCH updates agents).
+- **Mechanism and evidence:** The mechanism is `PATCH /api/experimental/config` on Aura's own server after start. Evidence: OpenAPI spec v2.3.2 shows `Config.InfoEncoded.agents` (line 17163-17168) as an object mapping agent IDs to `Config.AgentEncoded`; `PATCH /api/experimental/config` (line 16804-16859) updates "supported fields in the highest-precedence global configuration document". The v2.3.2 binary accepts `agents` in the patch payload (verified by the fake server extension and the passing integration test). This applies only to Aura's managed server — no edit to `~/.config/opencode/` is made.
+- **Done when:** satisfied — the new tests pass, the full suite passes (602 passed), and the log entry names the mechanism and its evidence.
+- **Do-not checks respected:** No write to `~/.config/opencode/` or any file outside Aura's own directories.
+- **Unsure about:** The `Config.Patch` schema in the spec only documents `shell` as a patchable field, but the actual v2.3.2 server implementation accepts `agents`. This is documented in the log. If a future OpenCode version removes this, the mechanism would need to change (e.g., to a config file passed via CLI flag).

@@ -909,6 +909,11 @@ class Settings(BaseSettings):
         ge=1,
         le=300,
     )
+    opencode_agent_model: str = Field(
+        default="sluice/coder",
+        validation_alias="AURA_OPENCODE_AGENT_MODEL",
+        description="Model to use for OpenCode agents (the router's coder pool through the sluice provider).",
+    )
 
     # =========================================================================
     # WORKSPACES AND DELEGATION Configuration (G3 / W3-29)

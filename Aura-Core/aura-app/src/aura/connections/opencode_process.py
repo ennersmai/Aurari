@@ -3,6 +3,7 @@ Managed OpenCode server process.
 
 Starts `opencode serve` as a child process, reads the listening URL and password
 from stdout, polls /api/info with Basic auth, and performs a major version check.
+Configures Aura's three agents (aura-explore, aura-build, aura-review) after startup.
 """
 
 from __future__ import annotations
@@ -28,6 +29,10 @@ class OpenCodeStartError(RuntimeError):
 
 class OpenCodeVersionError(RuntimeError):
     """Raised when the major version of the running OpenCode differs from the pinned major version."""
+
+
+class OpenCodeAgentError(RuntimeError):
+    """Raised when agent configuration fails or agents are missing."""
 
 
 @dataclass(frozen=True)
@@ -197,13 +202,16 @@ class OpenCodeProcess:
                 version=version,
             )
 
+            # Configure Aura's agents
+            await self._configure_agents(base_url, auth)
+
             # Start a task to read remaining stdout/stderr in background
             self._start_task = asyncio.create_task(self._read_streams())
 
             logger.info("OpenCode server started: %s (version %s)", base_url, version)
             return self._connection
 
-        except (OpenCodeStartError, OpenCodeVersionError):
+        except (OpenCodeStartError, OpenCodeVersionError, OpenCodeAgentError):
             await self.stop()
             raise
         except Exception as e:
@@ -268,6 +276,75 @@ class OpenCodeProcess:
     def _redact_output_lines(self, lines: collections.abc.Iterable[str]) -> str:
         """Redact passwords in a list of output lines."""
         return "\n".join(self._redact_password(line) for line in lines)
+
+    async def _configure_agents(self, base_url: str, auth: httpx.BasicAuth) -> None:
+        """
+        Configure Aura's three agents on the OpenCode server.
+
+        Uses PATCH /api/experimental/config to update the global config with the agent definitions,
+        then verifies with GET /api/agent that all three agents exist.
+        """
+        from aura.connections.opencode_agents import agent_definitions
+
+        # Get agent definitions and replace model placeholder
+        definitions = agent_definitions()
+        model = settings.opencode_agent_model
+        for agent in definitions.values():
+            if agent.get("model") == "{{opencode_agent_model}}":
+                agent["model"] = model
+
+        # Validate definitions
+        from aura.connections.opencode_agents import validate_agent_definitions
+        errors = validate_agent_definitions(definitions)
+        if errors:
+            raise OpenCodeAgentError(f"Invalid agent definitions: {'; '.join(errors)}")
+
+        # Prepare the patch payload - update the agents in the global config
+        # The Config.Patch schema only shows "shell" but we try to include agents
+        # as the card suggests this endpoint for agent configuration
+        patch_payload = {
+            "agents": definitions
+        }
+
+        # Try to patch the config
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            try:
+                response = await client.patch(
+                    f"{base_url}/api/experimental/config",
+                    json=patch_payload,
+                    auth=auth,
+                )
+                if response.status_code >= 400:
+                    # If PATCH fails, log and continue - we'll verify via GET /api/agent
+                    logger.warning(
+                        "PATCH /api/experimental/config failed with status %d: %s",
+                        response.status_code,
+                        response.text,
+                    )
+            except Exception as e:
+                logger.warning("Failed to PATCH /api/experimental/config: %s", e)
+
+            # Verify agents exist via GET /api/agent
+            try:
+                response = await client.get(f"{base_url}/api/agent", auth=auth)
+                if response.status_code != 200:
+                    raise OpenCodeAgentError(
+                        f"GET /api/agent failed with status {response.status_code}: {response.text}"
+                    )
+                data = response.json()
+                agents = data.get("data", [])
+                agent_ids = {agent.get("id") for agent in agents}
+                expected_agents = {"aura-explore", "aura-build", "aura-review"}
+                missing = expected_agents - agent_ids
+                if missing:
+                    raise OpenCodeAgentError(f"Missing agents after configuration: {missing}")
+                logger.info("All three Aura agents configured successfully: %s", sorted(agent_ids))
+            except httpx.ConnectError as e:
+                raise OpenCodeAgentError(f"Failed to connect to /api/agent: {e}") from e
+            except OpenCodeAgentError:
+                raise
+            except Exception as e:
+                raise OpenCodeAgentError(f"Failed to verify agents: {e}") from e
 
     def _parse_major(self, version: str) -> int:
         """Extract major version number from a version string."""
