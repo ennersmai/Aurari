@@ -3,7 +3,7 @@
  * Six layers each produce partial channel values per frame.
  */
 
-import type { Channel, ChannelGroup } from "./channels.js";
+import type { Channel, ChannelGroup } from "./channels";
 
 /** Input provided to each layer every frame. */
 export interface ControllerInput {

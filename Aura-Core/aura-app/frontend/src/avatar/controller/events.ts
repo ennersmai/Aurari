@@ -4,10 +4,10 @@
  * Deterministic: uses seeded random for pulse durations.
  */
 
-import type { Layer, LayerOutput, ControllerInput, EventPulse } from "./layers.js";
-import { Channel, CHANNELS_BY_GROUP } from "./channels.js";
-import { BlinkGenerator, BlinkConfig, DEFAULT_BLINK_CONFIG } from "./blink.js";
-import { SeededRandom } from "./idle.js";
+import type { Layer, LayerOutput, ControllerInput, EventPulse } from "./layers";
+import { Channel, CHANNELS_BY_GROUP } from "./channels";
+import { BlinkGenerator, BlinkConfig, DEFAULT_BLINK_CONFIG } from "./blink";
+import { SeededRandom } from "./idle";
 
 /** Configuration for event pulses. */
 export interface EventsConfig {

@@ -31,6 +31,7 @@ export interface ServerToClientEvents {
   conversation_joined: (data: { conversation_id: string, user_id: string, status: string }) => void;
   conversation_left: (data: { conversation_id: string, status: string }) => void;
   faiss_activity: (data: { active: boolean, agent_id?: string, conversation_id?: string }) => void;
+  avatar_state: (data: AvatarStateData) => void;
 }
 
 export interface ClientToServerEvents {
@@ -71,6 +72,15 @@ export interface Reflection {
   timestamp: string;
 }
 
+export interface AvatarStateData {
+  deviation: Record<string, number>;
+  mood: Record<string, number> | null;
+  cognitive_state: string;
+  events: Array<Record<string, unknown>>;
+  speaking: boolean;
+  gaze_target: string;
+}
+
 class SocketService {
   private socket: Socket<ServerToClientEvents, ClientToServerEvents> | null = null;
   private messageHandlers: ((message: ChatMessage) => void)[] = [];
@@ -82,6 +92,7 @@ class SocketService {
   private errorHandlers: ((error: { message: string, code?: string }) => void)[] = [];
   private connectionHandlers: ((connected: boolean) => void)[] = [];
   private faissActivityHandlers: ((data: { active: boolean, agent_id?: string, conversation_id?: string }) => void)[] = [];
+  private avatarStateHandlers: ((data: AvatarStateData) => void)[] = [];
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 3;
   private reconnectDelay: number = 2000;
@@ -269,6 +280,11 @@ class SocketService {
       this.faissActivityHandlers.forEach(handler => handler(data));
     });
 
+    this.socket.on('avatar_state', (data: AvatarStateData) => {
+      console.log('Received avatar state:', data);
+      this.avatarStateHandlers.forEach(handler => handler(data));
+    });
+
     this.socket.on('error', (data) => {
       console.error('Socket error:', data);
       this.notifyErrorHandlers(data);
@@ -405,6 +421,13 @@ class SocketService {
     this.faissActivityHandlers.push(handler);
     return () => {
       this.faissActivityHandlers = this.faissActivityHandlers.filter(h => h !== handler);
+    };
+  }
+
+  onAvatarState(handler: (data: AvatarStateData) => void): () => void {
+    this.avatarStateHandlers.push(handler);
+    return () => {
+      this.avatarStateHandlers = this.avatarStateHandlers.filter(h => h !== handler);
     };
   }
 

@@ -10,9 +10,9 @@ import type {
   LayerOutput,
   ControllerInput,
   ControllerConfig,
-} from "./layers.js";
-import type { Channel, ChannelGroup } from "./channels.js";
-import { CHANNEL_GROUPS, CHANNELS_BY_GROUP, ALL_CHANNELS } from "./channels.js";
+} from "./layers";
+import type { Channel, ChannelGroup } from "./channels";
+import { CHANNEL_GROUPS, CHANNELS_BY_GROUP, ALL_CHANNELS } from "./channels";
 import ownershipData from "./ownership.json" with { type: "json" };
 
 /** Ownership entry from JSON. */

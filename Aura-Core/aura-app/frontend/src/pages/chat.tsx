@@ -84,6 +84,7 @@ import SessionSwitcher from '@/components/sessions/SessionSwitcher';
 import sessionService, { type Session } from '@/services/sessionService';
 import type { Goal, Memory, EmotionState } from '@/types/aura';
 import SpiralAvatar from '@/components/SpiralAvatar';
+import AvatarStage from '@/avatar/AvatarStage';
 import ChartDialog from '@/components/chat/ChartRenderer';
 import type { ChartJsConfig } from '@/components/chat/ChartRenderer';
 import MemoryGraphDialog from '@/components/neural/MemoryGraphDialog';
@@ -880,6 +881,9 @@ export default function ChatPage() {
   });
   const [memories, setMemories] = useState<Memory[]>([]);
 
+  // Avatar cognitive state from socket avatar_state events
+  const [avatarCognitiveState, setAvatarCognitiveState] = useState<string>("attending");
+
   // Check Qwen3-TTS and FishAudio availability on mount and periodically
   useEffect(() => {
     const checkTTS = async () => {
@@ -1242,6 +1246,17 @@ export default function ChatPage() {
       chatMessageUnsubscribe();
     };
   }, [dispatch, conversationId, messages]);
+
+  // Subscribe to avatar_state socket events to drive the cognitive layer
+  useEffect(() => {
+    if (typeof process === "undefined" || process.env.NEXT_PUBLIC_AVATAR_STAGE !== "1") {
+      return undefined;
+    }
+    const unsubscribe = socketService.onAvatarState((data) => {
+      setAvatarCognitiveState(data.cognitive_state);
+    });
+    return unsubscribe;
+  }, []);
   
   // Scroll to bottom when messages change or streaming content updates
   // Debounced scroll to avoid thrashing during streaming
@@ -2575,7 +2590,11 @@ export default function ChatPage() {
             </Box>
             
             <Box sx={{ position: 'fixed', right: { xs: 16, md: 24 }, bottom: { xs: 96, md: 112 }, zIndex: 1320, pointerEvents: 'none' }}>
-              <SpiralAvatar size={64} />
+              {typeof process !== "undefined" && process.env.NEXT_PUBLIC_AVATAR_STAGE === "1" ? (
+                <AvatarStage size={64} cognitiveState={avatarCognitiveState} />
+              ) : (
+                <SpiralAvatar size={64} />
+              )}
             </Box>
             
             {/* Add this before the MessageInput component */}

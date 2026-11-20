@@ -3,8 +3,8 @@
  * Breathing, weight shift, small spine and neck noise from a seeded noise function.
  */
 
-import type { Layer, LayerOutput, ControllerInput, ControllerConfig } from "./layers.js";
-import { CHANNELS_BY_GROUP, Channel } from "./channels.js";
+import type { Layer, LayerOutput, ControllerInput, ControllerConfig } from "./layers";
+import { CHANNELS_BY_GROUP, Channel } from "./channels";
 
 /** Seeded pseudo-random number generator (Mulberry32). */
 export class SeededRandom {

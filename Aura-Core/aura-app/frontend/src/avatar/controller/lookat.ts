@@ -4,8 +4,8 @@
  * Deterministic: no Date.now() or Math.random().
  */
 
-import type { ControllerInput, ControllerConfig } from "./layers.js";
-import { Channel } from "./channels.js";
+import type { ControllerInput, ControllerConfig } from "./layers";
+import { Channel } from "./channels";
 
 /** Configuration for look-at behavior. */
 export interface LookAtConfig {

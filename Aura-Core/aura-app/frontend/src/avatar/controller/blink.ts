@@ -4,9 +4,9 @@
  * Deterministic: no Date.now() or Math.random() - uses seeded random and passed-in time.
  */
 
-import type { ControllerInput } from "./layers.js";
-import { Channel } from "./channels.js";
-import { SeededRandom } from "./idle.js";
+import type { ControllerInput } from "./layers";
+import { Channel } from "./channels";
+import { SeededRandom } from "./idle";
 
 /** Blink state machine states. */
 type BlinkState = "idle" | "closing" | "closed" | "opening";

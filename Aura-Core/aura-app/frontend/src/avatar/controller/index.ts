@@ -3,28 +3,29 @@
  * Combines six layers with ownership-based mixing.
  */
 
-export * from "./channels.js";
+export * from "./channels";
 import ownershipData from "./ownership.json" with { type: "json" };
 export { ownershipData };
-export * from "./layers.js";
-export * from "./mixer.js";
-export * from "./idle.js";
-export { SeededRandom } from "./idle.js";
-export * from "./blink.js";
-export * from "./lookat.js";
-export * from "./events.js";
-export * from "./affect.js";
+export * from "./layers";
+export * from "./mixer";
+export * from "./idle";
+export { SeededRandom } from "./idle";
+export * from "./blink";
+export * from "./lookat";
+export * from "./events";
+export * from "./affect";
+export * from "./cognitive";
 
-import type { Layer, LayerName, ControllerInput, ControllerConfig } from "./layers.js";
-import type { MixResult } from "./mixer.js";
-import { CHANNEL_GROUPS, ALL_CHANNELS, Channel } from "./channels.js";
-import { Mixer } from "./mixer.js";
-import { IdleLayer } from "./idle.js";
-import { EventsLayer } from "./events.js";
-import { AffectLayer, AffectConfig, DEFAULT_AFFECT_CONFIG } from "./affect.js";
-import { LookAtSystem, LookAtConfig, DEFAULT_LOOKAT_CONFIG } from "./lookat.js";
-import { DEFAULT_CONFIG } from "./layers.js";
-import { DEFAULT_EVENTS_CONFIG } from "./events.js";
+import type { Layer, LayerName, ControllerInput, ControllerConfig } from "./layers";
+import type { MixResult } from "./mixer";
+import { CHANNEL_GROUPS, ALL_CHANNELS, Channel } from "./channels";
+import { Mixer } from "./mixer";
+import { IdleLayer } from "./idle";
+import { EventsLayer } from "./events";
+import { AffectLayer, AffectConfig, DEFAULT_AFFECT_CONFIG } from "./affect";
+import { LookAtSystem, LookAtConfig, DEFAULT_LOOKAT_CONFIG } from "./lookat";
+import { DEFAULT_CONFIG } from "./layers";
+import { DEFAULT_EVENTS_CONFIG } from "./events";
 
 /** Main controller that orchestrates all layers. */
 export class AvatarController {
@@ -173,9 +174,9 @@ export class AvatarController {
 }
 
 // Re-export default configs
-export { DEFAULT_CONFIG } from "./layers.js";
-export { DEFAULT_LOOKAT_CONFIG } from "./lookat.js";
-export { DEFAULT_EVENTS_CONFIG } from "./events.js";
-export { DEFAULT_BLINK_CONFIG } from "./blink.js";
-export { DEFAULT_AFFECT_CONFIG } from "./affect.js";
-export type { AffectConfig } from "./affect.js";
+export { DEFAULT_CONFIG } from "./layers";
+export { DEFAULT_LOOKAT_CONFIG } from "./lookat";
+export { DEFAULT_EVENTS_CONFIG } from "./events";
+export { DEFAULT_BLINK_CONFIG } from "./blink";
+export { DEFAULT_AFFECT_CONFIG } from "./affect";
+export type { AffectConfig } from "./affect";

@@ -4,9 +4,9 @@
  * Input: emotion deviation (27 dimensions) and mood (valence/arousal or null).
  */
 
-import type { Layer, LayerOutput, ControllerInput, ControllerConfig } from "./layers.js";
-import { Channel, CHANNELS_BY_GROUP } from "./channels.js";
-import { SeededRandom } from "./idle.js";
+import type { Layer, LayerOutput, ControllerInput, ControllerConfig } from "./layers";
+import { Channel, CHANNELS_BY_GROUP } from "./channels";
+import { SeededRandom } from "./idle";
 import dimensionToAuData from "./tables/dimension_to_au.json" with { type: "json" };
 import auToArkitData from "./tables/au_to_arkit.json" with { type: "json" };
 
