@@ -878,6 +878,39 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # OPENCODE SERVER Configuration (W3-27)
+    # =========================================================================
+    opencode_command: list[str] = Field(
+        default_factory=list,
+        validation_alias="AURA_OPENCODE_COMMAND",
+        description="Command to run opencode as a JSON list. Empty means ['opencode'] from PATH.",
+    )
+    opencode_version_pin: str = Field(
+        default="2.3.2",
+        validation_alias="AURA_OPENCODE_VERSION_PIN",
+        description="Pinned major.minor.patch version. Refuses other major versions.",
+    )
+    opencode_host: str = Field(
+        default="127.0.0.1",
+        validation_alias="AURA_OPENCODE_HOST",
+        description="Host to bind the opencode server to.",
+    )
+    opencode_port: int = Field(
+        default=0,
+        validation_alias="AURA_OPENCODE_PORT",
+        description="Port to bind the opencode server to. 0 picks a free port.",
+        ge=0,
+        le=65535,
+    )
+    opencode_start_timeout_secs: int = Field(
+        default=30,
+        validation_alias="AURA_OPENCODE_START_TIMEOUT_SECS",
+        description="Timeout in seconds for the opencode server to start and respond to /api/info.",
+        ge=1,
+        le=300,
+    )
+
+    # =========================================================================
     # IDE / CODE EXECUTION Configuration
     # =========================================================================
     aura_workspace_path: str = Field(

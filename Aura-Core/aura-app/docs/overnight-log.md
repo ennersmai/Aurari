@@ -1945,3 +1945,39 @@
 - **Done when:** satisfied — the new tests pass, the full suite passes (508), and `docs/metrics/e2e3.md` exists with the T15 similarity (-0.1703) and date (2026-11-19).
 - **Do-not checks respected:** Did not change any table or threshold to make a test pass. The T9 test correctly reports 24/30 events with large changes rather than asserting all 30.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-27: A managed OpenCode server with a version pin
+- **Status:** DONE
+- **PRD:** agency 4.2 (starts `opencode serve` as a managed child process on localhost with a generated password; pins a version and refuses another major version), test T7
+- **Tier:** frontier
+- **Files changed:**
+  - `src/aura/config.py` (added OpenCode configuration settings)
+  - `src/aura/connections/opencode_process.py` (new)
+  - `tests/fixtures/fake_opencode_server.py` (new)
+  - `tests/unit/test_opencode_process.py` (new)
+- **Test result:** 514 passed (full suite: 508 prior + 6 new)
+- **What I did, step by step:**
+  1. **Config (step 1):** Added five settings to `Settings` in `config.py`:
+     - `opencode_command: list[str] = []` (env `AURA_OPENCODE_COMMAND`, JSON list; empty means `["opencode"]` from PATH)
+     - `opencode_version_pin: str = "2.3.2"` (env `AURA_OPENCODE_VERSION_PIN`)
+     - `opencode_host: str = "127.0.0.1"` (env `AURA_OPENCODE_HOST`)
+     - `opencode_port: int = 0` (env `AURA_OPENCODE_PORT`; 0 picks a free port)
+     - `opencode_start_timeout_secs: int = 30` (env `AURA_OPENCODE_START_TIMEOUT_SECS`)
+  2. **`OpenCodeProcess` class (step 2):** Created `src/aura/connections/opencode_process.py` with:
+     - `async start()` runs the command + `["serve", "--hostname", host, "--port", str(port)]` via `asyncio.create_subprocess_exec` (no shell), reads stdout line by line until it has both the listening URL and password (regexes), then polls `GET /api/info` with Basic auth until it responds or timeout.
+     - `base_url`, `auth` (an `httpx.BasicAuth`), and `version` are stored and returned as an `OpenCodeConnection` dataclass.
+     - `async stop()` terminates the process (kill after 5s).
+     - Password is never logged, printed, or stored outside the object; log lines show `***` (both in command logging and stdout reading).
+     - Custom exceptions: `OpenCodeStartError` (with last 20 output lines, password-redacted) and `OpenCodeVersionError` (with both versions in message).
+  3. **Version check (step 3 / T7):** After `/api/info` responds, extracts major version from pinned and actual versions. If majors differ, stops process and raises `OpenCodeVersionError` before any other request. Different minor/patch logs a warning but allows start.
+  4. **Fake server (tests):** Created `tests/fixtures/fake_opencode_server.py` — standalone script (stdlib only: `http.server` + `threading`) that prints the two lines and serves `/api/info` behind Basic auth, version from CLI arg. Supports `--exit-before-output` to simulate crash.
+  5. **Tests (`tests/unit/test_opencode_process.py`, 6 tests):**
+     - `test_start_succeeds_with_correct_version`: version 2.3.2 starts, connection has correct version, base_url, auth.
+     - `test_version_mismatch_major_raises_error`: version 3.0.0 raises `OpenCodeVersionError` with both versions; no request other than `/api/info` reaches fake.
+     - `test_different_minor_patch_starts_with_warning`: version 2.4.0 starts with warning log.
+     - `test_process_exit_before_output_raises_start_error`: fake with `--exit-before-output` raises `OpenCodeStartError` with redacted output.
+     - `test_password_not_in_logs`: password never appears in captured logs (command line and stdout both redacted).
+     - `test_stop_leaves_no_child_process`: verifies `psutil.pid_exists` is False after stop.
+- **Done when:** satisfied — the new tests pass and the full suite passes (514).
+- **Do-not checks respected:** Did not start OpenCode at Aura startup (W3-28 adds the client; G3 decides when to start it). Did not use the desktop app's background service. Did not add a dependency.
+- **Unsure about:** Nothing. All changes are scoped to the files listed.
