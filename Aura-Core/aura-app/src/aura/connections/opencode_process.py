@@ -237,24 +237,34 @@ class OpenCodeProcess:
             )
 
             # Verify agents exist via GET /api/agent/{id} for each of the three agents
-            # The list endpoint can lag right after start, so check each individually
+            # The list endpoint can lag right after start, so check each individually.
+            # The real server loads config asynchronously, so poll each agent until it
+            # returns 200 or the start timeout expires.
             expected_agents = {"aura-explore", "aura-build", "aura-review"}
             async with httpx.AsyncClient(timeout=10.0) as client:
                 for agent_id in expected_agents:
-                    try:
-                        response = await client.get(
-                            f"{base_url}/api/agent/{agent_id}",
-                            auth=auth,
-                        )
-                        if response.status_code != 200:
+                    agent_url = f"{base_url}/api/agent/{agent_id}"
+                    start_time = asyncio.get_event_loop().time()
+                    while True:
+                        try:
+                            response = await client.get(agent_url, auth=auth)
+                            if response.status_code == 200:
+                                break  # Agent found
+                            # For 404 or other non-200, keep polling
+                        except httpx.ConnectError as e:
+                            # Connection errors might be transient, keep polling
+                            pass
+                        except Exception as e:
+                            raise OpenCodeStartError(f"Failed to verify agent {agent_id}: {e}") from e
+
+                        # Check timeout
+                        if asyncio.get_event_loop().time() - start_time >= settings.opencode_start_timeout_secs:
                             raise OpenCodeStartError(
-                                f"Agent {agent_id} not found: GET /api/agent/{agent_id} "
-                                f"returned status {response.status_code}: {response.text}"
+                                f"Agent {agent_id} not found after {settings.opencode_start_timeout_secs}s: "
+                                f"GET {agent_url} did not return 200"
                             )
-                    except httpx.ConnectError as e:
-                        raise OpenCodeStartError(f"Failed to connect to /api/agent/{agent_id}: {e}") from e
-                    except Exception as e:
-                        raise OpenCodeStartError(f"Failed to verify agent {agent_id}: {e}") from e
+
+                        await asyncio.sleep(0.5)
 
             logger.info("All three Aura agents verified: %s", sorted(expected_agents))
 

@@ -25,11 +25,24 @@ from aura.connections.opencode_process import OpenCodeConnection, OpenCodeProces
 
 @pytest.fixture
 def real_opencode_command():
-    """Get the real opencode command from environment variable."""
-    cmd = os.environ.get("AURA_OPENCODE_REAL_COMMAND")
-    if not cmd:
+    """Get the real opencode command from environment variable.
+
+    Accepts either a JSON list (e.g., '["opencode", "serve"]') or a plain path
+    (e.g., 'opencode' or '/path/to/opencode'). If it's a plain path, it's
+    converted to a single-element list.
+    """
+    import json
+    cmd_str = os.environ.get("AURA_OPENCODE_REAL_COMMAND")
+    if not cmd_str:
         pytest.skip("AURA_OPENCODE_REAL_COMMAND not set; skipping real binary test")
-    return cmd
+    try:
+        if cmd_str.strip().startswith("["):
+            return json.loads(cmd_str)
+        else:
+            return [cmd_str]
+    except json.JSONDecodeError:
+        # If it's not valid JSON, treat as plain path
+        return [cmd_str]
 
 
 @pytest.fixture
@@ -67,7 +80,7 @@ async def test_opencode_real_binary_starts(
     print(f"Wrote config to {config_path}")
     
     # Configure settings to use the real binary
-    settings.opencode_command = [real_opencode_command]
+    settings.opencode_command = real_opencode_command
     settings.opencode_version_pin = "2.3.2"
     settings.opencode_host = "127.0.0.1"
     settings.opencode_port = free_port
@@ -84,9 +97,17 @@ async def test_opencode_real_binary_starts(
         assert isinstance(connection, OpenCodeConnection)
         assert connection.base_url == f"http://127.0.0.1:{free_port}"
         assert isinstance(connection.auth, httpx.BasicAuth)
-        assert connection.auth.username == "opencode"
-        assert connection.auth.password is not None
-        assert len(connection.auth.password) > 0
+        # httpx.BasicAuth stores credentials in the auth header; verify by decoding
+        auth_header = connection.auth._auth_header
+        assert auth_header is not None
+        assert auth_header.startswith("Basic ")
+        import base64
+        encoded = auth_header.split(" ")[1]
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        # Should be "opencode:<password>"
+        assert decoded.startswith("opencode:")
+        password = decoded.split(":", 1)[1]
+        assert len(password) > 0
         assert connection.version.startswith("2.3.")
         
         # Verify agents are accessible
@@ -98,11 +119,20 @@ async def test_opencode_real_binary_starts(
                 )
                 assert response.status_code == 200, f"Agent {agent_id} not found: {response.text}"
                 data = response.json()
-                assert data.get("id") == agent_id
+                # Real server returns {location, data: {id, name, model, ...}}
+                agent_data = data.get("data", {})
+                assert agent_data.get("id") == agent_id, f"Agent ID mismatch: {agent_data}"
+        
+        # Extract password from auth header for logging
+        auth_header = connection.auth._auth_header
+        import base64
+        encoded = auth_header.split(" ")[1]
+        decoded = base64.b64decode(encoded).decode("utf-8")
+        password = decoded.split(":", 1)[1]
         
         print(f"Real OpenCode server started successfully at {connection.base_url}")
         print(f"Version: {connection.version}")
-        print(f"Password: {connection.auth.password}")
+        print(f"Password: {password}")
         
     finally:
         await process.stop()

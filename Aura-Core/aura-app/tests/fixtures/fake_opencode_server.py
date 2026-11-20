@@ -37,6 +37,36 @@ def record_request(path: str) -> None:
     _request_paths.append(path)
 
 
+# Track request counts per agent for delayed readiness simulation
+_agent_request_counts: dict[str, int] = {}
+
+
+def record_agent_request(agent_id: str) -> int:
+    """Record a request for a specific agent and return the count."""
+    _agent_request_counts[agent_id] = _agent_request_counts.get(agent_id, 0) + 1
+    return _agent_request_counts[agent_id]
+
+
+def reset_agent_request_counts() -> None:
+    """Reset the agent request counts."""
+    _agent_request_counts.clear()
+
+
+# Delay configuration: number of 404s to return before 200 for each agent
+_agent_delay_ready: int = 0
+
+
+def set_agent_delay_ready(delay: int) -> None:
+    """Set the number of 404 responses before agents become ready."""
+    global _agent_delay_ready
+    _agent_delay_ready = delay
+
+
+def get_agent_delay_ready() -> int:
+    """Get the current agent delay ready setting."""
+    return _agent_delay_ready
+
+
 # Global agent store (loaded from XDG_CONFIG_HOME/opencode/opencode.jsonc)
 _configured_agents: dict[str, dict[str, Any]] = {}
 
@@ -136,6 +166,16 @@ class FakeOpenCodeHandler(http.server.BaseHTTPRequestHandler):
             agent_id = self.path.split("/api/agent/")[1]
             agents = get_configured_agents()
             if agent_id in agents:
+                # Check if we should delay readiness for this agent
+                delay = get_agent_delay_ready()
+                if delay > 0:
+                    count = record_agent_request(agent_id)
+                    if count <= delay:
+                        self.send_response(HTTPStatus.NOT_FOUND)
+                        self.end_headers()
+                        self.wfile.write(b"Agent not found")
+                        return
+
                 agent_def = agents[agent_id]
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/json")
@@ -174,9 +214,14 @@ def run_server(
     password: str,
     exit_immediately: bool = False,
     exit_before_output: bool = False,
+    delay_agent_ready: int = 0,
 ) -> None:
     """Run the fake OpenCode server."""
     FakeOpenCodeHandler.version = version
+
+    # Set delay for agent readiness
+    set_agent_delay_ready(delay_agent_ready)
+    reset_agent_request_counts()
 
     # Load agents from XDG_CONFIG_HOME
     config_dir = os.environ.get("XDG_CONFIG_HOME")
@@ -244,6 +289,12 @@ def main() -> None:
         action="store_true",
         help="Exit immediately before printing URL and password (simulates crash before output)",
     )
+    parser.add_argument(
+        "--delay-agent-ready",
+        type=int,
+        default=0,
+        help="Number of 404 responses to return for each agent before returning 200 (simulates async config loading)",
+    )
     # Ignore unknown arguments (like 'serve', '--hostname', etc. from OpenCodeProcess)
     args, _ = parser.parse_known_args()
 
@@ -254,6 +305,7 @@ def main() -> None:
         args.password,
         args.exit_immediately,
         args.exit_before_output,
+        args.delay_agent_ready,
     )
 
 

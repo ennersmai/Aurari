@@ -608,5 +608,122 @@ class TestOpenCodeProcessAgentsW31a:
                 await process.stop()
 
 
+class TestOpenCodeProcessAgentPolling:
+    """Tests for agent polling behavior (W3-31b)."""
+
+    @pytest.fixture(autouse=True)
+    def reset_settings(self, monkeypatch):
+        """Reset settings before each test."""
+        original_command = settings.opencode_command
+        original_version_pin = settings.opencode_version_pin
+        original_host = settings.opencode_host
+        original_port = settings.opencode_port
+        original_timeout = settings.opencode_start_timeout_secs
+        original_agent_model = settings.opencode_agent_model
+        original_config_dir = settings.opencode_config_dir
+        original_router_base_url = settings.opencode_router_base_url
+
+        yield
+
+        settings.opencode_command = original_command
+        settings.opencode_version_pin = original_version_pin
+        settings.opencode_host = original_host
+        settings.opencode_port = original_port
+        settings.opencode_start_timeout_secs = original_timeout
+        settings.opencode_agent_model = original_agent_model
+        settings.opencode_config_dir = original_config_dir
+        settings.opencode_router_base_url = original_router_base_url
+
+    async def test_start_polls_agents_until_ready(
+        self, free_port: int, fake_server_script: Path
+    ) -> None:
+        """Test that start polls each agent until it returns 200 (simulates async config loading)."""
+        # Create config with all three agents
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            from aura.connections.opencode_agents import write_config
+            write_config(config_dir)
+
+            # Use --delay-agent-ready=2 to return 404 for first 2 requests per agent
+            settings.opencode_command = [
+                sys.executable,
+                str(fake_server_script),
+                "--version",
+                "2.3.2",
+                "--port",
+                str(free_port),
+                "--password",
+                "test-secret-123",
+                "--delay-agent-ready",
+                "2",
+            ]
+            settings.opencode_version_pin = "2.3.2"
+            settings.opencode_host = "127.0.0.1"
+            settings.opencode_port = free_port
+            settings.opencode_start_timeout_secs = 10
+            settings.opencode_agent_model = "sluice/coder"
+            settings.opencode_config_dir = str(config_dir)
+
+            process = OpenCodeProcess()
+            connection = await process.start()
+
+            try:
+                # Should succeed after polling
+                assert connection.version == "2.3.2"
+                assert connection.base_url == f"http://127.0.0.1:{free_port}"
+
+                # Verify all agents are accessible
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    for agent_id in ["aura-explore", "aura-build", "aura-review"]:
+                        response = await client.get(
+                            f"{connection.base_url}/api/agent/{agent_id}",
+                            auth=connection.auth,
+                        )
+                        assert response.status_code == 200, f"Agent {agent_id} not found: {response.text}"
+            finally:
+                await process.stop()
+
+    async def test_start_fails_when_agent_never_ready(
+        self, free_port: int, fake_server_script: Path
+    ) -> None:
+        """Test that start fails when agent never becomes ready within timeout."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_dir = Path(tmpdir)
+            from aura.connections.opencode_agents import write_config
+            write_config(config_dir)
+
+            # Use --delay-agent-ready=100 (more than timeout allows)
+            # With 0.5s polling and 5s timeout, max ~10 polls
+            settings.opencode_command = [
+                sys.executable,
+                str(fake_server_script),
+                "--version",
+                "2.3.2",
+                "--port",
+                str(free_port),
+                "--password",
+                "test-secret-123",
+                "--delay-agent-ready",
+                "100",
+            ]
+            settings.opencode_version_pin = "2.3.2"
+            settings.opencode_host = "127.0.0.1"
+            settings.opencode_port = free_port
+            settings.opencode_start_timeout_secs = 5
+            settings.opencode_agent_model = "sluice/coder"
+            settings.opencode_config_dir = str(config_dir)
+
+            process = OpenCodeProcess()
+
+            with pytest.raises(OpenCodeStartError) as exc_info:
+                await process.start()
+
+            error_msg = str(exc_info.value)
+            assert "not found after" in error_msg
+            assert "5s" in error_msg or "5" in error_msg
+
+            await process.stop()
+
+
 # Need to import httpx for the tests
 import httpx
