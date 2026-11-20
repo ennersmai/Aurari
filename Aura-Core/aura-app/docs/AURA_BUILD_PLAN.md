@@ -2180,6 +2180,26 @@ OpenCode v2.3.2 facts from `docs/opencode/openapi-v2.3.2.json`: the config has a
 
 ---
 
+**W3-31a The agents reach Aura's server through an Aura-owned config directory**
+- **PRD:** agency 4.3
+- **Tier:** frontier
+- **Depends on:** W3-31
+- **Why:** added by the supervisor after reviewing W3-31. W3-31 sends the agents with `PATCH /api/experimental/config` and its log says "the actual v2.3.2 server accepts `agents` in the patch payload". That was never tested against a real server, only against the fake. The supervisor tested it on a real v2.3.2 server in a sandbox on 2026-11-20: the server rejects it with `{"_tag":"InvalidRequestError","message":"Missing key\n  at [\"shell\"]"}`, as the spec's `Config.Patch` (only `shell`) says. The same test showed a mechanism that works: started with the environment variable `XDG_CONFIG_HOME` pointing at a directory, the server reads `<that directory>/opencode/opencode.jsonc` (seen in `GET /api/config` as a `document` entry with that path), and agents defined there under `"agents"` appear in `GET /api/agent` and `GET /api/agent/{id}`. Mai's global config was not touched.
+- **Files:** `src/aura/connections/opencode_agents.py`, `src/aura/connections/opencode_process.py`, `src/aura/config.py`, `tests/fixtures/fake_opencode_server.py`, `tests/unit/test_opencode_agents.py`, `tests/unit/test_opencode_process.py`
+- **Change:**
+  1. Config: `opencode_config_dir: str = ""` (empty means `<the directory of Aura's state or data files, or the app directory>/opencode-config`; pick the existing Aura data location and say which in the log) and `opencode_router_base_url: str = "http://127.0.0.1:8787/v1"`.
+  2. `opencode_agents.py`: `def write_config(config_dir: Path) -> Path` writes `<config_dir>/opencode/opencode.jsonc` (plain JSON is valid JSONC) with exactly two top-level keys: `"provider"` with the `sluice` provider (`{"npm": "@ai-sdk/openai-compatible", "name": "Sluice", "options": {"baseURL": <opencode_router_base_url>}, "models": {"coder": {"name": "coder"}, "chat": {"name": "chat"}}}`) and `"agents"` with `agent_definitions()`. It returns the file path, writes atomically (temporary file, then replace), and creates the directories.
+  3. `OpenCodeProcess.start()`: before starting the child, call `write_config(...)`, and start the child with `env = os.environ.copy()` plus `XDG_CONFIG_HOME=<config_dir>`. Do not set `XDG_DATA_HOME` or `XDG_STATE_HOME` (sessions stay in the normal OpenCode data directory, so Mai can open them in her app). Remove the `PATCH /api/experimental/config` call and its code entirely.
+  4. Verification after the version check: `GET /api/agent/{id}` for each of the three agents (the list endpoint can lag right after start); a missing agent raises `OpenCodeStartError`.
+  5. The fake server: drop the PATCH handler; read the agents from the `XDG_CONFIG_HOME` file it is started with, and serve `GET /api/agent` and `GET /api/agent/{id}` from it.
+  6. In the log entry, correct the W3-31 claim: say plainly that the PATCH mechanism was assumed, not tested, and that a real server rejects it.
+- **Tests:** `write_config` produces valid JSON with the provider and the three agents; the process starts the child with `XDG_CONFIG_HOME` set to the config dir and without `XDG_DATA_HOME`; start fails when the fake does not serve one of the agents; no request to `/api/experimental/config` is ever made (the fake records paths).
+- **Done when:** the new tests pass, the full suite passes, and `grep -rn "experimental/config" src` prints nothing.
+- **Do not:** write to `~/.config/opencode/` or set any `XDG_*` variable in Aura's own process environment (only in the child's).
+
+---
+
+
 **W3-32 `delegate_work`: brief, task record, session, event folding, budget**
 - **PRD:** agency 4.4 steps 1 to 3 and 5, 4.5, 4.1 parity (live step log, abort), rule 8, tests T3 and T5
 - **Tier:** frontier
