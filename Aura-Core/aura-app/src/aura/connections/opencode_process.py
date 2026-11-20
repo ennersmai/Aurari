@@ -8,6 +8,7 @@ from stdout, polls /api/info with Basic auth, and performs a major version check
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import re
 import sys
@@ -54,8 +55,8 @@ class OpenCodeProcess:
         self._process: asyncio.subprocess.Process | None = None
         self._connection: OpenCodeConnection | None = None
         self._start_task: asyncio.Task[None] | None = None
-        self._stdout_lines: list[str] = []
-        self._stderr_lines: list[str] = []
+        self._stdout_lines: collections.deque[str] = collections.deque(maxlen=200)
+        self._stderr_lines: collections.deque[str] = collections.deque(maxlen=200)
 
     @property
     def is_running(self) -> bool:
@@ -156,7 +157,7 @@ class OpenCodeProcess:
                 await self._process.wait()
                 raise OpenCodeStartError(
                     f"OpenCode process exited before printing URL and password. "
-                    f"Last 20 lines:\n{self._redact_output_lines(self._stdout_lines[-20:])}"
+                    f"Last 20 lines:\n{self._redact_output_lines(list(self._stdout_lines)[-20:])}"
                 )
 
             # Parse the URL to get the actual host and port (in case port was 0)
@@ -264,7 +265,7 @@ class OpenCodeProcess:
         """Redact password in log lines."""
         return self._PASSWORD_PATTERN.sub("Password: ***", line)
 
-    def _redact_output_lines(self, lines: list[str]) -> str:
+    def _redact_output_lines(self, lines: collections.abc.Iterable[str]) -> str:
         """Redact passwords in a list of output lines."""
         return "\n".join(self._redact_password(line) for line in lines)
 

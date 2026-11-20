@@ -280,5 +280,54 @@ class TestOpenCodeProcess:
         assert not psutil.pid_exists(pid)
 
 
+class TestOpenCodeProcessDeque:
+    """Tests for the deque-based output line storage (supervisor fix)."""
+
+    def test_stdout_lines_deque_maxlen(self) -> None:
+        """Test that _stdout_lines keeps only the last 200 lines."""
+        process = OpenCodeProcess()
+
+        # Feed 250 lines
+        for i in range(250):
+            process._stdout_lines.append(f"line {i}")
+
+        # Should only keep last 200
+        assert len(process._stdout_lines) == 200
+        # First line should be "line 50" (250 - 200 = 50)
+        assert list(process._stdout_lines)[0] == "line 50"
+        # Last line should be "line 249"
+        assert list(process._stdout_lines)[-1] == "line 249"
+
+    def test_stderr_lines_deque_maxlen(self) -> None:
+        """Test that _stderr_lines keeps only the last 200 lines."""
+        process = OpenCodeProcess()
+
+        # Feed 250 lines
+        for i in range(250):
+            process._stderr_lines.append(f"error {i}")
+
+        # Should only keep last 200
+        assert len(process._stderr_lines) == 200
+        # First line should be "error 50"
+        assert list(process._stderr_lines)[0] == "error 50"
+        # Last line should be "error 249"
+        assert list(process._stderr_lines)[-1] == "error 249"
+
+    def test_redact_output_lines_works_with_deque(self) -> None:
+        """Test that _redact_output_lines works with deque slices."""
+        process = OpenCodeProcess()
+
+        for i in range(10):
+            process._stdout_lines.append(f"line {i}")
+
+        # Get last 5 lines (deque doesn't support slicing, convert to list first)
+        last_five = list(process._stdout_lines)[-5:]
+        redacted = process._redact_output_lines(last_five)
+
+        # Should work without error
+        assert "line 5" in redacted
+        assert "line 9" in redacted
+
+
 # Need to import httpx for the test
 import httpx

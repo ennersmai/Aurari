@@ -2,6 +2,7 @@
 
 from aura.models.base import BaseModel, TimestampedModel
 from aura.models.messages import EngineMessage, MessagePriority, MessageType
+from aura.models.work import PermissionRequest, WorkEvent, WorkResult
 
 __all__ = [
     "BaseModel",
@@ -9,5 +10,8 @@ __all__ = [
     "EngineMessage",
     "MessagePriority",
     "MessageType",
+    "WorkEvent",
+    "PermissionRequest",
+    "WorkResult",
 ]
 

@@ -1981,3 +1981,40 @@
 - **Done when:** satisfied — the new tests pass and the full suite passes (514).
 - **Do-not checks respected:** Did not start OpenCode at Aura startup (W3-28 adds the client; G3 decides when to start it). Did not use the desktop app's background service. Did not add a dependency.
 - **Unsure about:** Nothing. All changes are scoped to the files listed.
+
+## W3-28: OpenCode client against a fake server (PRD 4.2)
+- **Status:** DONE
+- **PRD:** agency 4.2 (the only code that talks to OpenCode; models, client interface, and tests)
+- **Tier:** frontier
+- **Files changed:**
+  - `src/aura/models/work.py` (new: `WorkEvent`, `PermissionRequest`, `WorkResult` dataclasses)
+  - `src/aura/connections/opencode_client.py` (new: `OpenCodeClient` implementing PRD 4.2 interface)
+  - `src/aura/connections/opencode_process.py` (W3-27 supervisor fix: `collections.deque(maxlen=200)` for stdout/stderr lines)
+  - `tests/unit/test_opencode_client.py` (new: 20 tests using `httpx.MockTransport`)
+  - `tests/unit/test_opencode_spec_coverage.py` (new: 8 tests verifying endpoints against OpenAPI spec v2.3.2)
+  - `tests/unit/test_opencode_process.py` (W3-27 fix: added deque maxlen tests)
+- **Test result:** 545 passed (full suite: 514 prior + 31 new)
+- **What I did, step by step:**
+  1. **Models (step 1):** Created `src/aura/models/work.py` with three frozen dataclasses:
+     - `WorkEvent` with `kind` (started/step/tool/permission/succeeded/failed/interrupted/idle/other), `session_id`, `type`, `data`
+     - `PermissionRequest` with `id`, `session_id`, `action`, `resources`, `message`
+     - `WorkResult` with `session_id`, `summary`, `files_changed`, `additions`, `deletions`
+  2. **Client interface (step 2):** Created `src/aura/connections/opencode_client.py` with `OpenCodeClient` implementing PRD 4.2 methods:
+     - `ensure_running()` → `OpenCodeConnection`
+     - `create_session(workspace, agent, title)` → `session_id`
+     - `send(session_id, prompt)` → `None`
+     - `events(session_id)` → `AsyncIterator[WorkEvent]` (SSE stream with session filtering)
+     - `pending_permissions(session_id)` → `list[PermissionRequest]`
+     - `answer_permission(session_id, request_id, allow)` → `None`
+     - `abort(session_id)` → `None`
+     - `result(session_id)` → `WorkResult` (diff + last assistant message)
+     - Errors: `OpenCodeUnavailable` (connection failure/server exit), `OpenCodeError(status, tag, message)` (HTTP errors)
+  3. **Endpoint mapping (step 3):** Module-level `OPENCODE_CLIENT_ENDPOINTS` lists all (method, path) pairs used; verified against saved OpenAPI spec v2.3.2 in `docs/opencode/openapi-v2.3.2.json`.
+  4. **Tests (step 4):** 
+     - `test_opencode_client.py`: 20 tests covering all methods, SSE parsing, session filtering, error handling, T6 stream recovery.
+     - `test_opencode_spec_coverage.py`: 8 tests verifying every client endpoint exists in spec, parameters match, required schemas present, event types in enum, diff/message endpoints correct.
+  5. **W3-27 supervisor fix:** Changed `self._stdout_lines` and `self._stderr_lines` in `opencode_process.py` from `list` to `collections.deque(maxlen=200)`; added 3 tests for deque behavior.
+  6. **Full suite:** All 545 tests pass.
+- **Done when:** satisfied — the new tests pass, the full suite passes (545), and all client endpoints are verified against the OpenAPI spec.
+- **Do-not checks respected:** No `delegate_work`, no agents, no policy (G3). No reading events with a model. No new dependencies added. Uses only `httpx` (already present).
+- **Unsure about:** Nothing. All changes are scoped to the files listed.
