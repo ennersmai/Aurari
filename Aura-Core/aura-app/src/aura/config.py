@@ -940,6 +940,19 @@ class Settings(BaseSettings):
         validation_alias="AURA_DELEGATION_ENABLED",
         description="Enable delegation to OpenCode agents. Off by default.",
     )
+    delegation_default_tokens: int = Field(
+        default=200000,
+        validation_alias="AURA_DELEGATION_DEFAULT_TOKENS",
+        description="Default token budget for delegated tasks.",
+        ge=1000,
+    )
+    delegation_default_minutes: int = Field(
+        default=30,
+        validation_alias="AURA_DELEGATION_DEFAULT_MINUTES",
+        description="Default time budget in minutes for delegated tasks.",
+        ge=1,
+        le=1440,
+    )
     policy_table: dict[str, dict[str, str]] = Field(
         default_factory=lambda: {
             "owner": {"read": "allow", "write": "allow", "execute": "ask", "send": "ask"},
