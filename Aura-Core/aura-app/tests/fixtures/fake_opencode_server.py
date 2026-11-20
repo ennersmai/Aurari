@@ -190,9 +190,9 @@ def run_server(
         # Exit immediately before printing the lines (simulates a crash before output)
         sys.exit(0)
 
-    # Print the two lines that OpenCodeProcess expects
-    print(f"Listening on http://{host}:{port}")
-    print(f"Password: {password}")
+    # Print the two lines that OpenCodeProcess expects (matching real OpenCode v2.3.2 output)
+    print(f"server listening on http://{host}:{port}")
+    print(f"server password {password}")
     sys.stdout.flush()
 
     if exit_immediately:

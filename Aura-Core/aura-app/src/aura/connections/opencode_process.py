@@ -57,8 +57,9 @@ class OpenCodeProcess:
     """
 
     # Regex patterns to extract the listening URL and password from opencode output
-    _URL_PATTERN = re.compile(r"^\s*Listening on\s+(https?://\S+)\s*$")
-    _PASSWORD_PATTERN = re.compile(r"^\s*Password:\s+(\S+)\s*$")
+    # Real OpenCode v2.3.2 prints: "server listening on http://127.0.0.1:51209" and "server password <password>"
+    _URL_PATTERN = re.compile(r"^\s*server listening on\s+(https?://\S+)\s*$")
+    _PASSWORD_PATTERN = re.compile(r"^\s*server password\s+(\S+)\s*$")
 
     def __init__(self) -> None:
         self._process: asyncio.subprocess.Process | None = None
@@ -323,7 +324,7 @@ class OpenCodeProcess:
 
     def _redact_password(self, line: str) -> str:
         """Redact password in log lines."""
-        return self._PASSWORD_PATTERN.sub("Password: ***", line)
+        return self._PASSWORD_PATTERN.sub("server password ***", line)
 
     def _redact_output_lines(self, lines: collections.abc.Iterable[str]) -> str:
         """Redact passwords in a list of output lines."""
