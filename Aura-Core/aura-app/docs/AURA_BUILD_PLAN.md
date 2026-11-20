@@ -6657,6 +6657,87 @@ OpenCode v2.3.2 facts from `docs/opencode/openapi-v2.3.2.json`: the config has a
 ---
 
 
+### Wave 3: cards for V1 to V4 (stage, controller, affect, cognitive states), without the MetaHuman steps
+
+Written by the supervisor on 2026-11-20. Mai excluded the MetaHuman steps (the export, the bake, and V8's final asset), so V1 here is only the stage with a placeholder head and the renderer work; the asset build script with budgets and shape pruning (T13, T14) waits for a real asset. The frontend had no test runner, so W3-34 adds one. Avatar PRD rules apply: the controller is written against bone and shape names, never a specific asset; every mapping weight is JSON; no model call between a user message and her first frame; the avatar never blocks the chat (if it fails, the spiral shows). Everything renders only behind `NEXT_PUBLIC_AVATAR_STAGE=1`; the spiral stays the default.
+
+---
+
+**W3-34 A frontend unit test runner**
+- **PRD:** avatar 12 (controller tests need a runner)
+- **Tier:** bulk
+- **Files:** `frontend/package.json`, `frontend/package-lock.json` (through `npm install -D vitest` only), new `frontend/vitest.config.ts`, new `frontend/src/avatar/__tests__/smoke.test.ts`
+- **Change:** add `vitest` as a dev dependency, a `"test": "vitest run"` script, a config that runs `src/**/*.test.ts` in the `node` environment with the `@/` path alias the app uses, and one smoke test (`1 + 1 === 2`).
+- **Done when:** `npm test` passes from `frontend/` and `npm run build` still passes (the supervisor runs both).
+- **Do not:** add any other dependency.
+
+---
+
+**W3-35 Controller skeleton: channels, six layers, ownership, idle life, blink, look-at**
+- **PRD:** avatar 7 (layers, ownership table, rules), V2, tests T2 and T6
+- **Tier:** frontier
+- **Depends on:** W3-34
+- **Files:** new `frontend/src/avatar/controller/` (`channels.ts`, `ownership.json`, `layers.ts`, `mixer.ts`, `idle.ts`, `blink.ts`, `lookat.ts`, `events.ts`, `index.ts`), new tests under `frontend/src/avatar/__tests__/`
+- **Change:**
+  1. `channels.ts`: channel names: the 52 ARKit blend shape names, plus bone channels (`spine`, `chest`, `neck`, `head`, `eyeL`, `eyeR`, shoulders, arms, hands), each with a group (`upperFace`, `lowerFace`, `eyes`, `jaw`, `head`, `body`, `arms`). No asset names.
+  2. `ownership.json`: for each group, the layers allowed to write it and their priority, following the PRD table (idle life: body base; affect: brows, lids, cheeks, mouth corners, posture; cognitive: gaze, head tilt, brow modifiers; events: additive pulses; speech: jaw and mouth shapes; gesture: arms, hands, torso, head through masks, never face shapes).
+  3. `layers.ts`: a `Layer` interface `update(t: number, dt: number, input: ControllerInput): Partial<Record<Channel, number>>`. `mixer.ts`: combines the six layers' outputs per frame under the ownership table (the winning layer per channel; event pulses add; speech scales lower-face affect to 30% while speaking) and records which layer wrote each channel (for T2).
+  4. `idle.ts` (breathing, weight shift, small spine and neck noise from a seeded noise function), `blink.ts` (blinks every 2 to 6 s, also on large gaze shifts), `lookat.ts` (eyes, then head, then a little chest toward a target), `events.ts` (pulses of 200 to 600 ms that return to exactly zero).
+  5. Time is passed in (`t`, `dt`); no `Date.now()` or `performance.now()` inside the controller, so tests are deterministic.
+- **Tests:** T2: over 600 simulated frames with all layers active, no channel is written by a layer the ownership table does not allow; a gesture never writes a face shape. T6: every event pulse is back to zero within 600 ms. Blink happens within 6 s. Idle output is deterministic for the same seed.
+- **Done when:** the new tests pass with `npm test` and `npm run build` passes (the supervisor runs both).
+- **Do not:** touch three.js, rendering or the chat page.
+
+---
+
+**W3-36 The affect layer**
+- **PRD:** avatar 7.1, V3, tests T3 and T4
+- **Tier:** frontier
+- **Depends on:** W3-35
+- **Files:** new `frontend/src/avatar/controller/affect.ts`, new `frontend/src/avatar/controller/tables/dimension_to_au.json`, new `frontend/src/avatar/controller/tables/au_to_arkit.json`, new tests
+- **Change:** input is the emotion deviation (the backend's `deviation` field, E3) and mood (`null` until E4).
+  1. Dominant few: the top three dimensions by absolute deviation; a newcomer replaces the current third only after beating it by a margin (`0.05`, in JSON) for 300 ms.
+  2. Tables: each of the 27 dimensions to facial action units with weights; action units to ARKit shapes. Both JSON.
+  3. Zones: inward dimensions (curiosity, confusion, doubt, certainty, fascination, boredom) weight the upper face; social ones (joy, love, gratitude, empathy, compassion) the lower face (weights in JSON).
+  4. Asymmetry: a fixed 5 to 10% left/right offset per expression (seeded by the dimension name).
+  5. Eyes lead: upper-face channels move 150 to 250 ms before lower-face ones.
+  6. Posture from mood valence and arousal (skip while mood is `null`).
+- **Tests:** T4: zero deviation gives exactly the neutral face and pose. T3: two near-equal emotions alternating every 100 ms produce at most one expression change per second. Every dimension name in the table is one of the 27; every shape name is an ARKit name.
+- **Done when:** the new tests pass with `npm test` and `npm run build` passes.
+- **Do not:** use model calls or the network.
+
+---
+
+**W3-37 `avatar_state` from the backend: cognitive states**
+- **PRD:** avatar 8 (cognitive states from the pipeline trace, no model call), 11 (`avatar_state` protocol), V4, test T7
+- **Tier:** frontier
+- **Files:** new `src/aura/avatar/__init__.py`, new `src/aura/avatar/state.py`, `src/aura/api/websocket.py` (a broadcast helper), the call sites that start and finish recall, L3 reasoning, delegation and dreaming (only to emit a state event), new `tests/unit/test_avatar_state.py`
+- **Change:**
+  1. `state.py`: `class AvatarStateMachine` with states `attending`, `recalling`, `thinking`, `unsure`, `found_it`, `surprised`, `working`, `curious`, `resting`, `idle`, fed by small events (`message_received`, `recall_started`, `recall_finished(abstain: bool, strong: bool)`, `reasoning_started`, `reasoning_finished`, `delegation_running(bool)`, `dreaming(bool)`, `prediction_error(size)`). It builds the PRD 11 payload (`deviation` from the emotion engine's state, `mood: null`, `cognitive_state`, `events`, `speaking: false`, `gaze_target`).
+  2. Broadcast `{"type": "avatar_state", ...}` on change, at most 10 times a second (coalesce within 100 ms), through the existing websocket manager.
+  3. Emit the events from the existing pipeline points: when the Recall Engine runs, when L3 starts and ends, when a delegated task runs, when dreaming starts and ends.
+- **Tests:** T7: a replayed sequence for one turn (`message_received`, `recall_started`, `recall_finished`, `reasoning_started`, `reasoning_finished`) produces `attending`, `recalling`, `thinking`, `attending` in order; `abstain` gives `unsure`; the rate limit holds (20 changes in 100 ms broadcast at most twice); no model is called (the state machine has no client).
+- **Done when:** the new tests pass and the full Python suite passes (the supervisor runs it).
+- **Do not:** add a model call anywhere on this path.
+
+---
+
+**W3-38 The cognitive layer in the client, and the stage with a placeholder head**
+- **PRD:** avatar 6 (renderer, pixel ratio, framing), 7 (layer 3), 5.4 (placeholder head with ARKit names), V1 (without export and bake), V4, test T16
+- **Tier:** frontier
+- **Depends on:** W3-36, W3-37
+- **Files:** new `frontend/src/avatar/controller/cognitive.ts`, new `frontend/src/avatar/AvatarStage.tsx`, new `frontend/src/avatar/placeholderHead.ts`, `frontend/src/services/socketService.ts` (subscribe to `avatar_state`), `frontend/src/pages/chat.tsx` (only to render the stage instead of the spiral when `NEXT_PUBLIC_AVATAR_STAGE=1`), new tests
+- **Change:**
+  1. `cognitive.ts`: layer 3, mapping each cognitive state to gaze target, head tilt and brow modifiers (values in JSON), with smooth transitions.
+  2. `placeholderHead.ts`: a head built in code (no downloaded asset, so no licence entry is needed) with morph targets named after the ARKit shapes the tables use, simple displacements per shape. Rule 2: nothing in the controller depends on it.
+  3. `AvatarStage.tsx`: uses the installed `three` (0.169; upgrading three is left for the asset milestone) with `WebGLRenderer`, pixel ratio capped at 1.5 on narrow screens and 2.0 otherwise, portrait framing, the controller driving the placeholder's morph targets each frame. Any error while loading or rendering falls back to the spiral (rule 6). Render only when `NEXT_PUBLIC_AVATAR_STAGE=1`.
+- **Tests:** the cognitive layer's outputs per state; the stage module can be imported without a browser (no top-level DOM access); a forced load error renders the spiral (test the fallback function, not the canvas).
+- **Done when:** the new tests pass with `npm test`, `npm run build` passes, and the chat page without the flag is unchanged (the supervisor runs these).
+- **Do not:** upgrade `three`, add WebGPU, or add any asset file.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
