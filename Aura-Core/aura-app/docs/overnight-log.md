@@ -2237,3 +2237,25 @@
 - **Do-not checks respected:** Only modified files listed in card; no changes to other files; log is append-only.
 - **Unsure about:** The "provenance=external" in the card likely refers to the fact being about an external action (delegation), not the computed provenance field which is observed/hearsay/inferred. The implementation computes provenance correctly based on subject/speaker relationship.
 - **Supervisor note (W3-33):** the delegation fact went through `write_facts` with `asserted_by="user"` and subject "Aura", which stored it as `observed` (as if Mai had said it), and the T4 test had been written to accept observed/hearsay/inferred. Fixed by the supervisor: the fact is created directly with provenance `external`, visibility `owner`, kind `event`, and a `derived_from` edge to the task's episode (agency PRD 4.8); T4 now asserts `external`. Full suite: 640 passed, 3 skipped. G3 complete.
+
+---
+
+## W3-35: Controller skeleton: channels, six layers, ownership, idle life, blink, look-at
+- **Status:** DONE
+- **PRD:** avatar 7 (layers, ownership table, rules), V2, tests T2 and T6
+- **Tier:** frontier (Mai-approved)
+- **Depends on:** W3-34
+- **Files changed:**
+  - `frontend/src/avatar/controller/channels.ts` (new) — 52 ARKit blend shape names + bone channels (spine, chest, neck, head, eyeL, eyeR, shoulders, arms, hands), each with a group (upperFace, lowerFace, eyes, jaw, head, body, arms)
+  - `frontend/src/avatar/controller/ownership.json` (new) — for each group, the layers allowed to write it and their priority, following the PRD table (idle: body base; affect: brows, lids, cheeks, mouth corners, posture; cognitive: gaze, head tilt, brow modifiers; events: additive pulses; speech: jaw and mouth shapes; gesture: arms, hands, torso, head through masks, never face shapes)
+  - `frontend/src/avatar/controller/layers.ts` (new) — `Layer` interface with `update(t, dt, input): Partial<Record<Channel, number>>`, six layer names (idle, affect, cognitive, events, speech, gesture)
+  - `frontend/src/avatar/controller/mixer.ts` (new) — combines six layers' outputs per frame under ownership table (winning layer per channel; event pulses add; speech scales lower-face affect to 30% while speaking); records which layer wrote each channel
+  - `frontend/src/avatar/controller/idle.ts` (new) — breathing, weight shift, small spine/neck noise from seeded noise function (deterministic)
+  - `frontend/src/avatar/controller/blink.ts` (new) — blinks every 2-6s, also on large gaze shifts; deterministic BlinkGenerator
+  - `frontend/src/avatar/controller/lookat.ts` (new) — eyes, then head, then a little chest toward a target; deterministic smoothing
+  - `frontend/src/avatar/controller/events.ts` (new) — pulses of 200-600ms that return to exactly zero (surprise, amusement, nod); uses BlinkGenerator
+  - `frontend/src/avatar/controller/index.ts` (new) — main `AvatarController` class orchestrating all layers
+  - `frontend/src/avatar/__tests__/controller.test.ts` (new) — T2: 600 frames, no channel written by unauthorized layer; gesture never writes face shape. T6: event pulses decay to zero within 600ms; blink happens within 6s; idle output deterministic for same seed.
+- **Test result:** 16 tests pass (all new tests + smoke test); `npm test` passes from `frontend/`; `npm run build` passes.
+- **Notes:** Time is passed in (`t`, `dt`); no `Date.now()` or `performance.now()` inside the controller, so tests are deterministic. The six layers are: idle, affect, cognitive, events, speech, gesture. The affect, cognitive, speech, and gesture layers are registered as stubs (not fully implemented — those come in later cards W3-36, W3-37, W3-38, etc.), but the ownership table, mixer, idle, blink, look-at, and events are fully functional and tested.
+- **Unsure about:** The `DEFAULT_LOOKAT_CONFIG` and `DEFAULT_BLINK_CONFIG` are exported from their respective modules and re-exported from `index.ts`; the `AvatarController` constructor accepts partial configs but the `DEFAULT_CONFIG` from `layers.ts` doesn't include look-at or blink settings — this is intentional since the full config will be expanded in later cards. The `SeededRandom` class is exported from `idle.ts` and used by `blink.ts` and `events.ts` for deterministic randomness.

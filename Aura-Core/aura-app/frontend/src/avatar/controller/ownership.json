@@ -1,0 +1,62 @@
+{
+  "upperFace": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "cognitive", "priority": 3 },
+      { "layer": "events", "priority": 4 }
+    ],
+    "description": "Brows, forehead, upper eyelids. Idle provides base; affect drives expressions; cognitive adds brow modifiers; events add pulses."
+  },
+  "lowerFace": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "events", "priority": 3 },
+      { "layer": "speech", "priority": 4 }
+    ],
+    "description": "Mouth shapes, cheeks, jaw area. Idle base; affect drives mouth corners/expressions; events add pulses; speech owns jaw/mouth while speaking (scales affect to 30%)."
+  },
+  "eyes": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "cognitive", "priority": 3 },
+      { "layer": "events", "priority": 4 },
+      { "layer": "speech", "priority": 5 }
+    ],
+    "description": "Eye gaze, blinks, eye bones. Idle base; affect drives lids/squint; cognitive drives gaze/look-at; events add wide/surprise; speech may drive blinks. Gesture never writes face shapes (eyeL/eyeR are bones but driven by look-at/cognitive)."
+  },
+  "jaw": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "speech", "priority": 3 }
+    ],
+    "description": "Jaw open/forward/left/right. Idle base; affect for tension; speech owns while speaking."
+  },
+  "head": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "cognitive", "priority": 3 },
+      { "layer": "gesture", "priority": 4 }
+    ],
+    "description": "Head bone rotation. Idle base; affect for posture; cognitive for head tilt/look-at; gesture through mask only."
+  },
+  "body": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "affect", "priority": 2 },
+      { "layer": "gesture", "priority": 3 }
+    ],
+    "description": "Spine, chest, neck. Idle provides breathing/weight shift; affect for posture openness; gesture through mask only."
+  },
+  "arms": {
+    "layers": [
+      { "layer": "idle", "priority": 1 },
+      { "layer": "gesture", "priority": 2 }
+    ],
+    "description": "Shoulders, arms, hands. Idle provides hand settle; gesture owns during clips. Gesture never writes face shapes."
+  }
+}
