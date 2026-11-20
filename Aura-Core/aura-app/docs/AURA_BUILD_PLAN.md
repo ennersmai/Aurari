@@ -2083,6 +2083,50 @@ Note found while carding: the self-critique influence in `coordinator.py` pushes
 ---
 
 
+### Wave 3: cards for G2 (the OpenCode client, managed process, version pin)
+
+Written by the supervisor on 2026-11-20. Mai's decision (agency PRD 11.1, plan section 6 item 4): pin OpenCode **v2.3.2** (major version 2), and Aura runs her own `opencode serve` process; she does not attach to the desktop app's service. The OpenAPI document of that version is saved at `docs/opencode/openapi-v2.3.2.json` (fetched from a running v2.3.2 server). Agency PRD rule 2: every endpoint path and payload shape comes from that file, never from memory.
+
+Facts checked on the v2.3.2 server on 2026-11-20:
+- `opencode serve --hostname 127.0.0.1 --port <n>` prints `server listening on http://127.0.0.1:<n>` and `server password <secret>` on its output, and generates the password itself.
+- Every `/api/*` request needs HTTP Basic auth with user `opencode` and that password. `GET /api/info` returns `{"version": "2.3.2", "pid": ..., ...}`.
+- Endpoints the client needs: `POST /api/session` (create), `POST /api/session/{sessionID}/prompt` (body `{"text": ...}`), `GET /api/event` (server-sent events, optional `types` query), `GET /api/session/{sessionID}/permission` and `POST /api/session/{sessionID}/permission/{requestID}/reply`, `POST /api/session/{sessionID}/interrupt`, `GET /api/session/{sessionID}/diff`, `GET /api/session/{sessionID}/message`.
+- Event types include `session.execution.started`, `session.execution.succeeded`, `session.execution.failed`, `session.execution.interrupted`, `session.step.started`, `session.step.ended`, `session.step.failed`, `session.tool.called`, `session.tool.success`, `session.tool.failed`, `permission.asked`, `permission.replied`, `session.idle`, `session.status`.
+
+---
+
+**W3-27 A managed OpenCode server with a version pin**
+- **PRD:** agency 4.2 (starts `opencode serve` as a managed child process on localhost with a generated password; pins a version and refuses another major version), test T7
+- **Tier:** frontier
+- **Files:** new `src/aura/connections/__init__.py` (if missing), new `src/aura/connections/opencode_process.py`, `src/aura/config.py`, new `tests/unit/test_opencode_process.py`, new `tests/fixtures/fake_opencode_server.py`
+- **Change:**
+  1. Config: `opencode_command: list[str] = []` (`AURA_OPENCODE_COMMAND`, JSON list; empty means `["opencode"]` found on `PATH`), `opencode_version_pin: str = "2.3.2"`, `opencode_host: str = "127.0.0.1"`, `opencode_port: int = 0` (0 picks a free port), `opencode_start_timeout_secs: int = 30`.
+  2. `class OpenCodeProcess`: `async start()` runs `opencode_command + ["serve", "--hostname", host, "--port", str(port)]` as a child process (`asyncio.create_subprocess_exec`, no shell), reads its output lines until it has both the listening URL and the password (regexes on the two lines above), then polls `GET /api/info` with Basic auth until it answers or the timeout passes. `base_url`, `auth` (an `httpx.BasicAuth`) and `version` are then available. `async stop()` terminates the process (kill after 5 s). The password is never logged, printed or stored outside the object; log lines show `***`.
+  3. Version check (T7): if the major version from `/api/info` differs from the pin's major, `start()` stops the process and raises `OpenCodeVersionError` with both versions in the message, before any other request is made. A different minor or patch version is allowed with a warning.
+  4. A process that exits before printing both lines raises `OpenCodeStartError` with the last 20 output lines, with any line containing `password` redacted.
+- **Tests:** `tests/fixtures/fake_opencode_server.py` is a small standalone script (standard library only: `http.server` and `threading`) that prints the two lines and serves `/api/info` behind Basic auth, with the version taken from a command-line argument. Tests run it with `sys.executable` through `opencode_command`: start succeeds and `version == "2.3.2"`; version `3.0.0` raises `OpenCodeVersionError` and no request other than `/api/info` reached the fake (it records request paths); `2.4.0` starts with a warning; a script that exits immediately raises `OpenCodeStartError`; the password does not appear in captured logs; `stop()` leaves no child process running.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** start OpenCode at Aura startup yet (W3-28 adds the client; G3 decides when to start it). Do not use the desktop app's background service. Do not add a dependency.
+
+---
+
+**W3-28 `OpenCodeClient` against a fake server**
+- **PRD:** agency 4.2 (the client interface, the only code that talks to OpenCode), test T6
+- **Tier:** frontier
+- **Depends on:** W3-27
+- **Files:** new `src/aura/connections/opencode_client.py`, new `src/aura/models/work.py`, new `tests/unit/test_opencode_client.py`, new `tests/unit/test_opencode_spec_coverage.py`. Read `docs/opencode/openapi-v2.3.2.json` for every path and body used.
+- **Change:**
+  1. `models/work.py`: `WorkEvent(kind: str, session_id: str, type: str, data: dict)`, where `kind` is one of `started`, `step`, `tool`, `permission`, `succeeded`, `failed`, `interrupted`, `idle`, `other`, mapped from the event types listed above; `PermissionRequest(id, session_id, action, resources, message)`; `WorkResult(session_id, summary: str, files_changed: list[str], additions: int, deletions: int)`.
+  2. `OpenCodeClient(process_or_base_url, auth)` with the PRD 4.2 interface: `ensure_running()` (starts the managed process from W3-27 if not running), `create_session(workspace: Path, agent: str, title: str) -> str`, `send(session_id, prompt)`, `events(session_id) -> AsyncIterator[WorkEvent]` (one `GET /api/event` stream, filtered to the session; parse SSE `event:`/`data:` lines; the `data` field is a JSON-encoded string per the spec's `V2EventEncoded`), `pending_permissions(session_id) -> list[PermissionRequest]`, `answer_permission(session_id, request_id, allow: bool)` (the reply body from the spec), `abort(session_id)` (interrupt), `result(session_id) -> WorkResult` (files and counts from the diff endpoint; summary from the last assistant message's text).
+  3. How a session is bound to the `workspace` directory: find it in the spec (the create-session body, or the location endpoints). If the spec does not make it clear, stop and report instead of guessing.
+  4. Errors: every connection failure or server exit becomes `OpenCodeUnavailable` (T6); HTTP errors become `OpenCodeError` with the status and the server's `_tag`/`message`. `events()` raises `OpenCodeUnavailable` when the stream breaks, so the caller can mark the task interrupted and re-attach later with the same session id.
+- **Tests:** with `httpx.MockTransport` (no real OpenCode): each method sends the right method, path and body; an SSE stream with mixed sessions yields only this session's events, mapped to the right kinds; T6: the transport raising `httpx.ConnectError` mid-stream raises `OpenCodeUnavailable`, and a new `events()` call for the same session id works after the transport recovers; `result()` sums the diff. `test_opencode_spec_coverage.py` loads the saved spec and asserts every `(method, path template)` the client uses exists in it (the client exposes them as a module-level list for this test).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add `delegate_work`, agents or policy (G3). Do not read events with a model. Do not add a dependency.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
