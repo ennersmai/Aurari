@@ -226,3 +226,54 @@ async def fact_lexical_channel(
         )
         for rank, row in enumerate(rows or [])
     ]
+
+
+async def fact_entity_channel(
+    db: Any,
+    aliases: list[str],
+    venue: str,
+) -> list[ChannelHit]:
+    """Return current, visible facts about entities matching any of ``aliases``.
+
+    Finds entities whose ``aliases`` array contains any of the candidate aliases
+    (``aliases CONTAINSANY $aliases``), then retrieves current facts linked to
+    those entities via the ``about`` edge, filtered by the venue's visibility
+    and ``valid_to IS NONE``. Results are ordered by newest ``recorded_at``
+    first, up to ``recall_entity_k``. Every hit gets a score of 1.0; rank
+    carries the order.
+    """
+    if not aliases:
+        return []
+
+    params: dict[str, Any] = {
+        "aliases": aliases,
+        "k": int(settings.recall_entity_k),
+    }
+    where = _fact_filter_clause(venue, params)
+
+    # ``about`` runs fact -> entity, so the matching facts are the ``in`` side
+    # of edges whose ``out`` entity carries one of the aliases. Selecting from
+    # ``fact`` keeps each fact once even when it is about several matches.
+    rows = await db.query(
+        f"""
+        SELECT id, recorded_at
+        FROM fact
+        WHERE id IN (
+            SELECT VALUE in FROM about
+            WHERE out IN (SELECT VALUE id FROM entity WHERE aliases CONTAINSANY $aliases)
+        )
+          AND {where}
+        ORDER BY recorded_at DESC
+        LIMIT $k
+        """,
+        params,
+    )
+
+    return [
+        ChannelHit(
+            memory_id=str(row["id"]),
+            rank=rank,
+            score=1.0,
+        )
+        for rank, row in enumerate(rows or [])
+    ]

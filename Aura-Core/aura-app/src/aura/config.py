@@ -769,6 +769,17 @@ class Settings(BaseSettings):
                     "abstains when the lexical channel returned no hits. Tune this "
                     "for the embedding model in use.",
     )
+    recall_entity_channel_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_ENTITY_CHANNEL_ENABLED",
+        description="When true, the entity channel runs in the recall engine, "
+                    "finding facts about entities mentioned in the last two turns.",
+    )
+    recall_entity_k: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_ENTITY_K",
+        description="Number of candidate facts the entity channel retrieves.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(

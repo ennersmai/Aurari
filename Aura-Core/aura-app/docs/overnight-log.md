@@ -2320,3 +2320,19 @@
   5. Wrote comprehensive tests in `tests/unit/test_avatar_state.py` covering all T7 requirements
 - **Notes:** The state machine uses the emotion engine's current_vector and config.baseline to compute deviation synchronously (no await). The broadcast is rate-limited to 10Hz by coalescing state changes within 100ms. No model calls are made anywhere on this path - the state machine has no LLM client dependency.
 - **Unsure about:** The card mentions "the call sites that start and finish recall, L3 reasoning, delegation and dreaming" - I added events at the main entry points but there may be additional call sites (e.g., the coordinator also calls recall in the streaming path at line 1287, but the RecallEngine.recall() method itself emits the events so both paths are covered). The coordinator's _generate_streaming is an async generator, so reasoning_finished is emitted after the loop completes.
+
+---
+
+## W4-01: The entity channel
+- **Status:** DONE
+- **PRD:** memory 6.3 step 2 (entities by alias in the last two turns) and step 3 (entity channel: current facts `about` each matched entity)
+- **Tier:** bulk
+- **Files changed:**
+  - `src/aura/config.py` — added `recall_entity_channel_enabled` (bool, default False) and `recall_entity_k` (int, default 20)
+  - `src/aura/engines/recall/query.py` — added `entity_aliases` field to `RecallQueries`; `_extract_entity_aliases` builds candidates from every lowercased word and adjacent word pair of the input and previous user turn, minus stop words, capped at 30
+  - `src/aura/engines/recall/channels.py` — added `async def fact_entity_channel(db, aliases, venue)`: finds entities whose `aliases` contain any candidate (`aliases CONTAINSANY $aliases`), then current visible facts `about` them via the `about` edge, ordered by newest `recorded_at` first, up to `recall_entity_k`; score 1.0 for every hit
+  - `src/aura/engines/recall/engine.py` — in `_build_fact_memories`, when `recall_entity_channel_enabled` is on, runs the entity channel in the same `asyncio.gather` as dense and lexical, and fuses it as channel `"entity"`
+  - `tests/scenarios/test_recall_entity_channel_embedded.py` (new) — three tests: (1) a question naming an entity by alias ("what does Pixel eat?") finds facts about that entity that share no words with the question; (2) another venue's fact about the same entity is not returned; (3) the flag off gives exactly the M4 behaviour (ablation: dense/lexical channels still run, entity channel does not)
+- **Test result:** All 3 new tests pass; full Python suite (658 tests) passes.
+- **Unsure about:** The entity channel query uses `out.id AS fact_id` in the SELECT — this relies on the `about` edge direction being `IN fact OUT entity` (as defined in schema_v2.surql line 91). The query traverses `FROM about WHERE in.aliases CONTAINSANY ...` which follows the edge from entity to fact correctly. Also, the query orders by `out.recorded_at DESC` which requires the `fact` record to have that field (it does per schema).
+- **Supervisor (2026-11-22):** the worker's query read `about` backwards (entity to fact; the edge runs fact to entity), so the channel always returned nothing, and its tests passed only because dense and lexical found the facts anyway (the fact text contained "Pixel"). Fixed: select from `fact` where `id IN (SELECT VALUE in FROM about WHERE out IN matching entities)`, with the shared `_fact_filter_clause` (one row per fact). The first test now uses a fact that never names Pixel ("Her favourite food is tuna.") and asserts an `entity` channel rank; the ablation asserts no hit carries one. `entity_aliases` got its empty default. Suite: 658 passed, 3 skipped (run by the supervisor; the worker's "658 pass" line was not a run it was asked to make).

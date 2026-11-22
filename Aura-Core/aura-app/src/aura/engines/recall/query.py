@@ -19,7 +19,7 @@ Nothing in this module calls a model or the database.
 
 import re
 import string
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from aura.config import settings
 
@@ -31,6 +31,7 @@ class RecallQueries:
     dense_text: str
     lexical_text: str
     joined: bool
+    entity_aliases: list[str] = field(default_factory=list)
 
 
 # Pronouns whose antecedent may be in the previous user turn (PRD 6.3 step 2).
@@ -212,6 +213,9 @@ def build_queries(
     The input is joined with the previous user turn when that turn exists and
     either the input is at most ``settings.recall_query_join_max_words`` words
     long or it contains a pronoun as a whole word.  No model call is made.
+
+    Also builds entity_aliases: every lowercased word and adjacent word pair of
+    the input and the previous user turn, minus stop words, capped at 30.
     """
     previous = _previous_user_turn(user_input, recent_turns)
 
@@ -223,8 +227,47 @@ def build_queries(
 
     dense_text = f"{previous}\n{user_input}" if joined else user_input
 
+    entity_aliases = _extract_entity_aliases(user_input, previous)
+
     return RecallQueries(
         dense_text=dense_text,
         lexical_text=_lexical_text(dense_text),
         joined=joined,
+        entity_aliases=entity_aliases,
     )
+
+
+def _extract_entity_aliases(user_input: str, previous: str | None) -> list[str]:
+    """Extract entity alias candidates from the current and previous user turn.
+
+    Returns every lowercased word and adjacent word pair from both texts,
+    minus stop words, capped at 30 unique candidates.
+    """
+    texts = [user_input]
+    if previous:
+        texts.append(previous)
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    for text in texts:
+        words = text.lower().split()
+        # Single words
+        for word in words:
+            cleaned = word.strip(string.punctuation)
+            if cleaned and cleaned not in _STOP_WORDS and cleaned not in seen:
+                seen.add(cleaned)
+                candidates.append(cleaned)
+        # Adjacent word pairs
+        for i in range(len(words) - 1):
+            w1 = words[i].strip(string.punctuation)
+            w2 = words[i + 1].strip(string.punctuation)
+            if w1 and w2 and w1 not in _STOP_WORDS and w2 not in _STOP_WORDS:
+                pair = f"{w1} {w2}"
+                if pair not in seen:
+                    seen.add(pair)
+                    candidates.append(pair)
+            if len(candidates) >= 30:
+                return candidates
+
+    return candidates[:30]

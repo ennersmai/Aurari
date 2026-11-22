@@ -32,6 +32,7 @@ from .assembly import assemble, normalise_text
 from .channels import (
     dense_channel,
     fact_dense_channel,
+    fact_entity_channel,
     fact_lexical_channel,
     lexical_channel,
 )
@@ -608,12 +609,16 @@ class RecallEngine:
         exactly as on the memory-table path. The renderer writes one
         ``<fact>`` line per kept fact with its age in whole days, provenance
         and two-decimal confidence.
+
+        When ``recall_entity_channel_enabled`` is on, the entity channel also
+        runs in the same gather, finding facts about entities mentioned in the
+        last two turns, and its hits are fused as channel "entity".
         """
         memory_manager = await self._get_memory_manager()
         queries = build_queries(request.user_input, request.recent_turns)
         embedding = await memory_manager.embeddings.embed(queries.dense_text)
 
-        dense_result, lexical_result = await asyncio.gather(
+        gather_args = [
             fact_dense_channel(
                 memory_manager.db,
                 embedding,
@@ -624,11 +629,23 @@ class RecallEngine:
                 queries.lexical_text,
                 request.venue,
             ),
-            return_exceptions=True,
-        )
+        ]
+        if settings.recall_entity_channel_enabled:
+            gather_args.append(
+                fact_entity_channel(
+                    memory_manager.db,
+                    queries.entity_aliases,
+                    request.venue,
+                )
+            )
+
+        results = await asyncio.gather(*gather_args, return_exceptions=True)
 
         channels: dict[str, list[Any]] = {}
-        for name, result in (("dense", dense_result), ("lexical", lexical_result)):
+        channel_names = ["dense", "lexical"]
+        if settings.recall_entity_channel_enabled:
+            channel_names.append("entity")
+        for name, result in zip(channel_names, results):
             if isinstance(result, Exception):
                 if channel_errors is not None:
                     channel_errors[f"memories.{name}"] = str(result)
