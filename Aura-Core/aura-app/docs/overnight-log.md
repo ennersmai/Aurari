@@ -2362,3 +2362,11 @@
 - **Files:** new `src/aura/engines/recall/graph.py` (pure PPR, hub damping `degree ** recall_graph_degree_damping`); `channels.py` (`_load_graph`: breadth-first over `about`, `co_used`, `derived_from`, `mentions`, one query per relation per hop, cap `recall_graph_max_nodes = 500`, `supersedes` never read; `fact_graph_channel`: visible current non-seed facts by PPR score, `recall_graph_k`); `engine.py` (seeds = dense/lexical/entity hits weighted `1/(rank+1)`, fused as `"graph"`); `config.py` (flag off, weights, alpha, iterations, damping); `schema_v2.surql` (`co_used` fact to fact, `weight` float default 1).
 - **Supervisor change:** the traversal drops facts and episodes the venue may not read (episode visibility derived from its venue), so an owner-only fact cannot bridge two guild facts; new scenario test, checked to fail without the filter.
 - **Tests:** PPR strong-over-weak, hub damping, loader never reads `supersedes`; "where does my sister live?" reaches "Ana resides in Porto" with only a graph rank; no bridge through unreadable memory; ablation. Suite: 692 passed, 3 skipped.
+
+---
+
+## W4-04: Rerank on features
+- **Status:** DONE (Sonnet agent, reviewed by the supervisor)
+- **Files:** new `src/aura/engines/recall/rerank.py` (pure: drop superseded unless a time range, drop imagined unless `mode == "creative"`; fused score rescaled to (0, 1] by the best one, then provenance weight, `0.5 + 0.5 * confidence`, `1 + 0.2 * salience`, `exp(-age / 365 d)`; plus `0.10 * cosine(signature - baseline, deviation)`, never above 0 when fear/sadness/anger/shame/disgust deviations outweigh the positive ones; then MMR, lambda 0.7); `engine.py` (flag on: rerank all fused hits, then the limit; the fact's signature is its source episode's, read in the same batched SELECT; deviation and baseline from `request.emotional_state`, already filled by the coordinator); `models.py` (`mode` gains `"creative"`); `config.py` (all numbers).
+- **Supervisor change:** MMR was pure-Python pairwise cosines re-computed every pick (about n^3 768-dim products, seconds on the fast path); now numpy with a running max similarity and a stop at the request limit: 80 candidates in 3.9 ms.
+- **Tests:** each rule on hand-built candidates, MMR keeps one of five near-duplicates in the top three, engine ablation. Suite: 703 passed, 3 skipped.

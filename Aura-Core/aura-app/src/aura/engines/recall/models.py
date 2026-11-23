@@ -46,7 +46,7 @@ class RecallRequest:
     session_id: str | None = None
     recent_turns: list[dict[str, str]] = field(default_factory=list)
     emotional_state: Any = None
-    mode: Literal["chat", "task", "agent"] = "chat"
+    mode: Literal["chat", "task", "agent", "creative"] = "chat"
     token_budget: int | None = None  # None means use config
     latency_budget_ms: int | None = None
 

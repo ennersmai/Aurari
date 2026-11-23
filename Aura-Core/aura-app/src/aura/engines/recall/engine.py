@@ -49,6 +49,7 @@ from .models import (
     RecallTrace,
 )
 from .query import build_queries
+from .rerank import RerankCandidate, rerank
 from .render import render_insights
 
 logger = logging.getLogger(__name__)
@@ -711,12 +712,23 @@ class RecallEngine:
 
                 return [], _abstain_renderer, {}, True
 
-        fused = rrf(channels)[: request.limit]
+        rerank_on = settings.recall_rerank_enabled
+        fused = rrf(channels)
+        if not rerank_on:
+            fused = fused[: request.limit]
         if not fused:
             return [], None, {}, False
 
+        # W4-04: the rerank also reads the signature of the episode a fact is
+        # derived from, in the same query.
+        select = (
+            "SELECT *, ->derived_from->episode.emotional_signature "
+            "AS episode_signatures FROM fact WHERE id IN $ids"
+            if rerank_on
+            else "SELECT * FROM fact WHERE id IN $ids"
+        )
         rows = await memory_manager.db.query(
-            "SELECT * FROM fact WHERE id IN $ids",
+            select,
             {
                 "ids": [
                     to_record_id(
@@ -727,6 +739,44 @@ class RecallEngine:
             },
         )
         rows_by_id = {str(row["id"]): row for row in (rows or [])}
+
+        if rerank_on:
+            state = request.emotional_state
+            hits_by_id = {hit.memory_id: hit for hit in fused}
+            ranked = rerank(
+                [
+                    RerankCandidate(
+                        id=hit.memory_id,
+                        score=hit.score,
+                        provenance=rows_by_id[hit.memory_id]["provenance"],
+                        confidence=float(rows_by_id[hit.memory_id]["confidence"]),
+                        salience=float(rows_by_id[hit.memory_id].get("salience") or 0.0),
+                        recorded_at=rows_by_id[hit.memory_id]["recorded_at"],
+                        valid_to=rows_by_id[hit.memory_id].get("valid_to"),
+                        embedding=rows_by_id[hit.memory_id].get("embedding"),
+                        signature=next(
+                            (
+                                sig
+                                for sig in rows_by_id[hit.memory_id].get(
+                                    "episode_signatures"
+                                )
+                                or []
+                                if sig
+                            ),
+                            None,
+                        ),
+                    )
+                    for hit in fused
+                    if hit.memory_id in rows_by_id
+                ],
+                now=get_clock().now(),
+                mode=request.mode,
+                has_time_range=bool(queries.time_range),
+                deviation=getattr(state, "deviation", None),
+                baseline=getattr(state, "baseline", None),
+                limit=request.limit,
+            )
+            fused = [hits_by_id[c.id] for c in ranked]
 
         candidates: list[Candidate] = []
         for rank, hit in enumerate(fused):

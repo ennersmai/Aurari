@@ -829,6 +829,39 @@ class Settings(BaseSettings):
         description="Cap on the subgraph the graph channel expands.",
     )
 
+    recall_rerank_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_RERANK_ENABLED",
+        description="When true, fused facts are reranked on features (provenance, "
+                    "confidence, salience, age, emotional resonance) and then "
+                    "diversified with maximal marginal relevance.",
+    )
+    recall_rerank_provenance_weights: dict[str, float] = Field(
+        default={"observed": 1.0, "external": 0.9, "inferred": 0.8, "hearsay": 0.6},
+        validation_alias="AURA_RECALL_RERANK_PROVENANCE_WEIGHTS",
+        description="Score multiplier per fact provenance in the rerank step.",
+    )
+    recall_rerank_salience_boost: float = Field(
+        default=0.2,
+        validation_alias="AURA_RECALL_RERANK_SALIENCE_BOOST",
+        description="Score is multiplied by 1 + this * salience.",
+    )
+    recall_rerank_decay_days: float = Field(
+        default=365.0,
+        validation_alias="AURA_RECALL_RERANK_DECAY_DAYS",
+        description="Score is multiplied by exp(-age_days / this).",
+    )
+    recall_rerank_resonance_weight: float = Field(
+        default=0.10,
+        validation_alias="AURA_RECALL_RERANK_RESONANCE_WEIGHT",
+        description="Weight of the emotional resonance term added to the score.",
+    )
+    recall_rerank_mmr_lambda: float = Field(
+        default=0.7,
+        validation_alias="AURA_RECALL_RERANK_MMR_LAMBDA",
+        description="Relevance weight in maximal marginal relevance (1 = no diversity).",
+    )
+
     # CORS Configuration
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001",
