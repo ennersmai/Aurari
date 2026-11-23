@@ -65,6 +65,10 @@ Settings go in Aura's `.env` unless noted.
 
 ## 5. Known follow-ups (no decision needed, listed so they are not lost)
 
+- If a sub-session cannot be resolved (session runtime error), the turn runs as the main session, so its tool allowlist is not applied (fail-open, as namespace and overlay already were). Sessions are owner-created, so the risk is low; failing closed would be a one-line change if you prefer it.
+
+- Memory v2 has no session namespaces (G4-04a finding): `episode` and `fact` have no namespace field and fact recall applies no namespace filter, so a sub-session's memories are not isolated once v2 is on. Only the old `memory` table honours namespaces. This needs its own card (schema, write path, recall filters).
+
 - `execute_code` (G4-04 finding): for the owner it runs whenever `code_execution_enabled` is on, with no approval step (the terminal tool at least has a safe-command list). Guests can never reach it. If you want an approval step for it, say so.
 - Autonomous goal pursuit stores `tool_permissions` but does not use built-in tools or `delegate_work` yet (G4-04 parity row marked manual). Goals v3 (P2-31..33) is where this gets built.
 

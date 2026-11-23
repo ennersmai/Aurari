@@ -71,6 +71,23 @@ TOOL_DEFINITION = {
 }
 
 
+def _overlay_text(session: Any) -> str | None:
+    """The session's identity overlay as short text for the brief, or None."""
+    overlay = getattr(session, "identity_overlay", None)
+    if overlay is None:
+        return None
+    lines: list[str] = []
+    if overlay.narrative_suffix:
+        lines.append(overlay.narrative_suffix)
+    if overlay.core_values:
+        lines.append("Values: " + ", ".join(f"{k} {v}" for k, v in overlay.core_values.items()))
+    if overlay.capabilities:
+        lines.append("Capabilities: " + ", ".join(overlay.capabilities))
+    if overlay.relevant_preferences:
+        lines.append("Preferences: " + ", ".join(f"{k}={v}" for k, v in overlay.relevant_preferences.items()))
+    return "\n".join(lines) or None
+
+
 async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     """Delegate work to an OpenCode agent.
 
@@ -85,6 +102,14 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
             "message": "Delegation is turned off. Set AURA_DELEGATION_ENABLED=true to enable.",
             "success": False,
         }
+
+    # Session scope (G4-04a). The executor sets `_session` and strips any
+    # model-supplied one, so the model cannot forge it.
+    session = arguments.get("_session")
+    if session is not None:
+        allowed, reason = session.is_tool_allowed("delegate_work")
+        if not allowed:
+            return {"status": "ERROR", "message": reason, "success": False}
 
     # Pause-all (G4-01): refuse new delegations; running sessions continue
     from aura.executor.delegation import delegations_paused
@@ -165,6 +190,7 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
         tokens=tokens,
         minutes=minutes,
         skill=skill,
+        identity_overlay=_overlay_text(session),
     )
 
     logger.info(f"Delegation started: task={task_id}, agent={agent}, workspace={workspace}")

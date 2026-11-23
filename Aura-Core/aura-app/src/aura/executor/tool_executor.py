@@ -146,6 +146,7 @@ class ToolExecutor:
         requester_role: Literal["owner", "trusted", "guest"],
         approved: bool = False,
         venue: str = "app",
+        session: Any = None,
     ) -> Dict[str, Any]:
         """
         Execute a single tool call.
@@ -203,6 +204,10 @@ class ToolExecutor:
                 arguments["_runtime_approved"] = True
             arguments["_venue"] = venue
             arguments["_requester_role"] = requester_role
+            # delegate_work reads the session scope here (G4-04a). Only that
+            # tool gets it: other tools, MCP included, never see the object.
+            if session is not None and tool_name == "delegate_work":
+                arguments["_session"] = session
 
         
         if not tool_name:
@@ -221,6 +226,18 @@ class ToolExecutor:
                 "error": f"Tool '{tool_name}' is {TIER_UNAVAILABLE_ERROR}.",
                 "tool_name": tool_name,
             }
+
+        # Session scope gate (G4-04a). Last: role, then tier, then session.
+        # None or the main session (no allow/deny list) changes nothing.
+        if session is not None:
+            allowed, reason = session.is_tool_allowed(tool_name)
+            if not allowed:
+                return {
+                    "success": False,
+                    "result": "",
+                    "error": reason,
+                    "tool_name": tool_name,
+                }
 
         self.logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
         
@@ -905,6 +922,7 @@ class ToolExecutor:
         *,
         requester_role: Literal["owner", "trusted", "guest"],
         venue: str = "app",
+        session: Any = None,
     ) -> str:
         """
         Execute multiple tool calls and format results for L3 feedback.
@@ -926,7 +944,7 @@ class ToolExecutor:
         for tool_call in tool_calls:
             self.logger.info(f"🔧 Executing tool call: {tool_call.get('tool', 'unknown')} with args: {tool_call.get('arguments', {})}")
             result = await self.execute_tool_call(
-                tool_call, requester_role=requester_role, venue=venue
+                tool_call, requester_role=requester_role, venue=venue, session=session
             )
             self.logger.info(f"🔧 Tool execution result - success: {result.get('success')}, result length: {len(str(result.get('result', '')))}, error: {result.get('error')}")
             results.append(result)

@@ -95,6 +95,7 @@ class DelegationConfig:
     tokens: int
     minutes: int
     skill: Optional[str] = None
+    identity_overlay: Optional[str] = None
 
 
 class DelegationRunner:
@@ -348,6 +349,9 @@ class DelegationRunner:
 
         if self.config.skill:
             sections.extend(["", "=== SKILL ===", self.config.skill])
+
+        if self.config.identity_overlay:
+            sections.extend(["", "=== SESSION CONTEXT ===", self.config.identity_overlay])
 
         return "\n".join(sections)
 
@@ -1013,6 +1017,7 @@ async def start_delegation(
     tokens: int,
     minutes: int,
     skill: Optional[str] = None,
+    identity_overlay: Optional[str] = None,
 ) -> str:
     """Start a delegation in the background and return the task ID."""
     config = DelegationConfig(
@@ -1023,6 +1028,7 @@ async def start_delegation(
         tokens=tokens,
         minutes=minutes,
         skill=skill,
+        identity_overlay=identity_overlay,
     )
     runner = DelegationRunner(config)
     task_id = await runner.run()

@@ -115,6 +115,11 @@ def _call_key(call: dict) -> str:
     return f"{call.get('tool', 'unknown')}|{args}"
 
 
+def _session_kwargs(session: Any) -> dict:
+    """Pass the session scope to the executor only when there is one (G4-04a)."""
+    return {} if session is None else {"session": session}
+
+
 async def _run_budgeted(
     *,
     user_input: str,
@@ -123,6 +128,7 @@ async def _run_budgeted(
     tool_executor: Any,
     requester_role: str,
     venue: str,
+    session: Any,
     breaker: int,
     seed_results: str | None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None,
@@ -201,7 +207,7 @@ async def _run_budgeted(
             break
 
         results = await tool_executor.execute_and_feedback(
-            calls, requester_role=requester_role, venue=venue
+            calls, requester_role=requester_role, venue=venue, **_session_kwargs(session)
         )
         if not results:
             final_text = strip_tool_calls(round_text)
@@ -279,6 +285,7 @@ async def run_tool_loop(
     tool_executor: Any,
     requester_role: str,
     venue: str = "app",
+    session: Any = None,
     max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
     seed_results: str | None = None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None,
@@ -327,6 +334,7 @@ async def run_tool_loop(
             tool_executor=tool_executor,
             requester_role=requester_role,
             venue=venue,
+            session=session,
             breaker=max_rounds if max_rounds is not None else settings.tool_loop_safety_rounds,
             seed_results=seed_results,
             on_tool_result=on_tool_result,
@@ -373,7 +381,7 @@ async def run_tool_loop(
             break
 
         results = await tool_executor.execute_and_feedback(
-            calls, requester_role=requester_role, venue=venue
+            calls, requester_role=requester_role, venue=venue, **_session_kwargs(session)
         )
         if not results:
             final_text = strip_tool_calls(round_text)

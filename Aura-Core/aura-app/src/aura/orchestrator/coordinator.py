@@ -82,6 +82,7 @@ class TurnContext:
     offered_tools: list = field(default_factory=list)
     speaker: str = ""
     venue: str = "app"
+    session: Any = None  # SessionContext of the turn's session; None for main (G4-04a)
     tier_profile: TierProfile | None = None  # set only with tier_profiles_enabled
     route: str | None = None  # L1 route (P2-06); None with l1_routes_enabled off
     stakes: float | None = None  # L1 stakes 0..1 (P2-06)
@@ -631,7 +632,7 @@ Constraints:
     # Internals: turn preamble (session resolution + pre-intent commands)
     # =========================================================================
 
-    async def _resolve_session(self, session_id: str | None) -> None:
+    async def _resolve_session(self, session_id: str | None) -> Any:
         """
         Resolve session → memory namespace + identity overlay (V1PRD §4).
 
@@ -640,6 +641,7 @@ Constraints:
         """
         session_namespace: str | None = None
         session_overlay = None
+        session_ctx = None
         if session_id and session_id != "main":
             try:
                 from aura.orchestrator.session_runtime import get_session_runtime
@@ -648,10 +650,25 @@ Constraints:
                     ctx.memory_namespace if ctx.memory_namespace != "global" else None
                 )
                 session_overlay = ctx.identity_overlay
+                session_ctx = ctx
             except Exception as e:  # noqa: BLE001
                 self.logger.warning(f"Could not resolve session {session_id!r}: {e}")
         self._current_session_namespace = session_namespace
         self._current_identity_overlay = session_overlay
+        self._current_session_context = session_ctx
+        # Returned so a turn keeps its own context: the attributes above are
+        # shared by concurrent turns and may be overwritten across awaits.
+        return session_ctx
+
+    @staticmethod
+    def _session_excluded_tools(session: Any) -> set[str]:
+        """Names of registered tools the session does not allow (G4-04a)."""
+        if session is None or (session.tool_allowlist is None and not session.tool_denylist):
+            return set()
+        return {
+            r.name for r in get_tool_registry().all()
+            if not session.is_tool_allowed(r.name)[0]
+        }
 
     async def _pre_intent_reply(self, user_input: str, user_id: str) -> str | None:
         """
@@ -1449,7 +1466,7 @@ Constraints:
         except Exception:
             pass
 
-        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue, ctx.session) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx, final=False):
             # final: the closing call after a guard stopped the loop; no tools (P2-41).
@@ -1517,6 +1534,7 @@ Constraints:
             tool_executor=self.tool_executor,
             requester_role=requester_role,
             venue=ctx.venue,
+            session=ctx.session,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
@@ -1545,6 +1563,7 @@ Constraints:
         tool_schema_str: str,
         requester_role: str,
         venue: str = "app",
+        session: Any = None,
     ) -> str | None:
         """Seed the tool loop with a deterministic forced tool call."""
         self.logger.info("[WRENCH] Using FORCED TOOL CALL MODE to seed the tool loop")
@@ -1553,7 +1572,8 @@ Constraints:
         seed_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
         if seed_calls:
             seed_results = await self.tool_executor.execute_and_feedback(
-                seed_calls, requester_role=requester_role, venue=venue
+                seed_calls, requester_role=requester_role, venue=venue,
+                **({"session": session} if session is not None else {}),
             )
             if seed_results:
                 return seed_results
@@ -1587,7 +1607,7 @@ Constraints:
         except Exception:
             pass
 
-        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue, ctx.session) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx, final=False):
             # final: the closing call after a guard stopped the loop; no tools (P2-41).
@@ -1644,6 +1664,7 @@ Constraints:
             tool_executor=self.tool_executor,
             requester_role=requester_role,
             venue=ctx.venue,
+            session=ctx.session,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
@@ -1750,7 +1771,7 @@ Constraints:
             pass
 
         # Stage 2: resolve the session namespace and identity overlay.
-        await self._resolve_session(session_id)
+        turn_session = await self._resolve_session(session_id)
 
         # Stage 3: sleep gating + system commands (bypass intent classification).
         reply = await self._pre_intent_reply(user_input, user_id)
@@ -1837,12 +1858,17 @@ Constraints:
         # Record who is speaking and where this turn happens (W3-10).
         ctx.speaker = speaker
         ctx.venue = venue
+        # The session scope travels like the venue (G4-04a); None for main.
+        ctx.session = turn_session
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
             tier_args = (
                 {"top_k": profile.tools_offered_max, "exclude": gated_tools_denied(profile)}
                 if profile else {}
             )
+            session_excluded = self._session_excluded_tools(ctx.session)
+            if session_excluded:
+                tier_args["exclude"] = set(tier_args.get("exclude", ())) | session_excluded
             ctx.offered_tools = await get_tool_registry().select_tools(
                 user_input, requester_role=requester_role, **tier_args
             )
