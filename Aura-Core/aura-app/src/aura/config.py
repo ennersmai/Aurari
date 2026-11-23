@@ -564,6 +564,29 @@ class Settings(BaseSettings):
                     "this it stays pending for the dream cycle to retry.",
     )
 
+    # Dreaming v2 retry extraction (W4-08)
+    dreaming_v2_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_DREAMING_V2_ENABLED",
+        description="Enable the dreaming v2 retry extraction phase. When on, the dream "
+                    "cycle retries pending extractions that are older than the minimum age.",
+    )
+    dreaming_retry_batch: int = Field(
+        default=20,
+        validation_alias="AURA_DREAMING_RETRY_BATCH",
+        description="Maximum number of pending episodes to retry per dream cycle.",
+        ge=1,
+        le=100,
+    )
+    dreaming_retry_min_age_minutes: int = Field(
+        default=10,
+        validation_alias="AURA_DREAMING_RETRY_MIN_AGE_MINUTES",
+        description="Minimum age in minutes for a pending episode to be retried by the "
+                    "dream cycle. Fresh episodes are left alone.",
+        ge=1,
+        le=1440,
+    )
+
     # Memory v2 entity resolution (W3-14)
     memory_entity_match_threshold: float = Field(
         default=0.92,

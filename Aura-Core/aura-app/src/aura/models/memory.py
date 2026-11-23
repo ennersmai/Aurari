@@ -200,6 +200,8 @@ class DreamConsolidationReport(BaseModel):
     reprocessed: int = Field(default=0, description="Negative memories turned into learning insights")
     core_memories: int = Field(default=0, description="Total core memories (untouched)")
     total_active: int = Field(default=0, description="Total active (non-deprecated) memories remaining")
+    retried: int = Field(default=0, description="Pending episodes selected for retry")
+    extracted: int = Field(default=0, description="Episodes successfully extracted on retry")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 

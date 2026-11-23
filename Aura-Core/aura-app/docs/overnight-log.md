@@ -2399,3 +2399,14 @@
 - **Bug found by the probes, fixed by the supervisor:** abstention on the fact path looked only at dense and lexical, so "what did I say yesterday?" abstained even when the temporal channel had the answer (temporal 0/5). Entity and temporal hits now prevent abstention; graph hits do not (they only spread from the other channels).
 - **Result:** multi-hop 2/5 without M5, 5/5 with; temporal 0/5 without, 5/5 with. Suite: 718 passed, 3 skipped.
 
+---
+
+## W4-08: Dream cycle v2: retry extraction
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/config.py` - `dreaming_v2_enabled` (False), `dreaming_retry_batch` (20), `dreaming_retry_min_age_minutes` (10)
+  - `src/aura/models/memory.py` - `retried` and `extracted` (default 0) on `DreamConsolidationReport`; only built in `enter_rem_sleep`, so nothing else is affected
+  - `src/aura/engines/dreaming/engine.py` - `_retry_pending_extractions` runs first in `enter_rem_sleep` when both flags are on: pending episodes with `recorded_at` before a datetime cutoff (clock now minus min age), oldest first, capped by the batch, `run_extraction` one at a time using the row's RecordID. A non-`None` result counts as extracted; `run_extraction` itself writes the facts (not duplicated) and handles attempts and the `failed` transition. `tick` uses `get_clock().now()`.
+  - `tests/scenarios/test_dreaming_v2_retry_embedded.py` (new) - five tests (six cases) on the embedded DB with a scripted fake client and FakeClock; state is set only through `store_episode` and `run_extraction`: old pending extracted with one fact written, fresh and failed left alone, attempts 1/2/3 then failed and then ignored, batch cap with oldest first, ablation for each flag.
+- **Client:** `self._llm_layers.client`, the same client the coordinator passes to `schedule_extraction` (`llm_layers.client`); `main.py` gives the dreaming engine that same `LLMLayers` object via `set_dependencies`. No client: the phase logs and skips.
+- **Test result:** new tests 6 passed; tests/unit 594 passed, 2 skipped.

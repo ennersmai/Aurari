@@ -10,6 +10,8 @@ Session 5 upgrade — the dreaming cycle is now a full cognitive maintenance pas
 - Emotional reprocessing: turn negative memories into learning insights
 - REM Sleep: existing trial-and-error pattern extraction
 - Consolidation report: stored as a system memory for self-reflection
+
+Dreaming v2 (W4-08): retry pending extractions before the main phases.
 """
 
 import asyncio
@@ -22,8 +24,10 @@ from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
 from aura.clock import get_clock
+from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
+from aura.engines.memory.v2.extraction import run_extraction
 from aura.models.memory import DreamConsolidationReport
 
 if TYPE_CHECKING:
@@ -81,7 +85,7 @@ class DreamingEngine(BaseEngine):
         """Execute dreaming engine cycles on a timer."""
         while True:
             try:
-                now = datetime.now(timezone.utc)
+                now = get_clock().now()
 
                 should_dream = False
                 if self.last_dream_cycle is None:
@@ -132,6 +136,13 @@ class DreamingEngine(BaseEngine):
             pass
 
         report = DreamConsolidationReport()
+
+        # Phase 0 (Dreaming v2): Retry pending extractions
+        if settings.dreaming_v2_enabled and settings.memory_v2_write_enabled:
+            try:
+                await self._retry_pending_extractions(report)
+            except Exception as e:
+                self.logger.error(f"Retry extraction phase failed: {e}", exc_info=True)
 
         # Phase 1: Tiered Pruning
         try:
@@ -187,8 +198,8 @@ class DreamingEngine(BaseEngine):
 
         self.logger.info(
             f"✨ Dream cycle complete: pruned={report.pruned}, abstracted={report.abstracted}, "
-            f"reprocessed={report.reprocessed}, core={report.core_memories}, "
-            f"total_active={report.total_active}"
+            f"reprocessed={report.reprocessed}, retried={report.retried}, extracted={report.extracted}, "
+            f"core={report.core_memories}, total_active={report.total_active}"
         )
 
         # Emit dreaming(false) event for avatar state machine
@@ -623,7 +634,8 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
             summary = (
                 f"Dream cycle completed: pruned {report.pruned} faded memories, "
                 f"abstracted {report.abstracted} episodic clusters into semantic memories, "
-                f"reprocessed {report.reprocessed} negative memories into wisdom. "
+                f"reprocessed {report.reprocessed} negative memories into wisdom, "
+                f"retried {report.retried} pending extractions, extracted {report.extracted}. "
                 f"{report.core_memories} core memories remain untouched. "
                 f"{report.total_active} total active memories."
             )
@@ -763,6 +775,65 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
             self.logger.error(f"_weave_causality error: {e}", exc_info=True)
 
         return edges_created
+
+    # =========================================================================
+    # DREAMING V2: RETRY EXTRACTION PHASE
+    # =========================================================================
+
+    async def _retry_pending_extractions(self, report: DreamConsolidationReport) -> None:
+        """
+        Retry pending extractions that are older than the configured minimum age.
+
+        Selects episodes with extraction_status = 'pending' and recorded_at older
+        than dreaming_retry_min_age_minutes, oldest first, up to dreaming_retry_batch.
+        Calls run_extraction for each, one at a time. Counts successes into the report.
+        """
+        # Same client the write path uses (coordinator: ``llm_layers.client``);
+        # main.py hands the dreaming engine the same LLMLayers object.
+        client = getattr(self._llm_layers, "client", None)
+        if client is None:
+            self.logger.warning("No extraction client available; skipping retry phase")
+            return
+
+        now = get_clock().now()
+        cutoff = now - timedelta(minutes=settings.dreaming_retry_min_age_minutes)
+
+        try:
+            rows = await self.db.query(
+                """
+                SELECT id FROM episode
+                WHERE extraction_status = 'pending'
+                  AND recorded_at < $cutoff
+                ORDER BY recorded_at ASC
+                LIMIT $batch
+                """,
+                {"cutoff": cutoff, "batch": settings.dreaming_retry_batch},
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to query pending episodes: {e}")
+            return
+
+        episodes = [row["id"] for row in (rows or [])]
+        if not episodes:
+            self.logger.info("[DREAM-V2] No pending episodes eligible for retry")
+            return
+
+        report.retried = len(episodes)
+        extracted = 0
+
+        for ep_id in episodes:
+            try:
+                result = await run_extraction(self.db, client, ep_id)
+                if result is not None:
+                    extracted += 1
+                    self.logger.info(f"[DREAM-V2] Retry extraction succeeded for {ep_id}")
+                else:
+                    self.logger.info(f"[DREAM-V2] Retry extraction failed for {ep_id} (will retry next cycle)")
+            except Exception as e:
+                self.logger.error(f"[DREAM-V2] Retry extraction error for {ep_id}: {e}")
+
+        report.extracted = extracted
+        self.logger.info(f"[DREAM-V2] Retry phase: retried={report.retried}, extracted={extracted}")
 
     # =========================================================================
     # HELPERS
