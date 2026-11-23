@@ -2493,6 +2493,53 @@ Written by the supervisor on 2026-11-23 against the code after M5. The memory v2
 
 ---
 
+### Wave 4: cards for E4 and E5 (mood, relationships, venue caps)
+
+Written by the supervisor on 2026-11-23 against the code after M6. The emotion engine is `src/aura/engines/emotion/engine.py`; every state change goes through `appraise(event: AppraisalEvent)` (W3-20..W3-26), which turns appraisal variables into impulses (`engines/emotion/appraisal.py`, `impulses_for`), applies them through the physics, and writes an `emotion_event` with `person_id`, `venue` and `size`. Every time read goes through `get_clock()`. Each mechanism has its own flag, off by default, and an ablation test; every number is in config.
+
+---
+
+**W4-13 Mood**
+- **PRD:** emotion 6.2, test T12
+- **Tier:** frontier
+- **Files:** new `src/aura/engines/emotion/mood.py`, `src/aura/engines/emotion/engine.py`, `src/aura/models/emotion.py` (the existing `EmotionState.mood` field), `src/aura/config.py`, new `tests/unit/test_emotion_mood.py`
+- **Change:**
+  1. Flag `emotion_mood_enabled: bool = False`. Mood is three numbers, `valence`, `arousal`, `control`, each in [-1, 1], a running average of the state's projection with a half-life of `emotion_mood_half_life_hours = 8.0`, advanced by real elapsed time (`get_clock()`) on every tick and every appraisal. The projections are weighted sums over the 27 dimensions' deviations from baseline, with the weights in config (`emotion_mood_valence_weights`, `emotion_mood_arousal_weights`, `emotion_mood_control_weights`; reuse the positive/negative split already used by `_compute_valence` for valence), clamped to [-1, 1]. The pure maths (projection, decay step) lives in `mood.py`.
+  2. Effective baseline: while the flag is on, the physics decays toward the configured baseline plus a mood shift on the positive dimensions only, `clamp(emotion_mood_baseline_gain * mood.valence, -emotion_mood_baseline_shift_max, +emotion_mood_baseline_shift_max)` with `emotion_mood_baseline_shift_max = 0.1`. The configured baseline itself never changes.
+  3. Appraisal bias (separate flag `emotion_mood_appraisal_bias_enabled: bool = False`, for ablation): for an ambiguous event (`abs(goal_congruence) < 0.3`), shift `goal_congruence` by `emotion_mood_appraisal_bias * mood.valence`, capped at `±0.1`, before `impulses_for`. Record the unbiased appraisal on the `emotion_event` and the bias applied as its own field.
+  4. Persistence: mood is saved with the state (`_persist_state` / `_load_state` / `_hydrate_physics_from_db` — follow the existing pattern) with its timestamp, and on load it decays by the real elapsed time since then (no cap). `EmotionState.mood` is filled when the flag is on (the websocket and prompt already carry the field).
+- **Tests:** T12: a simulated day of negative events (fake clock, appraisals every few minutes) lowers the effective baseline by no more than 0.1 and it recovers over the following days (most of the way back after three days without events); positive day raises it symmetrically; the projection and decay maths on fixed inputs; the bias stays within its cap and is absent with its flag off; restart: mood saved, clock moved 16 hours, loaded mood is a quarter of what it was; ablation (flag off: physics and appraisal exactly as today).
+- **Done when:** the new tests pass and the full suite passes (the supervisor runs the suite).
+
+---
+
+**W4-14 Relationships on person entities**
+- **PRD:** emotion 6.3, finding E6, test T10
+- **Tier:** frontier
+- **Depends on:** W4-13 (same engine paths; no functional dependency)
+- **Files:** new `src/aura/engines/emotion/relationship.py`, `src/aura/engines/emotion/engine.py`, `scripts/schema_v2.surql` (on `entity`: `affection`, `trust`, `familiarity`, `tension` as `option<float>`, `relationship_updated_at` as `option<datetime>` — new fields on a table with rows must be `option<...>`, read missing as the configured starting values), `src/aura/config.py`, the call sites that build message `AppraisalEvent`s (they must carry the speaker's entity id as `person_id` — find them; the speaker entity is the one the memory write path uses for `episode.speaker`, see `src/aura/engines/memory/v2/episodes.py`), new `tests/unit/test_emotion_relationship.py`, new `tests/scenarios/test_emotion_relationship_embedded.py`
+- **Change:**
+  1. Flag `emotion_relationships_enabled: bool = False`. Starting values for a person never seen: `affection 0.0`, `trust 0.3`, `familiarity 0.0`, `tension 0.0` (config); the owner's starting values are config too (`affection 0.5`, `trust 0.7`, `familiarity 0.6`).
+  2. Updates, after each appraised event with a `person_id`, one parameterised `UPDATE` on that entity (pure step function in `relationship.py`, all step sizes in config, small: about 0.01 to 0.03 per event, every field clamped to [0, 1]): `familiarity` rises with every exchange, with diminishing returns; `affection` rises with positive warmth and positive congruence when the agency is the other person, and falls slowly with negative warmth; `tension` rises with negative congruence or negative warmth from the other person and eases with later positive warmth (repair); `trust` rises when an event confirms an expectation and falls when one is broken (use the appraisal's `certainty`/`goal_congruence` with agency other as the proxy, and say so in the docstring). No time decay.
+  3. When a person is present (the event's `person_id`), the effective baseline of the `love` and `trust` dimensions comes from that relationship (`love` from `affection`, `trust` from `trust`, scaled into the dimension's range by config) instead of the global configured values, so the state moves toward a different resting point for the owner than for a stranger. In a channel with several people the current speaker's relationship is used (it is the event's `person_id`).
+  4. The relationship scales the message's impulses: positive-warmth impulses are multiplied by `1 + emotion_relationship_warmth_gain * (affection + familiarity) / 2`; for a person with `familiarity < emotion_stranger_familiarity` the negative impulses are capped at `emotion_stranger_hostility_cap` per event.
+  5. `get_state(person_id)` returns the state with `love` and `trust` read from that person's relationship (replacing the "E5 is not implemented" stub).
+- **Tests:** T10: the same warm message from the owner and from a new guest produces a larger response (sum of positive impulses applied) for the owner; step functions on fixed inputs (familiarity diminishing returns, tension rises then eases with repair, clamping); relationship fields written to the right entity and nothing written for an event without `person_id`; a stranger's single hostile message is capped; `get_state` for two people differs in love and trust; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-15 Venue caps for guests**
+- **PRD:** emotion 7 ("venue caps"), test T11
+- **Tier:** bulk
+- **Depends on:** W4-14
+- **Files:** `src/aura/engines/emotion/engine.py`, `src/aura/config.py`, new `tests/unit/test_emotion_guest_cap.py`
+- **Change:** flag `emotion_guest_cap_enabled: bool = False`. An event is a guest event when its `person_id` is not the owner's entity (an event with no `person_id` is not capped). Guest events together may move her state by at most `emotion_guest_cap_per_hour = 0.5`, measured as the sum of the `size` of guest `emotion_event`s in the last hour (sliding window; query the table, or keep an in-memory window that is rebuilt from the table on load — pick one and say why). Before applying a guest event's impulses, scale them so its size fits the remaining budget; with no budget left the event is recorded with `size 0` and a `capped: true` field, and the state does not move.
+- **Tests:** T11: 100 hostile guest messages in one simulated hour move the state (sum of sizes, and the actual deviation) by no more than the cap; the budget frees up as the window slides; owner events are never capped and do not use the budget; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
 
 ## 5. Later waves
 
