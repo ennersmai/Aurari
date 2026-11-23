@@ -38,6 +38,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] **Tier profiles (P2-03), when you turn on `AURA_TIER_PROFILES_ENABLED`:** the profile caps the chat reasoning toggles. L3 deep reasoning stays off on every tier until P2-06 adds L1 routes, because the plan only allows it on route `think`.
 - [ ] **Deep reasoning after P2-42:** the chat toggles are gone. With `AURA_TIER_PROFILES_ENABLED` off, L3 deep reasoning is always off and L2 analysis always on (the old default toggle state). To get deep reasoning back, turn on tier profiles and `AURA_L1_ROUTES_ENABLED`: Core and Titan then reason on route `think`, and Titan also on high stakes.
 - [ ] **Native tools mid-stream failure (P2-07):** if the native tool stream fails after some text was sent, the reply now stops there (an error is logged) instead of repeating itself. A partial reply is possible in that rare case.
+- [x] **Supervisor reading of D4/D7 for P2-10 (change it if wrong):** OpenCode v2.3.2 has no `task` tool; subagents are child sessions (`parentID`) that Aura creates. That fits D4 as written: one code node runs one lead session, and Aura starts at most 3 child sessions under it. Children inherit the lead's directory, so a code node gets ONE worktree (D7 is per build node), and build children inside a node run one at a time, while explore and review children may run in parallel. Findings: docs/opencode/subagents.md.
 - [x] OpenCode version pin: v2.3.2, Aura runs her own server (decided 2026-11-20).
 
 ## 3. Checks only you can do
@@ -50,6 +51,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] Avatar asset for V8 (build plan section 6 item 5).
 - [ ] Open `/workbench` (G4-03, replaces the IDE link) and check the layout with a real delegation: task list, live steps, diff summary, approve/deny, guidance, abort.
 - [ ] Agency manual acceptance (G4-04): from the chat, ask Aura to add a small feature to a test repository. She delegates, a permission request appears in the Workbench, the change lands, the review passes, and a week later (simulated) she recalls what was done and why. Parity gaps found are in docs/metrics/g4_parity.md.
+- [ ] Before P2-10 code nodes are used live: with the pinned OpenCode binary installed and `AURA_OPENCODE_COMMAND` set, check two things in docs/opencode/subagents.md: that a child session inherits the parent's directory, and that child permission requests arrive on the child's session id.
 - [ ] Run the L1 route fixture set against each stack's L1 model (command in docs/metrics/l1_routes.md).
 - [ ] Don't resume old Aura sessions in the OpenCode app while cards run: on 2026-11-20 an old W2-30 session ran in the same folder as W3-05 (it only added a log note).
 
