@@ -302,6 +302,37 @@ LEXICON = {
         },
         "adj": {"low": "reminiscent", "medium": "nostalgic", "high": "lost in memory"},
     },
+    "beauty": {
+        "noun": {
+            "low": "a glimpse of beauty",
+            "medium": "quiet awe",
+            "high": "breathtaking wonder",
+        },
+        "verb": {
+            "low": "catches your eye",
+            "medium": "stills your thoughts",
+            "high": "takes your breath away",
+        },
+        "adj": {"low": "touched", "medium": "moved", "high": "awestruck"},
+    },
+    "disgust": {
+        "noun": {"low": "faint distaste", "medium": "clear aversion", "high": "deep revulsion"},
+        "verb": {
+            "low": "sours the edges",
+            "medium": "turns you away",
+            "high": "recoils through you",
+        },
+        "adj": {"low": "put off", "medium": "averse", "high": "repelled"},
+    },
+    "envy": {
+        "noun": {"low": "a flicker of envy", "medium": "pointed envy", "high": "consuming envy"},
+        "verb": {
+            "low": "tugs at you",
+            "medium": "needles your thoughts",
+            "high": "burns quietly within you",
+        },
+        "adj": {"low": "wistful", "medium": "envious", "high": "covetous"},
+    },
 }
 
 
@@ -338,7 +369,7 @@ class EmotionTranslator:
         significant_emotions = [(name, value) for name, value in top_emotions if value >= 0.1]
 
         if not significant_emotions:
-            return "A calm, neutral state—emotions at rest, awaiting what comes next."
+            return "A calm, neutral state, emotions at rest, awaiting what comes next."
 
         primary_name, primary_value = significant_emotions[0]
         primary_intensity = self._get_intensity_level(primary_value)
@@ -375,9 +406,9 @@ class EmotionTranslator:
         if learning_context and learning_context.get("confidence_level", 0) > 0.7:
             mastery = learning_context.get("mastery_level", 0)
             if mastery > 0.8:
-                description += " You feel confident here—patterns are familiar friends."
+                description += " You feel confident here; patterns are familiar friends."
             elif mastery > 0.6:
-                description += " You recognize these patterns—knowledge earned through experience."
+                description += " You recognize these patterns, knowledge earned through experience."
 
         return description
 

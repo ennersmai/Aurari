@@ -9,176 +9,78 @@ from aura.models.emotion import EmotionCause, EmotionState, EmotionVector
 from aura.llm.layers import LLMLayers, SynthesisContext
 
 
+_T0 = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def _phrase(kind, seconds, person_id=None):
+    cause = EmotionCause(
+        at=_T0, kind=kind, source="conversation", person_id=person_id,
+        dominant_change="joy", size=0.3,
+    )
+    return cause_phrase(cause, _T0 + timedelta(seconds=seconds))
+
+
 class TestCausePhrase:
     """Tests for the cause_phrase function."""
 
     def test_message_from_person(self):
-        """Message from a specific person."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="conversation",
-            person_id="discord_42",
-            dominant_change="joy",
-            size=0.3,
+        assert _phrase("message", 180, person_id="discord_42") == (
+            "since a message from discord_42 3 minutes ago"
         )
-        now = datetime(2026, 1, 1, 12, 3, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from discord_42 3 minutes ago"
 
     def test_message_without_person(self):
-        """Message without a person_id."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="conversation",
-            person_id=None,
-            dominant_change="joy",
-            size=0.3,
-        )
-        now = datetime(2026, 1, 1, 12, 5, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from conversation 5 minutes ago"
+        assert _phrase("message", 300) == "since something said in conversation 5 minutes ago"
 
-    def test_tool_failed(self):
-        """Tool failure."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="tool_failed",
-            source="tool",
-            person_id=None,
-            dominant_change="anger",
-            size=0.5,
-        )
-        now = datetime(2026, 1, 1, 12, 12, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a tool failure from a tool 12 minutes ago"
+    @pytest.mark.parametrize(
+        "kind,expected",
+        [
+            ("tool_failed", "since a tool let you down 12 minutes ago"),
+            ("tool_succeeded", "since a tool came through for you 12 minutes ago"),
+            ("task_result", "since a task came back 12 minutes ago"),
+            ("prediction", "since a prediction played out 12 minutes ago"),
+            ("memory_recall", "since a memory resurfaced 12 minutes ago"),
+            (
+                "memory_write_failed",
+                "since a memory slipped away before it could be kept 12 minutes ago",
+            ),
+            (
+                "self_critique",
+                "since you looked back critically at your own words 12 minutes ago",
+            ),
+            ("unknown_event", "since unknown event 12 minutes ago"),
+        ],
+    )
+    def test_kind_templates(self, kind, expected):
+        assert _phrase(kind, 720) == expected
 
-    def test_tool_succeeded(self):
-        """Tool success."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="tool_succeeded",
-            source="tool",
-            person_id=None,
-            dominant_change="joy",
-            size=0.4,
+    def test_a_moment_ago(self):
+        assert _phrase("message", 30, person_id="discord_42") == (
+            "since a message from discord_42 a moment ago"
         )
-        now = datetime(2026, 1, 1, 12, 7, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a tool success from a tool 7 minutes ago"
-
-    def test_memory_recall(self):
-        """Memory recall."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="memory_recall",
-            source="memory",
-            person_id=None,
-            dominant_change="nostalgia",
-            size=0.2,
-        )
-        now = datetime(2026, 1, 1, 12, 30, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a memory recall from memory 30 minutes ago"
-
-    def test_memory_write_failed(self):
-        """Memory write failure."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="memory_write_failed",
-            source="memory",
-            person_id=None,
-            dominant_change="sadness",
-            size=0.6,
-        )
-        now = datetime(2026, 1, 1, 12, 45, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a memory write failure from memory 45 minutes ago"
-
-    def test_self_critique(self):
-        """Self critique."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="self_critique",
-            source="orchestrator",
-            person_id=None,
-            dominant_change="doubt",
-            size=0.3,
-        )
-        now = datetime(2026, 1, 1, 12, 15, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since self critique from internal critique 15 minutes ago"
 
     def test_hours_ago(self):
-        """Age in hours (over an hour)."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="conversation",
-            person_id="discord_42",
-            dominant_change="joy",
-            size=0.3,
+        assert _phrase("message", 3 * 3600 + 1800, person_id="discord_42") == (
+            "since a message from discord_42 3 hours ago"
         )
-        now = datetime(2026, 1, 1, 13, 30, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from discord_42 3 hours ago"
 
     def test_one_hour_ago(self):
-        """Exactly one hour ago (boundary case)."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 11, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="conversation",
-            person_id="discord_42",
-            dominant_change="joy",
-            size=0.3,
+        assert _phrase("message", 3600, person_id="discord_42") == (
+            "since a message from discord_42 1 hour ago"
         )
-        now = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from discord_42 1 hour ago"
 
-    def test_seconds_ago(self):
-        """Age in seconds (under a minute)."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="conversation",
-            person_id="discord_42",
-            dominant_change="joy",
-            size=0.3,
-        )
-        now = datetime(2026, 1, 1, 12, 0, 30, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from discord_42 30 seconds ago"
+    def test_days_ago(self):
+        assert _phrase("tool_failed", 86400) == "since a tool let you down 1 day ago"
+        assert _phrase("tool_failed", 2 * 86400 + 5000) == "since a tool let you down 2 days ago"
 
-    def test_unknown_kind(self):
-        """Unknown kind falls back to generic description."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="unknown_event",
-            source="conversation",
-            person_id=None,
-            dominant_change="curiosity",
-            size=0.1,
-        )
-        now = datetime(2026, 1, 1, 12, 10, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a unknown event from conversation 10 minutes ago"
-
-    def test_unknown_source(self):
-        """Unknown source falls back to generic description."""
-        cause = EmotionCause(
-            at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
-            kind="message",
-            source="unknown_source",
-            person_id=None,
-            dominant_change="curiosity",
-            size=0.1,
-        )
-        now = datetime(2026, 1, 1, 12, 10, 0, tzinfo=timezone.utc)
-        phrase = cause_phrase(cause, now)
-        assert phrase == "since a message from unknown_source 10 minutes ago"
+    def test_no_em_dash_anywhere(self):
+        kinds = [
+            "message", "tool_failed", "tool_succeeded", "task_result", "prediction",
+            "memory_recall", "memory_write_failed", "self_critique", "other_kind",
+        ]
+        for kind in kinds:
+            for secs in (10, 720, 7200, 200000):
+                assert "—" not in _phrase(kind, secs, person_id="p")
+                assert "—" not in _phrase(kind, secs)
 
 
 class TestEmotionalStateBlock:
@@ -317,7 +219,7 @@ class TestEmotionalStateBlock:
 
         # Should use the first (largest) cause
         assert "since a message from discord_42 3 minutes ago" in prompt
-        assert "since a tool failure" not in prompt  # Second cause should not appear
+        assert "since a tool let you down" not in prompt  # Second cause should not appear
 
 
 class FakeClock:
@@ -334,3 +236,19 @@ class FakeClock:
 
     def advance(self, seconds: float) -> None:
         self._now += timedelta(seconds=seconds)
+
+
+def test_l3_system_prompt_has_no_em_dash():
+    layers = LLMLayers.__new__(LLMLayers)
+    context = SynthesisContext(
+        user_input="hi",
+        emotional_state=EmotionState(
+            timestamp=_T0,
+            vector=EmotionVector(),
+            dominant=("neutral", 0.0),
+            description="Neutral",
+            top_causes=[],
+        ),
+    )
+    prompt = layers._build_l3_system_prompt(context, "T", None)
+    assert "—" not in prompt

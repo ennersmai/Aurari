@@ -2482,3 +2482,14 @@
 - **Bias:** only when both flags are on; `abs(congruence) < 0.3` shifts congruence by `clamp(bias * valence, +-0.1)` before `impulses_for`; the event records the unbiased appraisal plus `mood_bias` (0.0 when not ambiguous). Field is absent with the bias flag off.
 - **Tests:** T12 negative and positive day (baseline shift within 0.1, recovers to under 20% of peak after 3 days; love/trust's 12 h half-life keeps the tail), maths on fixed inputs, bias cap, restart (16 h = a quarter), ablation. Unit suite 609 passed, 2 skipped.
 - **Supervisor (2026-11-23), W4-13:** accepted as built. Mood is projected from deviations against the effective baseline (against the configured one a lowered resting point would read as lasting negative valence and lock the mood in); recovery after three quiet days is to about 12% of peak because love/trust decay slowly. The card's `goal_congruence` is the model's `congruence`. Suite: 758 passed, 3 skipped.
+
+---
+
+## FX-01: Emotion translator polish
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/engines/emotion/translator.py` - LEXICON gains `beauty`, `disgust`, `envy` (noun, verb, adj at three levels); three em dashes in output strings replaced (comma, semicolon, comma).
+  - `src/aura/engines/emotion/describe.py` - `cause_phrase` uses per-kind templates; under 60 s reads "a moment ago"; 24 h or more reads "N day(s) ago".
+  - `tests/unit/test_emotion_translator.py` (new), `tests/unit/test_emotion_prompt_cause.py` (updated, plus an L3 prompt no-em-dash test).
+- **layers.py:** `_build_l3_system_prompt` has no em dash inside any string literal (the only ones in its range are in comments), so nothing was edited there. The rendered prompt for a fixture context contains none.
+- **Tests:** translator, cause and prompt tests pass; unit suite run once.
