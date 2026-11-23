@@ -18,6 +18,7 @@
 - **Wave 3, V1 (without MetaHuman) to V4 done** (W3-34..W3-38): frontend test runner, avatar controller with six layers and ownership, affect layer for all 27 dimensions, backend `avatar_state` with cognitive states, the stage with a placeholder head behind `NEXT_PUBLIC_AVATAR_STAGE=1`.
 - **Wave 3 complete** (2026-11-20). Review in docs/metrics/wave-3.md. Python suite 655 passed; frontend 67 tests and build pass. **Everything waiting on Mai is in docs/FOR_MAI.md.**
 - **Wave 4, M5 done** (W4-01..W4-07, 2026-11-23): entity, temporal and graph channels, rerank, recall tools, feedback; probes multi-hop 5/5 and temporal 5/5 (docs/metrics/m5.md). Suite 718 passed.
+- **Wave 4, M6 done** (W4-08..W4-12, 2026-11-23): dreaming v2 retry, archive, themes and entity summaries, theme recall; 90 simulated days with long-topic, single-fact and updated-fact probes all passing on days 30, 60, 90 (docs/metrics/m6.md). Suite 749 passed. From W4-03 on, code cards go to Sonnet agents (OpenCode on free models failed or needed heavy fixes on every code card).
 - **Unexpected session:** while W3-05 ran, a second OpenCode session (an old W2-30 one, probably resumed from the app) worked in the same tree and committed only a log note (d106d17). Nothing else changed.
 - **Follow-ups noted:** remaining direct time reads (DreamingEngine.tick, parts of manager.py); the native-tools streaming fallback can repeat already streamed text (fix before enabling `AURA_L3_NATIVE_TOOLS`).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
@@ -2453,3 +2454,15 @@
 - **Budget, trace, rendering:** the theme is a `Candidate` in the memories block (`source="recall.themes"`, rank below every fact, dedup keys `theme:<id>` and the normalised text), so `assemble` budgets, dedupes and traces it with the facts. Over budget, facts drop first (last in rank); the theme goes only when nothing else fits. The memories renderer writes `<theme updated="N days ago">summary</theme>` (age from `updated_at`) for theme payloads, first in the block.
 - **Abstention:** unchanged; the abstain path returns before themes are considered. Flag off: path identical to before.
 - **Tests:** broad question gets the theme line first with five fact lines and a kept trace item; guild venue gets no owner theme; budget holds (theme kept while facts go over budget, then theme over_budget at budget 1); abstention adds no theme; ablation.
+
+---
+
+## W4-12: M6 probes, long topics and 90 simulated days
+- **Status:** DONE
+- **Files changed:**
+  - `tests/scenarios/test_memory_m6_embedded.py` (new) - one embedded-DB scenario; `docs/metrics/m6.md` is written only with `RECORD_BASELINE=1` (supervisor records it).
+- **Scenario:** 90 days, 281 turns (two topic facts a day across three topics - Renovation, Marathon, Novel - plus one ephemeral chatter turn a day, five first-week single facts, six updates of "live in" and "work as"), all M3 to M6 flags on. Turns use the real write path: `store_episode` then `run_extraction` with a scripted fake client; 12 first extractions fail on purpose and are finished by the dream retry phase (12 retried, 12 extracted). A dream cycle every night at 23:00 with `last_dream_cycle` advanced as the engine does. The same fake client writes deterministic summaries (first four words of up to eight member facts); 357 summary calls in 90 nights.
+- **Probes (days 30, 60, 90):** long-topic 5/5 each day (theme line present in all five each day; 19 to 20 topic facts also in the block); single-fact 5/5; updated facts 2/2 (newest present, old absent). Counts (facts / current / archived facts / themes / entities / episodes / archived episodes): day 30: 69/67/0/3/4/99/23; day 60: 130/127/0/3/4/190/53; day 90: 191/187/0/3/4/281/83. Themes stay at three; entities at four.
+- **Runtime:** about 34 s of simulation, 44 s with import.
+- **Notes:** archived facts stay 0 because a superseded fact needs to be 90 days old and the run is 90 days. The legacy dream phase writes a cycle note through the global `get_memory_manager()`, which loads the real embedding model every night (about 0.8 s) and fails with the DB not connected; the test stubs `get_memory_manager`. Chatter has no turn marker (a marker would defeat the recall gate, so the turn would not be ephemeral). No dreaming or recall bugs found.
+- **Supervisor (2026-11-23), W4-12:** accepted. No superseded fact reaches the 90-day archive age inside a 90-day run, so fact archiving is covered by W4-09's tests, not here. The legacy dream phase's cycle note uses the global memory manager and loads the embedding model every night (stubbed in the test); left as is, noted for cleanup. Metrics recorded.
