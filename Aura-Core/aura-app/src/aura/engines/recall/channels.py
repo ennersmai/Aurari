@@ -23,7 +23,9 @@ from datetime import datetime
 from typing import Any
 
 from aura.config import settings
-from aura.engines.memory.v2.identity import visible_in_venue
+from aura.db.query_utils import to_record_id
+from aura.engines.memory.v2.identity import visibility_for_venue, visible_in_venue
+from aura.engines.recall.graph import personalised_pagerank
 
 
 @dataclass
@@ -332,4 +334,127 @@ async def fact_temporal_channel(
             score=1.0,
         )
         for rank, row in enumerate(rows or [])
+    ]
+
+
+def _rid(thing: Any) -> Any:
+    """A record id string, as ``str(row["id"])`` gives it, back to a RecordID."""
+    return to_record_id(str(thing).replace("\u27e8", "").replace("\u27e9", ""))
+
+
+def _episode_visibility(venue: str) -> str | None:
+    """The visibility an episode's facts get: a DM's speaker is its user."""
+    speaker = venue[len("dm:"):] if venue.startswith("dm:") else "owner"
+    try:
+        return visibility_for_venue(venue, speaker)
+    except ValueError:
+        return None
+
+
+async def _load_graph(
+    db: Any, seeds: list[str], venue: str
+) -> list[tuple[str, str, float]]:
+    """Expand breadth-first from ``seeds`` over the typed edges.
+
+    One query per edge type per hop, plus one visibility check per hop: a fact
+    the venue may not read is dropped with its edges, so it can neither be
+    returned nor act as a bridge between visible facts. ``supersedes`` is not
+    an edge type here, so it is never followed. Stops at
+    ``recall_graph_max_nodes`` nodes.
+    """
+    cap = int(settings.recall_graph_max_nodes)
+    seen: set[str] = set(seeds)
+    frontier = list(seeds)
+    known: set[tuple[str, str, str]] = set()
+    weighted: list[tuple[str, str, float]] = []
+
+    hidden: set[str] = set()
+    visible = visible_in_venue(venue)
+
+    while frontier and len(seen) < cap:
+        ids = [_rid(node) for node in frontier]
+        hop: list[tuple[str, str, float]] = []
+        found: list[str] = []
+        for relation, weight in settings.recall_graph_weights.items():
+            rows = await db.query(
+                f"SELECT in, out FROM {relation} WHERE in IN $ids OR out IN $ids",
+                {"ids": ids},
+            )
+            for row in rows:
+                a, b = str(row["in"]), str(row["out"])
+                if a in hidden or b in hidden or (relation, a, b) in known:
+                    continue
+                known.add((relation, a, b))
+                hop.append((a, b, float(weight)))
+                for node in (a, b):
+                    if node not in seen and len(seen) < cap:
+                        seen.add(node)
+                        found.append(node)
+
+        new_facts = [node for node in found if node.startswith("fact:")]
+        if new_facts:
+            readable = await db.query(
+                "SELECT VALUE id FROM fact WHERE id IN $ids AND visibility IN $visible",
+                {"ids": [_rid(node) for node in new_facts], "visible": visible},
+            )
+            readable_ids = {str(rid) for rid in readable}
+            hidden.update(node for node in new_facts if node not in readable_ids)
+        new_episodes = [node for node in found if node.startswith("episode:")]
+        if new_episodes:
+            rows = await db.query(
+                "SELECT id, venue FROM episode WHERE id IN $ids",
+                {"ids": [_rid(node) for node in new_episodes]},
+            )
+            readable_ids = {
+                str(row["id"])
+                for row in rows
+                if _episode_visibility(row["venue"]) in visible
+            }
+            hidden.update(node for node in new_episodes if node not in readable_ids)
+
+        weighted.extend(
+            (a, b, w) for a, b, w in hop if a not in hidden and b not in hidden
+        )
+        frontier = [node for node in found if node not in hidden]
+    return weighted
+
+
+async def fact_graph_channel(
+    db: Any,
+    seeds: dict[str, float],
+    venue: str,
+) -> list[ChannelHit]:
+    """Return current, visible facts reached from ``seeds`` by Personalised PageRank.
+
+    ``seeds`` maps the fact ids hit by the earlier channels to a weight. The
+    seeds themselves are excluded; the rest are ranked by PPR score, capped by
+    ``settings.recall_graph_k``.
+    """
+    if not seeds:
+        return []
+
+    edges = await _load_graph(db, list(seeds), venue)
+    scores = personalised_pagerank(
+        edges,
+        seeds,
+        settings.recall_graph_alpha,
+        int(settings.recall_graph_iterations),
+        settings.recall_graph_degree_damping,
+    )
+    candidates = [
+        node for node in scores if node.startswith("fact:") and node not in seeds
+    ]
+    if not candidates:
+        return []
+
+    params: dict[str, Any] = {"ids": [_rid(node) for node in candidates]}
+    where = _fact_filter_clause(venue, params)
+    rows = await db.query(
+        f"SELECT id FROM fact WHERE id IN $ids AND {where}", params
+    )
+
+    ranked = sorted((str(row["id"]) for row in rows), key=lambda node: -scores[node])
+    return [
+        ChannelHit(memory_id=node, rank=rank, score=scores[node])
+        for rank, node in enumerate(ranked[: int(settings.recall_graph_k)])
     ]

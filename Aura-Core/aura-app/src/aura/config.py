@@ -792,6 +792,43 @@ class Settings(BaseSettings):
         description="Number of candidate facts the temporal channel retrieves.",
     )
 
+    recall_graph_channel_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_GRAPH_CHANNEL_ENABLED",
+        description="When true, the graph channel runs in the recall engine: "
+                    "Personalised PageRank from the dense, lexical and entity hits.",
+    )
+    recall_graph_k: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_GRAPH_K",
+        description="Number of candidate facts the graph channel retrieves.",
+    )
+    recall_graph_weights: dict[str, float] = Field(
+        default={"about": 1.0, "co_used": 1.0, "derived_from": 0.5, "mentions": 0.2},
+        validation_alias="AURA_RECALL_GRAPH_WEIGHTS",
+        description="Edge weight per relation for the graph channel.",
+    )
+    recall_graph_alpha: float = Field(
+        default=0.15,
+        validation_alias="AURA_RECALL_GRAPH_ALPHA",
+        description="PageRank teleport probability back to the seed facts.",
+    )
+    recall_graph_iterations: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_GRAPH_ITERATIONS",
+        description="Power iterations of the graph channel's PageRank.",
+    )
+    recall_graph_degree_damping: float = Field(
+        default=0.5,
+        validation_alias="AURA_RECALL_GRAPH_DEGREE_DAMPING",
+        description="Exponent on a node's degree that damps hubs in the graph channel.",
+    )
+    recall_graph_max_nodes: int = Field(
+        default=500,
+        validation_alias="AURA_RECALL_GRAPH_MAX_NODES",
+        description="Cap on the subgraph the graph channel expands.",
+    )
+
     # CORS Configuration
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001",

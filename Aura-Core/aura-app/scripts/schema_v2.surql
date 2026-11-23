@@ -85,7 +85,7 @@ DEFINE FIELD IF NOT EXISTS error ON prediction TYPE option<float>;
 -- ============================================================================
 -- MEMORY V2 TYPED RELATIONS (PRD 4.3)
 -- ============================================================================
--- led_to, member_of, co_used and abstracted_into are left for M5 to M7.
+-- led_to, member_of and abstracted_into are left for M5 to M7.
 
 DEFINE TABLE IF NOT EXISTS derived_from TYPE RELATION IN fact OUT episode SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS about TYPE RELATION IN fact OUT entity SCHEMAFULL;
@@ -94,6 +94,8 @@ DEFINE TABLE IF NOT EXISTS next TYPE RELATION IN episode OUT episode SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS supersedes TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS contradicts TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS answers TYPE RELATION IN fact OUT question SCHEMAFULL;
+DEFINE TABLE IF NOT EXISTS co_used TYPE RELATION IN fact OUT fact SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS weight ON co_used TYPE float DEFAULT 1;
 
 -- ============================================================================
 -- MEMORY V2 INDEXES (PRD 4.5)

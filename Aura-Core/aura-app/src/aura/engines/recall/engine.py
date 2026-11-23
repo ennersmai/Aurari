@@ -33,6 +33,7 @@ from .channels import (
     dense_channel,
     fact_dense_channel,
     fact_entity_channel,
+    fact_graph_channel,
     fact_lexical_channel,
     fact_temporal_channel,
     lexical_channel,
@@ -618,6 +619,9 @@ class RecallEngine:
         When ``recall_temporal_channel_enabled`` is on and a time expression is
         parsed from the input, the temporal channel runs and its hits are fused
         as channel "temporal".
+
+        When ``recall_graph_channel_enabled`` is on, the graph channel runs after
+        the channels above, seeded by their hits, and is fused as channel "graph".
         """
         memory_manager = await self._get_memory_manager()
         queries = build_queries(request.user_input, request.recent_turns)
@@ -673,6 +677,24 @@ class RecallEngine:
                 channels[name] = []
             else:
                 channels[name] = result
+
+        # Graph channel: PPR from the hits of the channels above.
+        if settings.recall_graph_channel_enabled:
+            seeds: dict[str, float] = {}
+            for name in ("dense", "lexical", "entity"):
+                for hit in channels.get(name, []):
+                    seeds[hit.memory_id] = seeds.get(hit.memory_id, 0.0) + 1.0 / (
+                        hit.rank + 1
+                    )
+            try:
+                channels["graph"] = await fact_graph_channel(
+                    memory_manager.db, seeds, request.venue
+                )
+            except Exception as exc:
+                if channel_errors is not None:
+                    channel_errors["memories.graph"] = str(exc)
+                logger.debug("Recall fact graph channel failed (non-critical): %s", exc)
+                channels["graph"] = []
 
         if settings.recall_abstain_enabled:
             lexical_hits = channels["lexical"]
