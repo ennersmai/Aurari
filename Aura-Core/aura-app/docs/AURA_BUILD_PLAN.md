@@ -2424,6 +2424,75 @@ Written by the supervisor on 2026-11-20 against the code after wave 3. All of it
 
 ---
 
+### Wave 4: cards for M6 (dreaming v2)
+
+Written by the supervisor on 2026-11-23 against the code after M5. The memory v2 dream phases run inside `DreamingEngine.enter_rem_sleep` (`src/aura/engines/dreaming/engine.py`) when `dreaming_v2_enabled: bool = False` is on and `memory_v2_write_enabled` is on; the existing phases (pruning of the old `memory` table, abstraction, emotional reprocessing, causal weaving, trial and error) keep running unchanged (memory PRD 7.5). Every time read goes through `get_clock()`. Model calls are allowed in dreaming (it is off the reply path) but go through the existing LLM layers / clients, and every phase has a per-cycle cap in config so one cycle stays bounded. Visibility is never widened by consolidation: anything built from facts keeps the visibility of the facts it was built from, and never mixes visibilities.
+
+---
+
+**W4-08 Dream cycle v2: retry extraction**
+- **PRD:** memory 7.1
+- **Tier:** bulk
+- **Files:** `src/aura/engines/dreaming/engine.py`, `src/aura/config.py`, new `tests/scenarios/test_dreaming_v2_retry_embedded.py`
+- **Change:**
+  1. Config: `dreaming_v2_enabled: bool = False`, `dreaming_retry_batch: int = 20`, `dreaming_retry_min_age_minutes: int = 10`.
+  2. In `enter_rem_sleep`, when the flag (and `memory_v2_write_enabled`) is on, a new phase before the existing ones: select episodes with `extraction_status = "pending"` and `recorded_at` older than `dreaming_retry_min_age_minutes` (from `get_clock()`), oldest first, up to `dreaming_retry_batch`, and call `run_extraction(db, client, episode_id)` (`src/aura/engines/memory/v2/extraction.py`) for each, one at a time. Use the same extraction client the write path uses (see `episodes.py`, where `run_extraction` is scheduled). Count successes into the report (add `retried: int = 0` and `extracted: int = 0` to `DreamConsolidationReport` if it is a model you can extend; otherwise log them).
+  3. `tick` uses `get_clock().now()` instead of `datetime.now(timezone.utc)`.
+- **Tests:** on the embedded engine with the runner and a fake extraction client (scripted reply): a pending episode older than the minimum age is extracted and its facts written; a fresh one and a `failed` one are left alone; a failing client increments `extraction_attempts` and leaves the episode pending until the maximum; the batch cap holds; flag off: nothing happens (ablation).
+- **Done when:** the new tests pass and the full suite passes (the supervisor runs the suite).
+
+---
+
+**W4-09 Archive, do not delete**
+- **PRD:** memory 7.4
+- **Tier:** bulk
+- **Files:** `scripts/schema_v2.surql` (`archived` bool DEFAULT false on `fact` and `episode`, with an index on each), `src/aura/engines/dreaming/engine.py`, `src/aura/engines/recall/channels.py` and `src/aura/engines/recall/engine.py` (every v2 read path), `src/aura/config.py`, new `tests/scenarios/test_dreaming_v2_archive_embedded.py`
+- **Change:**
+  1. Config: `dreaming_archive_superseded_days: int = 90`, `dreaming_archive_ephemeral_days: int = 7`.
+  2. A dream phase (flag `dreaming_v2_enabled`): `UPDATE fact SET archived = true WHERE valid_to IS NOT NONE AND valid_to < $cutoff AND archived = false AND pinned = false`; `UPDATE episode SET archived = true WHERE ephemeral = true AND recorded_at < $cutoff AND archived = false`. Nothing in the v2 tables is ever deleted by dreaming.
+  3. Every v2 read excludes archived rows: `_fact_filter_clause` (dense, lexical, entity, graph results), the temporal channel (which keeps superseded facts but not archived ones), the graph loader's node set, and the recall tools' `timeline`, `evidence` and `what_changed` (`what_changed` keeps the chain but marks an archived link "(archived)" rather than dropping it, so history stays explainable). `evidence` on an archived episode still returns it (the evidence is the point).
+- **Tests:** a superseded fact 91 days old is archived and a pinned one is not; a superseded fact 89 days old is not; an ephemeral episode 8 days old is archived, a non-ephemeral one is not; an archived fact is found by no channel, including temporal with a matching range; `what_changed` shows it marked; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-10 Themes: communities, summaries, prioritised replay**
+- **PRD:** memory 7.2 and 7.3
+- **Tier:** frontier
+- **Depends on:** W4-08
+- **Files:** new `src/aura/engines/dreaming/themes.py`, `src/aura/engines/dreaming/engine.py`, `scripts/schema_v2.surql` (`theme`: add `visibility` string, `embedding`, `updated_at`, `fact_count`; new relation `member_of` fact -> theme; `entity`: add `summary_updated_at` option<datetime>), `src/aura/config.py`, new `tests/unit/test_dream_themes.py`, new `tests/scenarios/test_dreaming_v2_themes_embedded.py`
+- **Change:**
+  1. Prioritised replay: the facts considered in a cycle are the top `dreaming_replay_batch = 200` current, unarchived facts by `salience * exp(-age_days / dreaming_replay_recency_days)` with `dreaming_replay_recency_days = 14`, plus every fact recorded since the last cycle.
+  2. Communities (pure function in `themes.py`, no I/O): weighted label propagation (deterministic: fixed iteration order, ties broken by smallest label) over the fact-entity graph built from `about` and `co_used` among the replayed facts and their neighbours, per visibility (a theme never mixes visibilities). Keep communities with at least `dreaming_theme_min_facts = 4` facts.
+  3. For each community, match an existing theme when at least half of its members are already `member_of` that theme (update it), otherwise create one; write a summary of at most `dreaming_theme_summary_words = 80` words with one model call per changed theme (prompt with the member facts' content only), embed it, and set `member_of` edges. Cap the model calls per cycle with `dreaming_theme_max_per_cycle = 10`.
+  4. Entity summaries: for entities with facts recorded after their `summary_updated_at`, rewrite `summary` from their current facts (one call each, capped by `dreaming_entity_summary_max_per_cycle = 10`), per visibility: only owner-visible facts go into the stored summary (the summary is a field on a shared entity, so it must not carry guild or private facts).
+- **Tests:** label propagation on a hand-built graph (two clusters joined by one weak edge come out as two communities; deterministic across runs); replay ordering; a theme is created once and updated, not duplicated, on the next cycle; no theme mixes visibilities; the entity summary ignores guild and private facts; the per-cycle caps hold; ablation. Use a scripted fake model client, never a real one.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-11 Theme recall**
+- **PRD:** memory 7.3 (themes as a source for long-topic questions; M6 gate "long-topic probes pass")
+- **Tier:** frontier
+- **Depends on:** W4-10
+- **Files:** `src/aura/engines/recall/channels.py`, `src/aura/engines/recall/engine.py`, `src/aura/config.py`, new `tests/scenarios/test_recall_themes_embedded.py`
+- **Change:** flag `recall_themes_enabled: bool = False`. After fusion on the fact path: a theme qualifies when it is visible in the venue and either its embedding is within `recall_theme_min_similarity = 0.55` of the query embedding, or at least `recall_theme_min_members = 2` of the fused facts are `member_of` it. At most `recall_theme_k = 1` theme is rendered, as a `<theme>` line at the top of the memories block (counted in the token budget like the facts, deduplicated by the existing assembly); its member facts keep their own lines. One batched query; no model call.
+- **Tests:** a broad question ("how is the house renovation going?") over twelve renovation facts spread across weeks gets the theme line; a guild venue never gets an owner theme; the token budget still holds; ablation.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**W4-12 M6 probes: long topics and 90 simulated days**
+- **PRD:** memory M6 gate ("long-topic probes pass, memory stable over 90 simulated days")
+- **Tier:** bulk
+- **Depends on:** W4-08..W4-11
+- **Files:** new `tests/scenarios/test_memory_m6_embedded.py`, new `docs/metrics/m6.md`
+- **Change:** through the runner with every M3 to M6 flag on, a scripted fake extraction client and a fake model client for summaries: 90 simulated days, a few turns a day across three long topics, a handful of updated facts, ephemeral chatter, and a dream cycle every simulated night. Probes at day 30, 60 and 90: five long-topic questions (answered when the topic's theme line or at least two of its facts are in the memories block), five single-fact questions from the first week (the fact still recalled), and the updated-fact probes from M4 (the newest value present, the old one absent). Stability numbers: facts, archived facts, themes, entities and episodes per probe day (bounded growth: themes do not multiply for an unchanged topic). Record to `docs/metrics/m6.md` only when `RECORD_BASELINE=1` (`write_baseline` in `tests/conftest.py`).
+- **Tests:** at least 4 of 5 long-topic and 5 of 5 single-fact probes on each probe day; updated facts correct; theme count for the three topics stays at three or fewer per visibility.
+- **Done when:** the tests pass and the full suite passes; the supervisor records the metrics.
+
+---
+
 
 ## 5. Later waves
 
