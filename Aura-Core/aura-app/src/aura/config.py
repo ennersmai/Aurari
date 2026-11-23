@@ -1298,6 +1298,26 @@ class Settings(BaseSettings):
                     "graphs, i.e. Titan), the plan_task tool is offered and callable. "
                     "Off means the tool list is exactly as before.",
     )
+    task_graph_parallel: int = Field(
+        default=3,
+        validation_alias="AURA_TASK_GRAPH_PARALLEL",
+        description="Task graph scheduler: research and think nodes that may run at once "
+                    "(code nodes have their own limit of 1, D4).",
+        ge=1,
+        le=16,
+    )
+    task_research_model: str = Field(
+        default="",
+        validation_alias="AURA_TASK_RESEARCH_MODEL",
+        description="Model for research nodes of a task graph; empty means the active L5 model.",
+    )
+    task_node_report_max_tokens: int = Field(
+        default=800,
+        validation_alias="AURA_TASK_NODE_REPORT_MAX_TOKENS",
+        description="A task node's report is cut to this many tokens (estimate) with a marker; "
+                    "the full transcript stays on the node record.",
+        ge=1,
+    )
     tier_overrides_path: str = Field(
         default=".aura/tier_overrides.json",
         validation_alias="AURA_TIER_OVERRIDES_PATH",

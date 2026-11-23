@@ -102,6 +102,11 @@ async def test_plan_task_end_to_end_on_real_schema(db, monkeypatch, tmp_path):
     from aura.executor import task_graph as tg
 
     monkeypatch.setattr(tg, "get_task_graph_store", lambda: store)
+    from aura.executor import task_scheduler as ts
+
+    started: list[str] = []  # the scheduler would call real models; its tests are in the unit suite
+    monkeypatch.setattr(ts, "get_task_scheduler",
+                        lambda: type("S", (), {"start": staticmethod(started.append)})())
     result = await plan_task.run({
         "goal": "g", "_requester_role": "owner",
         "nodes": [
@@ -117,3 +122,50 @@ async def test_plan_task_end_to_end_on_real_schema(db, monkeypatch, tmp_path):
     board = await store.list_blackboard(result["graph_id"])
     assert [e.kind for e in board] == ["plan"] and '"goal": "g"' in board[0].content
     reset_tier_cache()
+
+
+async def test_scheduler_statuses_persist(db, monkeypatch):
+    """P2-09: node and graph statuses, transcript, spent_usd and recovery on the real schema."""
+    from aura.executor import task_scheduler as ts
+
+    monkeypatch.setattr(settings, "task_graphs_enabled", True)
+    monkeypatch.setattr(settings, "l3_native_tools", False)
+
+    class LLM:
+        async def complete(self, messages, model, **kw):
+            if "analyst" in messages[0]["content"]:
+                return "the decision"
+            return "the report"
+
+    class Exec:
+        def extract_tool_calls(self, text):
+            return []
+
+        async def execute_and_feedback(self, calls, **kw):
+            return ""
+
+    store = TaskGraphStore(db)
+    from aura.executor import task_graph as tg
+
+    monkeypatch.setattr(tg, "_store", store)  # recover_interrupted_graphs uses the singleton
+    sched = ts.TaskGraphScheduler(store=store, llm_client=LLM(), executor=Exec())
+    graph = await store.create_graph("g", _nodes(), 1.0, 30)  # r1 -> t1 -> c1 (code)
+    sched.start(graph.id)
+    await sched.wait(graph.id)
+
+    by_id = {n.id: n for n in await store.list_nodes(graph.id)}
+    assert (by_id["r1"].status, by_id["t1"].status, by_id["c1"].status) == ("done", "done", "failed")
+    assert by_id["r1"].report == "the report" and "the report" in by_id["r1"].transcript
+    assert by_id["t1"].transcript == "the decision"
+    assert by_id["c1"].report == "failed: " + ts.CODE_NODE_REASON
+    assert (await store.get_graph(graph.id)).status == "partial"
+    board = await store.list_blackboard(graph.id)
+    assert [(e.kind, e.content) for e in board] == [("research", "the report"), ("think", "the decision")]
+
+    await store.update_graph(graph.id, status=GraphStatus.RUNNING, spent_usd=0.25)
+    await store.update_node_status(graph.id, "c1", NodeStatus.RUNNING)
+    recovered = await ts.recover_interrupted_graphs()
+    assert [g.id for g in recovered] == [graph.id]
+    got = await store.get_graph(graph.id)
+    assert got.status == "interrupted" and got.spent_usd == 0.25
+    assert {n.id: n.status for n in await store.list_nodes(graph.id)}["c1"] == "interrupted"

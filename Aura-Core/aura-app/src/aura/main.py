@@ -301,6 +301,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     interrupted = await task_queue.recover_interrupted_tasks()
     if interrupted:
         logger.warning(f"Recovered {len(interrupted)} interrupted task(s) from previous run")
+    if settings.task_graphs_enabled:
+        from aura.executor.task_scheduler import recover_interrupted_graphs
+
+        interrupted_graphs = await recover_interrupted_graphs()
+        if interrupted_graphs:
+            logger.warning(f"Marked {len(interrupted_graphs)} running task graph(s) interrupted; the owner can resume them")
     task_routes.set_dependencies(task_queue)
     logger.info("✓ Task Queue initialized")
 

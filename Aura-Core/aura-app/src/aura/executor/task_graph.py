@@ -55,6 +55,7 @@ def _to_node(row: dict[str, Any]) -> TaskNode:
         budget_share=row.get("budget_share", 1.0),
         status=row.get("status", "pending"),
         report=row.get("report"),
+        transcript=row.get("transcript"),
         artifacts=list(row.get("artifacts") or []),
     )
 
@@ -138,8 +139,9 @@ class TaskGraphStore:
         status: NodeStatus,
         report: str | None = None,
         artifacts: list[str] | None = None,
+        transcript: str | None = None,
     ) -> None:
-        """Set a node's status; report and artifacts only when given."""
+        """Set a node's status; report, artifacts and transcript only when given."""
         sets = ["status = $status", "updated_at = $now"]
         params: dict[str, Any] = {
             "rid": _node_rid(graph_id, node_id),
@@ -152,7 +154,46 @@ class TaskGraphStore:
         if artifacts is not None:
             sets.append("artifacts = $artifacts")
             params["artifacts"] = list(artifacts)
+        if transcript is not None:
+            sets.append("transcript = $transcript")
+            params["transcript"] = transcript
         await self.db.query(f"UPDATE $rid SET {', '.join(sets)}", params)
+
+    async def update_graph(
+        self,
+        graph_id: str,
+        status: GraphStatus | None = None,
+        spent_usd: float | None = None,
+    ) -> None:
+        """Set a graph's status and/or spent_usd (P2-09)."""
+        sets = ["updated_at = $now"]
+        params: dict[str, Any] = {"rid": _rid(graph_id), "now": get_clock().now()}
+        if status is not None:
+            sets.append("status = $status")
+            params["status"] = GraphStatus(status).value
+        if spent_usd is not None:
+            sets.append("spent_usd = $spent")
+            params["spent"] = float(spent_usd)
+        await self.db.query(f"UPDATE $rid SET {', '.join(sets)}", params)
+
+    async def list_graphs(self, status: GraphStatus) -> list[TaskGraph]:
+        rows = extract_rows(
+            await self.db.query(
+                "SELECT * FROM task_graph WHERE status = $status",
+                {"status": GraphStatus(status).value},
+            )
+        )
+        return [_to_graph(r) for r in rows]
+
+    async def recover_interrupted_graphs(self) -> list[TaskGraph]:
+        """Boot recovery (P2-09): running graphs and their running nodes become interrupted."""
+        graphs = await self.list_graphs(GraphStatus.RUNNING)
+        for graph in graphs:
+            for node in await self.list_nodes(graph.id):
+                if node.status == NodeStatus.RUNNING.value:
+                    await self.update_node_status(graph.id, node.id, NodeStatus.INTERRUPTED)
+            await self.update_graph(graph.id, status=GraphStatus.INTERRUPTED)
+        return graphs
 
     async def write_blackboard(
         self,

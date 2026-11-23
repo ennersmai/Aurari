@@ -62,6 +62,7 @@ DEFINE FIELD IF NOT EXISTS budget_share     ON TABLE task_node TYPE float DEFAUL
 DEFINE FIELD IF NOT EXISTS status           ON TABLE task_node TYPE string DEFAULT "pending"
     ASSERT $value IN ["pending", "running", "done", "failed", "skipped", "interrupted", "ready_to_merge"];
 DEFINE FIELD IF NOT EXISTS report           ON TABLE task_node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS transcript       ON TABLE task_node TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS artifacts        ON TABLE task_node TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS created_at       ON TABLE task_node TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE task_node TYPE datetime;

@@ -49,6 +49,12 @@ def _on(monkeypatch, tmp_path):
 def store(monkeypatch):
     s = FakeStore()
     monkeypatch.setattr(task_graph_module, "get_task_graph_store", lambda: s)
+    from aura.executor import task_scheduler
+
+    started: list[str] = []
+    monkeypatch.setattr(task_scheduler, "get_task_scheduler",
+                        lambda: type("S", (), {"start": staticmethod(started.append)})())
+    s.started = started
     return s
 
 

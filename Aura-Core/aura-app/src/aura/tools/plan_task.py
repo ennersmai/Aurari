@@ -2,8 +2,8 @@
 
 Titan only (D3), owner only (D9, D13), behind ``task_graphs_enabled``. The tool
 validates the plan, stores it with status "planned" and returns the graph id at
-once. Nothing executes here: the scheduler is P2-09 (research, think) and P2-10
-(code).
+once. Nothing executes in the call: the scheduler (P2-09: research, think; code is
+P2-10) is started in the background right after the graph is stored.
 """
 
 import logging
@@ -219,7 +219,7 @@ def validate_plan(arguments: Dict[str, Any], profile: Any) -> tuple[list[TaskNod
 
 
 async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
-    """Validate and store a task graph; return its id. Executes nothing."""
+    """Validate and store a task graph, start its scheduler, return its id."""
     if not (settings.task_graphs_enabled and settings.tier_profiles_enabled):
         return _error(
             "Task graphs are turned off (AURA_TASK_GRAPHS_ENABLED and AURA_TIER_PROFILES_ENABLED "
@@ -274,9 +274,17 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     logger.info("plan event: graph=%s nodes=%d budget_usd=%s budget_minutes=%s",
                 graph.id, len(nodes), budget_usd, budget_minutes)
 
+    # Run it in the background (P2-09). No model call here: the tool returns at once.
+    try:
+        from aura.executor.task_scheduler import get_task_scheduler
+
+        get_task_scheduler().start(graph.id)
+    except Exception as exc:
+        logger.error("could not start the scheduler for %s: %s", graph.id, exc)
+
     return {
         "status": "PLANNED",
-        "message": f"Task graph planned. Graph ID: {graph.id}. Nothing has run yet.",
+        "message": f"Task graph planned. Graph ID: {graph.id}. It is running in the background.",
         "graph_id": graph.id,
         "node_count": len(nodes),
         "success": True,

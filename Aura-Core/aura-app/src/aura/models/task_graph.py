@@ -49,6 +49,7 @@ class TaskNode(BaseModel):
     budget_share: float = Field(default=1.0, gt=0.0, le=1.0)
     status: NodeStatus = NodeStatus.PENDING
     report: str | None = None
+    transcript: str | None = None  # full node transcript; never fed to other nodes or L3
     artifacts: list[str] = Field(default_factory=list)
 
     @field_validator("success_criteria", "brief")
