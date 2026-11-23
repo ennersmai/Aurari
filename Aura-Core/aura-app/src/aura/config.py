@@ -1042,6 +1042,12 @@ class Settings(BaseSettings):
         validation_alias="AURA_SKILLS_V2_ENABLED",
         description="Parent flag for skill documents, versions and selection (G5, G6).",
     )
+    skill_dup_similarity: float = Field(
+        default=0.85,
+        validation_alias="AURA_SKILL_DUP_SIMILARITY",
+        description="Cosine of when_to_use embeddings at or above which a proposal "
+        "becomes a new version of the existing skill (G5-02).",
+    )
 
     recall_feedback_enabled: bool = Field(
         default=False,
@@ -1761,6 +1767,76 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="AURA_DISMISSAL_LEARNING_ENABLED",
         description="Learn from dismissed items (B5).",
+    )
+
+    # Agenda priority decay per hour, per kind (B1-02)
+    agenda_decay_per_hour_finding: float = Field(
+        default=0.02,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_FINDING",
+        description="Hourly exponential decay rate of agenda priority for kind finding.",
+    )
+    agenda_decay_per_hour_task_done: float = Field(
+        default=0.01,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_TASK_DONE",
+        description="Hourly exponential decay rate of agenda priority for kind task_done.",
+    )
+    agenda_decay_per_hour_needs_decision: float = Field(
+        default=0.0,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_NEEDS_DECISION",
+        description="Hourly exponential decay rate of agenda priority for kind needs_decision.",
+    )
+    agenda_decay_per_hour_question_for_you: float = Field(
+        default=0.01,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_QUESTION_FOR_YOU",
+        description="Hourly exponential decay rate of agenda priority for kind question_for_you.",
+    )
+    agenda_decay_per_hour_reminder: float = Field(
+        default=0.0,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_REMINDER",
+        description="Hourly exponential decay rate of agenda priority for kind reminder.",
+    )
+    agenda_decay_per_hour_observation: float = Field(
+        default=0.05,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_DECAY_PER_HOUR_OBSERVATION",
+        description="Hourly exponential decay rate of agenda priority for kind observation.",
+    )
+
+    agenda_fallback_seconds: float = Field(
+        default=300.0,
+        gt=0.0,
+        validation_alias="AURA_AGENDA_FALLBACK_SECONDS",
+        description="Fallback check interval for stuck agenda items (delivery is event-driven).",
+    )
+    agenda_message_priority: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        validation_alias="AURA_AGENDA_MESSAGE_PRIORITY",
+        description="Effective priority at or above which a delivered agenda item publishes aura_message.",
+    )
+
+    aura_ws_aura_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_WS_AURA_ENABLED",
+        description="Enable the /ws/aura owner channel. Off: the socket closes with 1008 and publish sends nothing.",
+    )
+    aura_channel_buffer: int = Field(
+        default=200,
+        ge=1,
+        validation_alias="AURA_CHANNEL_BUFFER",
+        description="Recent channel events kept for catch-up (ring buffer size).",
+    )
+    aura_channel_ping_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        validation_alias="AURA_CHANNEL_PING_SECONDS",
+        description="Idle seconds before /ws/aura sends a ping.",
     )
 
     # =========================================================================

@@ -4,11 +4,27 @@ Handles the lifecycle of permission decisions: create, list pending,
 answer (allow/deny), and expire decisions for closed sessions.
 """
 
+import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from aura.clock import get_clock
 from aura.db.client import get_db_client
+
+logger = logging.getLogger(__name__)
+
+# Post-answer hooks for ``needs_decision`` items, keyed by decision ``action``.
+# A hook is ``async fn(service, decision, allow, decided_by, trusted)``. Later
+# cards register theirs with ``register_answer_hook`` instead of editing answer().
+AnswerHook = Callable[["DecisionService", dict, bool, str, bool], Awaitable[None]]
+_ANSWER_HOOKS: dict[str, list[AnswerHook]] = {}
+
+
+def register_answer_hook(action: str, fn: AnswerHook) -> None:
+    """Register ``fn`` to run after a ``needs_decision`` item with ``action`` is answered."""
+    hooks = _ANSWER_HOOKS.setdefault(action, [])
+    if fn not in hooks:
+        hooks.append(fn)
 
 
 class DecisionService:
@@ -71,6 +87,8 @@ class DecisionService:
         }
 
         result = await self._db.create("decision", data)
+        if isinstance(result, dict):  # the embedded engine returns the record itself
+            return result
         return result[0] if result else data
 
     async def pending(self) -> list[dict[str, Any]]:
@@ -84,13 +102,16 @@ class DecisionService:
         )
         return result
 
-    async def answer(self, decision_id: str, allow: bool, decided_by: str) -> dict[str, Any]:
+    async def answer(
+        self, decision_id: str, allow: bool, decided_by: str, trusted: bool = False
+    ) -> dict[str, Any]:
         """Answer a pending decision and notify OpenCode.
 
         Args:
             decision_id: The decision record ID (e.g., "decision:abc123")
             allow: True to allow, False to deny
             decided_by: Identifier of who made the decision (e.g., "owner")
+            trusted: Passed to post-answer hooks only (G5-02 "approve as trusted")
 
         Returns:
             The updated decision record
@@ -126,6 +147,11 @@ class DecisionService:
         # Then call the OpenCode client to answer the permission
         if decision.get("kind") == "needs_decision":
             # A blocker item (G4-02) has no OpenCode permission request to answer.
+            for hook in list(_ANSWER_HOOKS.get(str(decision.get("action")), [])):
+                try:
+                    await hook(self, decision, allow, decided_by, trusted)
+                except Exception:
+                    logger.exception("answer hook failed for %s", decision_id)
             updated = await self._db.select(decision_id)
             return updated[0] if updated else {**decision, **update_data}
 
@@ -144,6 +170,20 @@ class DecisionService:
         if not rows:
             return None
         return rows[0] if isinstance(rows, list) else rows
+
+    async def find_pending(self, action: str, request_id: str | None = None) -> list[dict[str, Any]]:
+        """Pending ``needs_decision`` items for ``action`` (optionally one request id)."""
+        sql = ("SELECT * FROM decision WHERE kind = 'needs_decision' AND action = $action "
+               "AND status = 'pending'")
+        params: dict[str, Any] = {"action": action}
+        if request_id is not None:
+            sql += " AND request_id = $rid"
+            params["rid"] = request_id
+        return await self._db.query(sql + " ORDER BY created_at ASC", params)
+
+    async def update_pending(self, decision_id: Any, patch: dict[str, Any]) -> None:
+        """Change message, request_id or resources of a still-pending decision."""
+        await self._db.merge(decision_id, patch)
 
     async def reopen(self, decision_id: Any, message: str) -> None:
         """Put an answered decision back to pending with a new message (P2-10).

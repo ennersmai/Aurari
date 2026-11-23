@@ -31,12 +31,15 @@ from aura.api.routes import tasks as task_routes
 from aura.api.routes import cognition as cognition_routes
 from aura.api.routes import inference_config as inference_config_routes
 from aura.api.routes import tiers as tiers_routes
+from aura.api.routes import skills as skills_routes
+from aura.api.routes import agenda as agenda_routes
+from aura.api.routes import aura_events as aura_events_routes
 from aura.api.routes import discord as discord_routes
 from aura.discord.bot import bot_instance as discord_bot
 from aura.executor.task_queue import get_task_queue
 from aura.orchestrator.session_runtime import get_session_runtime
 from aura.logging_config import setup_logging_filters
-from aura.api.websocket import emotion_stream_endpoint, broadcast_avatar_state
+from aura.api.websocket import emotion_stream_endpoint, broadcast_avatar_state, aura_channel_endpoint
 from aura.api.trace_socket_manager import get_trace_manager
 from aura.avatar import AvatarStateMachine
 from aura.config import settings
@@ -232,6 +235,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await dreaming_engine.start()
     logger.info("✓ Dreaming Engine started")
 
+    # Agenda deliverer (B1-05): event-driven timer plus slow fallback
+    from aura.autonomy.delivery import get_deliverer
+
+    await get_deliverer().start()
+
     # Initialize LLM Layers and Orchestrator
     # Use UnifiedLLMClient if local LLM is enabled (routes to Ollama or OpenRouter per model)
     if settings.local_llm_enabled:
@@ -383,6 +391,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Close LLM client
     await llm_layers.close()
 
+    try:
+        from aura.autonomy.delivery import get_deliverer as _gd
+
+        await _gd().stop()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Agenda deliverer stop failed: {e}")
+
     # Stop engines (in reverse order)
     if dreaming_engine:
         await dreaming_engine.stop()
@@ -513,6 +528,9 @@ app.include_router(tiers_routes.router, prefix="/system", tags=["tiers"])
 app.include_router(discord_routes.router, tags=["discord"])
 app.include_router(decisions_routes.router, tags=["decisions"])
 app.include_router(delegations_routes.router, tags=["delegations"])
+app.include_router(skills_routes.router, tags=["skills"])
+app.include_router(aura_events_routes.router, tags=["aura-events"])
+app.include_router(agenda_routes.router, tags=["agenda"])
 
 # WebSocket endpoints
 @app.websocket("/ws/emotion")
@@ -579,6 +597,12 @@ async def websocket_emotion_stream_v1(websocket: WebSocket) -> None:
         pass
     finally:
         logger.info("VRM emotion stream disconnected (v1)")
+
+
+@app.websocket("/ws/aura")
+async def websocket_aura_channel(websocket: WebSocket) -> None:
+    """Owner event channel (B1-04)."""
+    await aura_channel_endpoint(websocket)
 
 
 @app.websocket("/v1/stream/traces")

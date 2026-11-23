@@ -4,6 +4,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+import numpy as np
 from surrealdb import RecordID
 
 from aura.clock import get_clock
@@ -17,7 +18,7 @@ _STATES = ("candidate", "trusted", "retired")
 _VERSION_RETRIES = 3
 
 
-def _rid_str(value: Any) -> str | None:
+def rid_str(value: Any) -> str | None:
     if value is None:
         return None
     if isinstance(value, RecordID):
@@ -27,15 +28,15 @@ def _rid_str(value: Any) -> str | None:
 
 def _to_doc(row: dict[str, Any]) -> SkillDoc:
     data = dict(row)
-    data["id"] = _rid_str(data.get("id")) or ""
-    data["node"] = _rid_str(data.get("node"))
+    data["id"] = rid_str(data.get("id")) or ""
+    data["node"] = rid_str(data.get("node"))
     return SkillDoc(**data)
 
 
 def _to_version(row: dict[str, Any]) -> SkillVersion:
     data = dict(row)
-    data["id"] = _rid_str(data.get("id")) or ""
-    data["skill"] = _rid_str(data.get("skill")) or ""
+    data["id"] = rid_str(data.get("id")) or ""
+    data["skill"] = rid_str(data.get("skill")) or ""
     return SkillVersion(**data)
 
 
@@ -191,7 +192,7 @@ class SkillStore:
                 "WHERE approved_at != NONE AND rejected = false"
             )
         )
-        ok = {_rid_str(r["skill"]) for r in approved}
+        ok = {rid_str(r["skill"]) for r in approved}
         return [d for d in docs if d.id in ok]
 
     async def _update(self, skill: str, patch: dict[str, Any]) -> None:
@@ -225,3 +226,54 @@ class SkillStore:
 
     async def touch_used(self, skill: str) -> None:
         await self._update(skill, {"last_used_at": get_clock().now()})
+
+    async def nearest_doc(self, embedding: list[float]) -> tuple[SkillDoc, float] | None:
+        """Nearest non-retired doc by cosine of ``when_embedding`` (computed in Python)."""
+        rows = extract_rows(
+            await self.db.query(
+                "SELECT * FROM skill_doc WHERE state != 'retired' AND when_embedding != NONE"
+            )
+        )
+        query = np.asarray(embedding, dtype=float)
+        qn = float(np.linalg.norm(query))
+        if qn == 0.0:
+            return None
+        best: tuple[dict[str, Any], float] | None = None
+        for row in rows:
+            emb = row.get("when_embedding")
+            if not emb or len(emb) != len(query):
+                continue
+            vec = np.asarray(emb, dtype=float)
+            vn = float(np.linalg.norm(vec))
+            if vn == 0.0:
+                continue
+            sim = float(np.dot(query, vec) / (qn * vn))
+            if best is None or sim > best[1]:
+                best = (row, sim)
+        return (_to_doc(best[0]), best[1]) if best else None
+
+    async def approve(
+        self, skill: str, version: int, by: str, trusted: bool = False
+    ) -> None:
+        """Owner approval: stamp ``approved_at``, make it active, keep the doc a
+        candidate (on trial) or make it ``trusted``."""
+        if await self.get_version(skill, version) is None:
+            raise ValueError(f"no version {version} for {skill}")
+        await self.db.query(
+            "UPDATE skill_version SET approved_at = $now, approved_by = $by, rejected = false "
+            "WHERE skill = $skill AND version = $version",
+            {"now": get_clock().now(), "by": by, "skill": to_record_id(skill),
+             "version": int(version)},
+        )
+        await self.set_active(skill, version)
+        if trusted:
+            await self.set_state(skill, "trusted")
+
+    async def reject(self, skill: str, version: int) -> None:
+        """Owner denial: the version is never offered again."""
+        if await self.get_version(skill, version) is None:
+            raise ValueError(f"no version {version} for {skill}")
+        await self.db.query(
+            "UPDATE skill_version SET rejected = true WHERE skill = $skill AND version = $version",
+            {"skill": to_record_id(skill), "version": int(version)},
+        )

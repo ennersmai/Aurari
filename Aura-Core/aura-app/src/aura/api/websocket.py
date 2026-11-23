@@ -61,6 +61,7 @@ class ConnectionManager:
 emotion_manager = ConnectionManager()
 chat_manager = ConnectionManager()
 avatar_manager = ConnectionManager()
+aura_manager = ConnectionManager()
 
 
 async def emotion_stream_endpoint(
@@ -196,3 +197,41 @@ async def broadcast_avatar_state(payload: dict[str, Any]) -> None:
         }
     )
 
+
+async def aura_channel_endpoint(websocket: WebSocket) -> None:
+    """Owner event channel (B1-04). Client may send ``hello`` (with ``last_seq``) and ``presence``."""
+    from aura.autonomy import channel
+    from aura.config import settings
+
+    if not settings.aura_ws_aura_enabled:
+        await websocket.close(code=1008)
+        return
+    await aura_manager.connect(websocket)
+    try:
+        while True:
+            try:
+                data = await asyncio.wait_for(
+                    websocket.receive_json(), timeout=settings.aura_channel_ping_seconds
+                )
+            except asyncio.TimeoutError:
+                try:
+                    await websocket.send_json(channel.ping_envelope())
+                except Exception:
+                    break
+                continue
+            if not isinstance(data, dict):
+                continue
+            kind = data.get("type")
+            if kind == "hello":
+                last = data.get("last_seq")
+                since = last if isinstance(last, int) and not isinstance(last, bool) else 0
+                for event in channel.events_since(since):
+                    await websocket.send_json(event)
+            elif kind == "presence":
+                channel.update_presence(data)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        logger.error(f"Error in aura channel WebSocket: {e}")
+    finally:
+        await aura_manager.disconnect(websocket)
