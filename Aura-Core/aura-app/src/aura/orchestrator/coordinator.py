@@ -39,7 +39,7 @@ from aura.models.goal import GoalContext, Goal
 from aura.models.learning import LearningContext
 from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
-from aura.orchestrator.tool_loop import NativeCalls, run_tool_loop
+from aura.orchestrator.tool_loop import NativeCalls, RoundUsage, run_tool_loop
 from aura.tiers import (
     TierProfile,
     active_profile,
@@ -1451,7 +1451,8 @@ Constraints:
 
         seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
 
-        async def _round(loop_input, round_idx):
+        async def _round(loop_input, round_idx, final=False):
+            # final: the closing call after a guard stopped the loop; no tools (P2-41).
             loop_context = SynthesisContext(
                 user_input=loop_input,
                 conversation_history=conversation_history or [],
@@ -1461,7 +1462,7 @@ Constraints:
                 goal_context=ctx.goal_context,
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
-                offered_tools=ctx.offered_tools,
+                offered_tools=None if final else ctx.offered_tools,
                 venue=ctx.venue,
                 prompt_notes=ctx.prompt_notes,
             )
@@ -1470,7 +1471,7 @@ Constraints:
                 loop_context,
                 max_history_messages=context_window_size,
                 reasoning_enabled=reasoning_enabled,
-                tools=ctx.offered_tools,
+                tools=None if final else ctx.offered_tools,
             )
             # --- Telemetry: L3 synthesis complete ---
             if isinstance(round_response, ModelTurn):
@@ -1489,8 +1490,14 @@ Constraints:
                     yield round_text
                 if round_response.tool_calls:
                     yield NativeCalls(round_response.tool_calls)
+                if round_response.cost:
+                    yield RoundUsage(round_response.cost)
             else:
                 yield round_text
+
+        async def _final(loop_input, round_idx):
+            async for item in _round(loop_input, round_idx, final=True):
+                yield item
 
         response = ""
 
@@ -1514,9 +1521,13 @@ Constraints:
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
             turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
+            generate_final=_final,
+            allow_task_graph=bool(ctx.tier_profile and ctx.tier_profile.allow_task_graph),
         ):
             if event.kind == "done":
                 response = event.text
+                if event.stats is not None:
+                    self._publish_trace("L3", "tool_loop_done", event.stats)
 
         # Emit reasoning_finished event for avatar state machine
         try:
@@ -1578,7 +1589,8 @@ Constraints:
 
         seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
 
-        async def _round(loop_input, round_idx):
+        async def _round(loop_input, round_idx, final=False):
+            # final: the closing call after a guard stopped the loop; no tools (P2-41).
             loop_context = SynthesisContext(
                 user_input=loop_input,
                 conversation_history=conversation_history or [],
@@ -1588,7 +1600,7 @@ Constraints:
                 goal_context=ctx.goal_context,
                 recent_critique=ctx.recent_critique,
                 packet=ctx.packet,
-                offered_tools=ctx.offered_tools,
+                offered_tools=None if final else ctx.offered_tools,
                 venue=ctx.venue,
                 prompt_notes=ctx.prompt_notes,
             )
@@ -1597,7 +1609,7 @@ Constraints:
             async for chunk in self.llm_layers.stream_l3_synthesis(
                 loop_context,
                 reasoning_enabled=reasoning_enabled,
-                tools=ctx.offered_tools,
+                tools=None if final else ctx.offered_tools,
             ):
                 if isinstance(chunk, str):
                     round_response += chunk
@@ -1621,9 +1633,14 @@ Constraints:
                     event = tool_failed(tool_name, retryable=False)
                 await self.emotion_engine.appraise(event)
 
+        async def _final(loop_input, round_idx):
+            async for item in _round(loop_input, round_idx, final=True):
+                yield item
+
         async for event in run_tool_loop(
             user_input=user_input,
             generate_round=_round,
+            generate_final=_final,
             tool_executor=self.tool_executor,
             requester_role=requester_role,
             venue=ctx.venue,
@@ -1631,7 +1648,10 @@ Constraints:
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
             turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
+            allow_task_graph=bool(ctx.tier_profile and ctx.tier_profile.allow_task_graph),
         ):
+            if event.kind == "done" and event.stats is not None:
+                self._publish_trace("L3", "tool_loop_done", event.stats)
             yield event
 
         # Emit reasoning_finished event for avatar state machine

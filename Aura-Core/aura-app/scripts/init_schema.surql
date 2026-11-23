@@ -236,6 +236,7 @@ DEFINE FIELD created ON task TYPE datetime;
 DEFINE FIELD completed ON task TYPE option<datetime>;
 DEFINE FIELD result ON task TYPE option<string>;
 DEFINE FIELD session_id ON task TYPE string DEFAULT "main";
+DEFINE FIELD delegated ON task TYPE option<bool>;
 DEFINE INDEX idx_task_session ON task FIELDS session_id, status;
 
 -- ============================================================================

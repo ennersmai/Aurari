@@ -35,6 +35,7 @@ class TaskQueueService:
         goal: str,
         workspace_path: str = "",
         session_id: str = "main",
+        delegated: bool = False,
     ) -> Task:
         """Create a new task and persist it immediately.
 
@@ -53,6 +54,7 @@ class TaskQueueService:
             workspace_path=workspace_path,
             task_memory_namespace=namespace,
             session_id=session_id,
+            delegated=delegated,
         )
 
         await self.db.create(task_id, task.model_dump(mode="json"))
@@ -158,6 +160,32 @@ class TaskQueueService:
                 {"limit": limit},
             )
         return [Task(**row) for row in (result or [])]
+
+    async def get_delegated_tasks(self, closed_limit: int = 50) -> list[Task]:
+        """Delegated tasks: every open one, plus the latest closed ones.
+
+        A delegated task is created by DelegationRunner with ``delegated``
+        true (its ``session_id`` then holds the OpenCode session id).
+        """
+        open_rows = await self.db.query(
+            """
+            SELECT * FROM task
+            WHERE delegated = true
+              AND status IN ['queued', 'running', 'paused', 'waiting_approval', 'needs_owner']
+            ORDER BY updated_at DESC
+            """
+        )
+        closed_rows = await self.db.query(
+            """
+            SELECT * FROM task
+            WHERE delegated = true
+              AND status IN ['complete', 'failed']
+            ORDER BY completed_at DESC
+            LIMIT $limit
+            """,
+            {"limit": closed_limit},
+        )
+        return [Task(**row) for row in (open_rows or []) + (closed_rows or [])]
 
     # =========================================================================
     # UPDATE — status transitions

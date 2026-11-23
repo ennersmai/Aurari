@@ -15,6 +15,15 @@ from aura.llm.tool_calls import (
 
 logger = logging.getLogger(__name__)
 
+
+def _usage_cost(data: Any) -> float:
+    """USD cost from an OpenRouter response (``usage.cost``), 0.0 when absent."""
+    try:
+        cost = data["usage"]["cost"]
+        return float(cost) if isinstance(cost, (int, float)) and cost >= 0 else 0.0
+    except (KeyError, TypeError, ValueError):
+        return 0.0
+
 # Retry configuration for transient errors
 MAX_RETRIES = 3
 BASE_BACKOFF_SECONDS = 2.0
@@ -222,6 +231,9 @@ class OpenRouterClient:
             "max_tokens": max_tokens,
             **kwargs,
         }
+        if kwargs.get("tools") is not None:
+            # Ask OpenRouter to report cost in the response usage (P2-41 cost budget).
+            payload.setdefault("usage", {"include": True})
 
         response = await self.client.post(
             f"{self.base_url}/chat/completions",
@@ -242,6 +254,7 @@ class OpenRouterClient:
                     tool_calls=parse_openai_tool_calls(
                         msg.get("tool_calls") if isinstance(msg, dict) else None
                     ),
+                    cost=_usage_cost(data),
                 )
             if content is None or (isinstance(content, str) and content.strip() == ""):
                 # Exponential fallback: content → reasoning → reasoning_details

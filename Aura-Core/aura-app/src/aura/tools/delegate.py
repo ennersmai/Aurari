@@ -86,6 +86,17 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
             "success": False,
         }
 
+    # Pause-all (G4-01): refuse new delegations; running sessions continue
+    from aura.executor.delegation import delegations_paused
+
+    if delegations_paused():
+        return {
+            "status": "ERROR",
+            "message": "Delegations are paused. No new delegation was started.",
+            "paused": True,
+            "success": False,
+        }
+
     # Validate arguments
     goal = arguments.get("goal", "").strip()
     workspace = arguments.get("workspace", "").strip()

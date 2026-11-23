@@ -2,7 +2,7 @@
 
 import logging
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -1342,10 +1342,51 @@ class Settings(BaseSettings):
     tool_loop_max_rounds: int = Field(
         default=5,
         validation_alias="AURA_TOOL_LOOP_MAX_ROUNDS",
-        description="Maximum tool loop rounds before stopping and asking the user to continue",
+        description="Maximum tool loop rounds before stopping and asking the user to continue. "
+                    "With tool_loop_budgets_enabled this is only a deprecated alias of "
+                    "tool_loop_safety_rounds.",
         ge=1,
         le=20,
     )
+    tool_loop_budgets_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_TOOL_LOOP_BUDGETS_ENABLED",
+        description="When true, the tool loop ends on time and cost budgets, the no-progress "
+                    "guard or the safety breaker instead of a round cap (P2-41). Off means "
+                    "tool_loop_max_rounds and the max-rounds suffix exactly.",
+    )
+    tool_loop_safety_rounds: int = Field(
+        default=40,
+        validation_alias="AURA_TOOL_LOOP_SAFETY_ROUNDS",
+        description="Safety breaker: rounds after which a budgeted tool loop stops and logs an incident",
+        ge=1,
+        le=1000,
+    )
+    tool_loop_default_budget_seconds: int = Field(
+        default=120,
+        validation_alias="AURA_TOOL_LOOP_DEFAULT_BUDGET_SECONDS",
+        description="Tool loop time budget per turn when no tier profile supplies one (Core value)",
+        ge=1,
+    )
+    tool_loop_default_budget_usd: float = Field(
+        default=0.20,
+        validation_alias="AURA_TOOL_LOOP_DEFAULT_BUDGET_USD",
+        description="Tool loop cost budget per turn when no tier profile supplies one (Core value); 0 disables",
+        ge=0.0,
+    )
+
+    @model_validator(mode="after")
+    def _max_rounds_feeds_safety_breaker(self) -> "Settings":
+        # AURA_TOOL_LOOP_MAX_ROUNDS is a deprecated alias of the safety setting (P2-41):
+        # explicitly set (env or .env) and the safety setting is not -> it feeds the breaker.
+        fields = self.model_fields_set
+        if "tool_loop_max_rounds" in fields and "tool_loop_safety_rounds" not in fields:
+            logging.getLogger(__name__).warning(
+                "AURA_TOOL_LOOP_MAX_ROUNDS is deprecated; use AURA_TOOL_LOOP_SAFETY_ROUNDS. "
+                "Using %d as the safety breaker.", self.tool_loop_max_rounds,
+            )
+            self.tool_loop_safety_rounds = self.tool_loop_max_rounds
+        return self
 
     # =========================================================================
     # OPENCODE SERVER Configuration (W3-27)
@@ -1422,6 +1463,24 @@ class Settings(BaseSettings):
         description="Default time budget in minutes for delegated tasks.",
         ge=1,
         le=1440,
+    )
+    # =========================================================================
+    # DELEGATION CONTROLS (G4-01)
+    # =========================================================================
+    delegation_guidance_max_chars: int = Field(
+        default=4000,
+        description="Longest guidance text the /delegations guidance route accepts.",
+        ge=1,
+    )
+    delegation_closed_list_limit: int = Field(
+        default=50,
+        description="How many closed delegations GET /delegations returns.",
+        ge=1,
+    )
+    delegation_list_steps_limit: int = Field(
+        default=20,
+        description="How many recent steps GET /delegations shows per task.",
+        ge=1,
     )
     policy_table: dict[str, dict[str, str]] = Field(
         default_factory=lambda: {

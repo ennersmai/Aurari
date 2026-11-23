@@ -23,6 +23,7 @@ class ModelTurn:
 
     text: str
     tool_calls: list[dict]
+    cost: float = 0.0  # USD for this call when the provider reports it (OpenRouter usage.cost)
 
 
 def to_openai_tools(records: Iterable[Any]) -> list[dict]:

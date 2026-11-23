@@ -27,6 +27,61 @@ from aura.models.work import WorkEvent
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Controls (G4-01): registry of running runners and the pause-all flag
+# ---------------------------------------------------------------------------
+
+# task_id -> runner, for runners whose session is live. An entry is added once
+# the task exists and removed when the monitor ends, on abort, or when run()
+# fails before the monitor starts, so it holds only running delegations.
+_RUNNERS: dict[str, "DelegationRunner"] = {}
+
+# "Pause all" blocks NEW delegations only. OpenCode has no session pause, so
+# running sessions carry on; this flag is checked at the delegate_work entry.
+_paused = False
+
+
+def _norm_id(task_id: Any) -> str:
+    """A record id without the angle brackets SurrealDB adds to digit-led keys."""
+    return str(task_id).replace("⟨", "").replace("⟩", "")
+
+
+def running_runners() -> list["DelegationRunner"]:
+    """A snapshot list of the runners that are registered (running)."""
+    return list(_RUNNERS.values())
+
+
+def get_runner(task_id: str) -> Optional["DelegationRunner"]:
+    """The registered runner for a task id, if any."""
+    return _RUNNERS.get(_norm_id(task_id))
+
+
+def delegations_paused() -> bool:
+    """True when new delegations are refused (running ones are unaffected)."""
+    return _paused
+
+
+def pause_all() -> None:
+    """Refuse new delegations. Running sessions continue (no OpenCode pause)."""
+    global _paused
+    _paused = True
+
+
+def resume_all() -> None:
+    """Allow new delegations again."""
+    global _paused
+    _paused = False
+
+
+def guidance_step(step_number: int, text: str) -> TaskStepRecord:
+    """The task step recording owner guidance sent into a session."""
+    return TaskStepRecord(
+        step_number=step_number,
+        step_type="guidance",
+        title="Owner guidance",
+        detail=text,
+    )
+
 
 @dataclass
 class DelegationConfig:
@@ -64,6 +119,73 @@ class DelegationRunner:
         self._tokens_used = 0
         self._start_time: Optional[datetime] = None
 
+    # -- controls (G4-01) ---------------------------------------------------
+
+    @property
+    def task_id(self) -> Optional[str]:
+        return self._task.task_id if self._task else None
+
+    @property
+    def session_id(self) -> Optional[str]:
+        return self._session_id
+
+    @property
+    def client(self) -> Optional[OpenCodeClient]:
+        return self._client
+
+    def base_url(self) -> Optional[str]:
+        """The managed server's base URL, or None if it is not up. No auth."""
+        process = getattr(self._client, "_process", None)
+        conn = getattr(process, "connection", None)
+        url = getattr(conn, "base_url", None)
+        return url if isinstance(url, str) else None
+
+    def budget_snapshot(self) -> dict[str, Any]:
+        elapsed = None
+        if self._start_time is not None:
+            elapsed = (get_clock().now() - self._start_time).total_seconds()
+        return {
+            "tokens_used": self._tokens_used,
+            "tokens_limit": self.config.tokens,
+            "elapsed_seconds": elapsed,
+            "minutes_limit": self.config.minutes,
+        }
+
+    def _unregister(self) -> None:
+        if self._task is not None and _RUNNERS.get(self._task.task_id) is self:
+            del _RUNNERS[self._task.task_id]
+
+    async def abort(self) -> None:
+        """Abort the session, stop monitoring, and fail the task."""
+        task_id = self.task_id
+        if task_id is None:
+            return
+        if self._client is not None and self._session_id:
+            try:
+                await self._client.abort(self._session_id)
+            except Exception as e:
+                logger.error(f"Failed to abort session {self._session_id}: {e}")
+        monitor = self._monitor_task
+        if monitor is not None and not monitor.done() and monitor is not asyncio.current_task():
+            monitor.cancel()
+            try:
+                await monitor
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.warning(f"Monitor ended with error during abort of {task_id}: {e}")
+        self._unregister()
+        await get_task_queue().fail_task(task_id, reason="aborted by owner")
+
+    async def send_guidance(self, text: str) -> None:
+        """Send guidance into the running session and record it as a step."""
+        if self._client is None or not self._session_id or self._task is None:
+            raise RuntimeError("delegation is not running")
+        await self._client.send(self._session_id, text)
+        step = guidance_step(len(self._task.steps) + 1, text)
+        await get_task_queue().persist_step(self._task.task_id, step)
+        self._task.steps.append(step)
+
     async def run(self) -> str:
         """Start the delegation and return the task ID."""
         # Emit delegation_running(true) event for avatar state machine
@@ -82,10 +204,19 @@ class DelegationRunner:
         self._task = await task_queue.create_task(
             goal=self.config.goal,
             workspace_path=self.config.workspace,
-            session_id="main",  # delegation tasks use main session for now
+            session_id="main",  # replaced by the OpenCode session id once started
+            delegated=True,
         )
         task_id = self._task.task_id
+        _RUNNERS[task_id] = self
+        try:
+            await self._start_session(task_queue, task_id, brief)
+        except BaseException:
+            self._unregister()
+            raise
+        return task_id
 
+    async def _start_session(self, task_queue: Any, task_id: str, brief: str) -> None:
         # 3. Ensure OpenCode is running and create session
         self._client = await self._get_client()
         workspace_path = self._resolve_workspace_path()
@@ -113,8 +244,6 @@ class DelegationRunner:
         # 5. Start background monitoring
         self._start_time = get_clock().now()
         self._monitor_task = asyncio.create_task(self._monitor())
-
-        return task_id
 
     async def _get_client(self) -> OpenCodeClient:
         """Get or create the OpenCode client."""
@@ -184,6 +313,7 @@ class DelegationRunner:
     async def _monitor(self) -> None:
         """Monitor the OpenCode event stream and manage the task lifecycle."""
         if not self._client or not self._session_id or not self._task:
+            self._unregister()
             return
 
         task_id = self._task.task_id
@@ -237,6 +367,7 @@ class DelegationRunner:
             logger.error(f"Delegation monitor error for {task_id}: {e}")
             await task_queue.fail_task(task_id, reason=f"Monitor error: {e}")
         finally:
+            self._unregister()
             # Emit delegation_running(false) event for avatar state machine
             try:
                 from aura.main import avatar_state_machine

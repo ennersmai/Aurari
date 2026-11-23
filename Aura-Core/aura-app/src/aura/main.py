@@ -15,6 +15,7 @@ from fastapi import APIRouter, status
 from aura.api.routes import chat as chat_routes
 from aura.api.routes import conversations as conversations_routes
 from aura.api.routes import decisions as decisions_routes
+from aura.api.routes import delegations as delegations_routes
 from aura.api.routes import emotion as emotion_routes
 from aura.api.routes import goal as goal_routes
 from aura.api.routes import learning as learning_routes
@@ -512,6 +513,7 @@ app.include_router(inference_config_routes.router, prefix="/system", tags=["infe
 app.include_router(tiers_routes.router, prefix="/system", tags=["tiers"])
 app.include_router(discord_routes.router, tags=["discord"])
 app.include_router(decisions_routes.router, tags=["decisions"])
+app.include_router(delegations_routes.router, tags=["delegations"])
 
 # WebSocket endpoints
 @app.websocket("/ws/emotion")

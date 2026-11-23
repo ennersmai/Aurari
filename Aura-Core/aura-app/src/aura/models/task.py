@@ -92,6 +92,10 @@ class Task(BaseModel):
         description="Session this task is scoped to. 'main' for the default session.",
     )
 
+    # Delegated to OpenCode (G4-01). Set only by DelegationRunner; identifies
+    # delegated tasks without guessing from session_id.
+    delegated: bool = Field(default=False, description="Task runs as an OpenCode delegation")
+
     # Memory isolation
     task_memory_namespace: str = Field(
         default="",
