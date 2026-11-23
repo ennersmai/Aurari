@@ -54,6 +54,8 @@ export interface ChatMessage {
   turnMeta?: { deep_reasoning: boolean; tier: string; route: string | null };
   /** P2-11: set on task graph reports (plan, progress, final, escalation). */
   meta?: { task_graph: string; kind: string; decision_id?: string } | null;
+  /** B1-07: an `aura_message` channel event (Aura started this). */
+  auraStarted?: boolean;
 }
 
 export interface EmotionalState {

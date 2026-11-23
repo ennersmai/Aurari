@@ -601,3 +601,54 @@ export const auraApi = new AuraApiService();
 
 export default auraApi;
 
+
+// ---------------------------------------------------------------------------
+// B1-07: agenda, owner controls and thumbs. Contract: api/routes/agenda.py, autonomy.py, chat.py.
+// ---------------------------------------------------------------------------
+export interface AgendaItem {
+  id: string; kind: string; content: string; refs: string[]; priority: number; venue?: string | null;
+  state: string; source?: string; created_at?: string | null; due_at?: string | null;
+  expires_at?: string | null; delivered_at?: string | null; resolved_at?: string | null;
+}
+export type AutonomyLevel = 'silent' | 'important' | 'open';
+export interface AutonomyState {
+  level: AutonomyLevel; muted_kinds: string[]; killed: boolean; killed_at: string | null;
+  quiet_hours?: { start: string | number; end: string | number; active: boolean };
+  autonomy_enabled?: boolean; workspace_enabled?: boolean;
+}
+
+async function b1Json<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const res = await fetch(`${API_URL}${path}`, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const e: any = new Error(`Request failed (${res.status})`);
+    e.status = res.status;
+    try { e.detail = (await res.json())?.detail; } catch { /* no body */ }
+    throw e;
+  }
+  return res.json();
+}
+
+export const agendaApi = {
+  list: async (): Promise<AgendaItem[]> => (await b1Json<{ items: AgendaItem[] }>('/agenda')).items,
+  ack: (id: string) => b1Json<AgendaItem>(`/agenda/${encodeURIComponent(id)}/ack`, 'POST'),
+  dismiss: (id: string) => b1Json<AgendaItem>(`/agenda/${encodeURIComponent(id)}/dismiss`, 'POST'),
+};
+
+export const autonomyApi = {
+  get: () => b1Json<AutonomyState>('/autonomy'),
+  setLevel: (level: AutonomyLevel) => b1Json<AutonomyState>('/autonomy/level', 'PUT', { level }),
+  mute: (kind: string) => b1Json<AutonomyState>('/autonomy/mute', 'POST', { kind }),
+  unmute: (kind: string) => b1Json<AutonomyState>('/autonomy/unmute', 'POST', { kind }),
+  kill: async (): Promise<AutonomyState> => (await b1Json<{ state: AutonomyState }>('/autonomy/kill', 'POST')).state,
+  resume: () => b1Json<AutonomyState>('/autonomy/resume', 'POST'),
+};
+
+/** POST /chat/outcome. The route is 404 when the outcome flag is off (error.status === 404). */
+export const outcomeApi = {
+  send: (messageId: string, signal: 'up' | 'down') =>
+    b1Json<{ experience_id: string; signal: string }>('/chat/outcome', 'POST', { message_id: messageId, signal }),
+};

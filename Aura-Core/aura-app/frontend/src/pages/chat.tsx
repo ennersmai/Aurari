@@ -33,6 +33,8 @@ import { ProgressGroup, groupTaskReports } from '@/components/chat/TaskReports';
 import { createTaskReportPoller } from '@/services/taskReportService';
 import { TierChip } from '@/components/chat/TurnMarkers';
 import { useActiveTier } from '@/hooks/useActiveTier';
+import { useAuraChannel } from '@/hooks/useAuraChannel';
+import { AgendaDrawer, useAgenda } from '@/components/agenda/AgendaDrawer';
 import NeuralSidebar from '@/components/neural/NeuralSidebar';
 import { useSocket } from '@/hooks/useSocket';
 import { useAppDispatch, useAppSelector } from '@/hooks/useRedux';
@@ -767,6 +769,8 @@ export default function ChatPage() {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const router = useRouter();
   const conversationId = router.query.id as string;
+  const conversationIdRef = useRef<string | undefined>(conversationId);
+  conversationIdRef.current = conversationId;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   // Add a ref to track if we've already joined this conversation
@@ -847,6 +851,41 @@ export default function ChatPage() {
   
   // P2-42: no reasoning toggles. The tier slider and the L1 route decide how much Aura thinks.
   const activeTier = useActiveTier();
+
+  // B1-07: owner event channel. `aura_message` events become assistant messages marked
+  // "Aura started this"; agenda and autonomy state feed the header drawer. Task-report
+  // polling below is unchanged.
+  const agenda = useAgenda();
+  const auraHandlers = useMemo(() => ({
+    ...agenda.handlers,
+    aura_message: (ev: { seq: number; payload: any }) => {
+      const p = ev.payload || {};
+      if (!p.content) return;
+      dispatch(addMessage({
+        id: `aura-${p.id ?? ev.seq}`,
+        content: String(p.content),
+        role: 'assistant',
+        timestamp: p.delivered_at || new Date().toISOString(),
+        conversationId: conversationIdRef.current || 'temp',
+        auraStarted: true,
+      }));
+    },
+  }), [agenda.handlers, dispatch]);
+  const { connected: auraConnected, sendPresence } = useAuraChannel(auraHandlers);
+  useEffect(() => {
+    if (!auraConnected) return;
+    let typing = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    sendPresence({ typing: false, active_view: 'chat' });
+    const onKey = () => {
+      typing = true;
+      sendPresence({ typing, active_view: 'chat' });
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { typing = false; sendPresence({ typing, active_view: 'chat' }); }, 6000);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => { window.removeEventListener('keydown', onKey); if (timer) clearTimeout(timer); };
+  }, [auraConnected, sendPresence]);
 
   // Cognitive Telemetry modal (L1/L2/L3 trace feed)
   const [telemetryOpen, setTelemetryOpen] = useState(false);
@@ -2301,6 +2340,7 @@ export default function ChatPage() {
 
                 {/* Read-only active tier chip. TODO(P2-14): open the Dashboard's Tiers section. */}
                 <TierChip tier={activeTier} onClick={() => router.push('/mission-control')} />
+                <AgendaDrawer agenda={agenda} />
 
               </Box>
               

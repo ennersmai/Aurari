@@ -8,6 +8,7 @@ import SpiralAvatar from '@/components/SpiralAvatar';
 import type { ChartJsConfig } from './ChartRenderer';
 import { DeepReasoningMarker } from './TurnMarkers';
 import { TaskGraphTag, EscalationControls } from './TaskReports';
+import { OutcomeThumbs } from './OutcomeThumbs';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -83,6 +84,14 @@ export default function ChatMessage({ message, isLastMessage = false, onViewChar
           </Typography>
           {!isUser && <DeepReasoningMarker meta={message.turnMeta} />}
           {!isUser && <TaskGraphTag meta={message.meta} />}
+          {!isUser && message.auraStarted && (
+            <Chip size="small" label="Aura started this" data-testid="aura-started"
+              sx={{ ml: 1, height: 16, fontSize: '0.55rem', color: 'rgba(192,156,88,0.9)', border: '1px solid rgba(192,156,88,0.3)', background: 'transparent' }} />
+          )}
+          {/* B1-07: thumbs on real replies only (not streaming, reports or Aura-started notes) */}
+          {!isUser && !message.auraStarted && !message.meta && message.id && message.id !== 'streaming' && (
+            <OutcomeThumbs messageId={message.id} />
+          )}
         </Box>
         
         <Paper
