@@ -1653,6 +1653,13 @@ IMPORTANT: Output an array of insight objects, not nested dicts.
             self.logger.error(f"Failed to log experience: {e}")
             raise
 
+    async def set_experience_outcome(self, experience_id: str, outcome: dict) -> None:
+        """Merge ``outcome`` into a logged experience's outcome (parameterised, one statement)."""
+        await self.db.query(
+            "UPDATE experience MERGE { outcome: $outcome } WHERE experience_id = $eid",
+            {"eid": experience_id, "outcome": outcome},
+        )
+
     async def _generate_embedding_later(self, exp_id: str, text: str) -> None:
         """Generate and save embedding in background."""
         try:

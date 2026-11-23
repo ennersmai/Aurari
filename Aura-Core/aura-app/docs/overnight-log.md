@@ -2750,3 +2750,26 @@ Wrote docs/opencode/subagents.md (no code changed). From the saved spec: subagen
 - FOR_MAI section 3 has the approval item. Step B waits for Mai.
 
 **Supervisor (2026-11-23), P2-11 + P2-14 A:** P2-11 accepted. There is no push channel, so the chat polls `GET /chat/task-reports` (unauthenticated like the rest of the API; graphs only exist in owner conversations, since plan_task is owner-only). Known limitation: after a reload, the plan message sorts above its own turn. P2-14 A: the doc is checked as complete (inventory, five sections with wireframes, move table, questions, API list). It also finds that `POST /local-ai/layer/config` (AIProviderPanel) writes only Lean-stack fields, a P2-02 miss on the write side; the doc's question 2 asks Mai whether to remove it or fix it. **Phase 2 Part 4 done** (P2-08..P2-11). Full suite: 1256 passed, 3 skipped; frontend 97 tests, build clean.
+
+## G5-01: Skill model v2 (schema, models, store, flag)
+- `scripts/schema_v2.surql` (appended "SKILLS V2" block, all IF NOT EXISTS): `skill_doc` (unique name, state and origin_speaker asserted, `when_embedding` option<array<float, 768>> with no HNSW index), `skill_version` (unique on skill, version), `skill_use` (indexes on turn_id, task_id). The old `skill` table is not changed; `skill_doc.node` is the optional link.
+- `models/learning.py`: `SkillDoc`, `SkillVersion`, `SkillUse`. `config.py`: `skills_v2_enabled` (False, `AURA_SKILLS_V2_ENABLED`) in its own SKILLS V2 block.
+- New `engines/learning/skill_store.py` `SkillStore`: `create_doc` (duplicate name raises ValueError), `add_version` (max+1, retries on index clash, optional `approved=True` stamps `approved_at`), `get_doc`, `get_version`, `list_versions`, `list_docs` (hides docs with no approved, non-rejected version unless `include_unapproved`), `set_state` (retired stamps `retired_at`), `set_active` (old active becomes `previous_version`), `touch_used`.
+- Tests: tests/unit/test_skill_store.py (8, embedded DB, every field read back).
+
+## G5-03: real per-turn outcome signal (T14)
+- New `engines/learning/outcomes.py` (`classify_outcome`, `track_turn_outcome`, `CORRECTION_MARKERS` module constant, in-memory ring per key, `reset_rings` for tests); `LearningEngine.set_experience_outcome` (one parameterised `UPDATE experience MERGE {outcome: $outcome} WHERE experience_id = $eid`); config "OUTCOME SIGNALS" block (`outcome_signals_enabled` and three numbers).
+- Coordinator: `_log_interaction_experience` now takes `speaker` and returns the experience id; flag on writes `{"signal": "unknown", "success": None}`, flag off the old `{"success": True}`. `_post_response_chain` calls `track_turn_outcome` right after logging (failure-isolated).
+- Ring key is `conversation_id`; the chain always has it only when the caller passes one, otherwise it falls back to `user:<user_id>`.
+- Embedding: no turn embedding is reachable in the chain, so one `embeddings.embed(user_input)` call per owner turn (flag on only, never an LLM). Rephrase is checked by word overlap (relative to the shorter message) or cosine.
+- Ring holds the last `outcome_rephrase_turns` owner turns, so a rephrase on the 3rd turn after still patches; the 4th does not. A correction marker patches only the immediately previous owner turn. A turn is patched at most once.
+- Explicit thumbs: no existing route carries it (`/insights/feedback` is insight application feedback), so `track_turn_outcome(explicit_feedback=)` and `classify_outcome(explicit_feedback=, task_tests_passed=)` take it as a parameter; nothing in the app calls it yet. `task_tests_passed` is for G5-04.
+- Tests: tests/unit/test_turn_outcomes.py (11, includes a real embedded DB check of the merge).
+
+## B1-01: behaviour config, the gate, owner controls, trace table
+- config.py "BEHAVIOUR (B1..B5)" block: `autonomy_default_level` (pattern-checked), `quiet_hours_start/end`, `autonomy_enabled`, `workspace_enabled`, `drives_enabled`, `goals_v2_enabled`, `curiosity_enabled`, `interruptibility_model_enabled`, `dismissal_learning_enabled` (all AURA_ aliases, flags default false). `outcomes_enabled` skipped: G5-03's `outcome_signals_enabled` is the flag. `app_timezone` already existed (alias `APP_TIMEZONE`, default UTC), unchanged.
+- New `scripts/schema_behavior.surql` (`autonomy_control`, `autonomy_trace`), added to the bootstrap list in main.py and to `_SCHEMA_FILES` in tests/scenarios/runner.py. main.py loads the controls singleton into the cache after bootstrap.
+- New `autonomy/controls.py` (async `may_initiate(kind, *, now, owner_created, source, refs)` returning `Decision`, cache with sync `is_killed()`, `reset_cache()`, `set_level/mute_kind/unmute_kind/set_killed`, `quiet_hours_active`), `autonomy/trace.py` (`record`, never raises). Quiet hours are not part of the gate order (card does not put them there). No router added (card lists none).
+- Tests: tests/unit/test_autonomy_controls.py (embedded DB, read-back, FakeClock in UTC, Paris and New York).
+
+**Supervisor (2026-11-23), G5-01 + G5-03 + B1-01:** Reviewed and accepted with no changes. G5-03's ring is capped at 256 conversations with 2 turns each. B1-01 dropped its own outcomes flag in favour of G5-03's `outcome_signals_enabled`; quiet hours are a helper outside the gate (B5-02 uses them for delivery). Full suite: 1296 passed, 3 skipped.

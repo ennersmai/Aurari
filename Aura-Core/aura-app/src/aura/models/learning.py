@@ -191,3 +191,64 @@ class LearningContext(BaseModel):
     mastery_level: float = Field(default=0.0, ge=0.0, le=1.0)
     emotional_alignment: dict[str, float] = Field(default_factory=dict)
 
+
+
+class SkillDoc(BaseModel):
+    """A skill document (G5-01, PRD agency 6.1). Body lives in SkillVersion."""
+
+    id: str = ""
+    name: str
+    when_to_use: str
+    tags: list[str] = Field(default_factory=list)
+    state: Literal["candidate", "trusted", "retired"] = "candidate"
+    active_version: int | None = None
+    previous_version: int | None = None
+    origin_speaker: Literal["owner", "guest"] = "owner"
+    workspace: str | None = None
+    node: str | None = None
+    when_embedding: list[float] | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    last_used_at: datetime | None = None
+    retired_at: datetime | None = None
+    flagged: str | None = None
+
+
+class SkillVersion(BaseModel):
+    """One immutable version of a skill document, with its statistics."""
+
+    id: str = ""
+    skill: str
+    version: int
+    body: str
+    tools: list[str] = Field(default_factory=list)
+    examples: list[str] = Field(default_factory=list)
+    pitfalls: list[str] = Field(default_factory=list)
+    source: Literal["taught", "distilled", "corrected", "imported"]
+    source_task: str | None = None
+    change_note: str | None = None
+    approved_at: datetime | None = None
+    approved_by: str | None = None
+    rejected: bool = False
+    attempts: int = 0
+    successes: int = 0
+    practice_attempts: int = 0
+    practice_successes: int = 0
+    created_at: datetime | None = None
+
+
+class SkillUse(BaseModel):
+    """One offering of a skill version to a turn or task."""
+
+    id: str = ""
+    skill: str
+    version: int
+    turn_id: str | None = None
+    task_id: str | None = None
+    requester_role: str
+    tools: list[str] = Field(default_factory=list)
+    fact_ids: list[str] = Field(default_factory=list)
+    outcome: Literal["positive", "negative", "unknown"] | None = None
+    counted: bool = False
+    practice: bool = False
+    created_at: datetime | None = None

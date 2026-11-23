@@ -2308,13 +2308,30 @@ Constraints:
         # We need to get the FRESH state
         emotional_current = await self.emotion_engine.get_current_state()
         
-        await self._log_interaction_experience(
+        experience_id = await self._log_interaction_experience(
             user_id=user_id,
             user_input=user_input,
             aura_response=response,
             emotional_state=emotional_current,
             learning_context=learning_context,
+            speaker=speaker,
         )
+
+        # 2b. Real outcome signal for the earlier owner turns (G5-03). Logs its
+        #     own failures; the ring is keyed by conversation id, or by user id
+        #     when the turn has none.
+        if settings.outcome_signals_enabled:
+            from aura.engines.learning.outcomes import track_turn_outcome
+            from aura.llm.embeddings import get_embeddings_client
+
+            await track_turn_outcome(
+                self.learning_engine,
+                get_embeddings_client(),
+                key=conversation_id or f"user:{user_id}",
+                speaker=speaker,
+                text=user_input,
+                experience_id=experience_id if isinstance(experience_id, str) else None,
+            )
 
         # 3. Store the memory v2 episode (only when the write flag is on).
         #    A failure here must never affect the turn, which has already been
@@ -2917,8 +2934,9 @@ Only include goals where relevance_score > 0.5. Progress_made should be small (0
         aura_response: str,
         emotional_state: EmotionState,
         learning_context: LearningContext | None,
-    ) -> None:
-        """Log interaction as experience for learning."""
+        speaker: str = "owner",
+    ) -> str | None:
+        """Log interaction as experience for learning. Returns the experience id."""
         try:
             # Include active rules in context if available
             context_data = {"user_query": user_input}
@@ -2931,15 +2949,22 @@ Only include goals where relevance_score > 0.5. Progress_made should be small (0
                 "domain": "general",
                 "context": context_data,
                 "aura_response": {"response": aura_response},
-                "outcome": {"success": True},  # Assume success if no error
+                # Flag off: assume success. Flag on (G5-03): unknown until a later
+                # owner turn shows otherwise; silence is never positive.
+                "outcome": (
+                    {"signal": "unknown", "success": None}
+                    if settings.outcome_signals_enabled
+                    else {"success": True}
+                ),
                 "emotional_state": {
                     "pre": emotional_state.vector.model_dump(),
                     "dominant": emotional_state.dominant[0],
                 },
             }
 
-            await self.learning_engine.log_experience(experience_data)
+            return await self.learning_engine.log_experience(experience_data)
 
         except Exception as e:
             self.logger.error(f"Failed to log experience: {e}")
+            return None
 

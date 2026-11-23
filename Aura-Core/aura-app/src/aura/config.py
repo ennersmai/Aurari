@@ -1036,6 +1036,13 @@ class Settings(BaseSettings):
         description="Relevance weight in maximal marginal relevance (1 = no diversity).",
     )
 
+    # --- SKILLS V2 (G5-01) ---
+    skills_v2_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILLS_V2_ENABLED",
+        description="Parent flag for skill documents, versions and selection (G5, G6).",
+    )
+
     recall_feedback_enabled: bool = Field(
         default=False,
         validation_alias="AURA_RECALL_FEEDBACK_ENABLED",
@@ -1664,6 +1671,96 @@ class Settings(BaseSettings):
         description="Comma-separated Discord user ids that act as the owner role for tool "
                     "execution. Other Discord users are treated as guests and cannot "
                     "trigger tool calls.",
+    )
+
+    # =========================================================================
+    # OUTCOME SIGNALS (G5-03)
+    # =========================================================================
+
+    outcome_signals_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_OUTCOME_SIGNALS_ENABLED",
+        description="Replace the hard-coded per-turn success with a real outcome signal.",
+    )
+    outcome_rephrase_turns: int = Field(
+        default=2,
+        validation_alias="AURA_OUTCOME_REPHRASE_TURNS",
+        description="How many earlier owner turns a rephrase or correction can mark negative.",
+        ge=1,
+        le=10,
+    )
+    outcome_rephrase_similarity: float = Field(
+        default=0.8,
+        validation_alias="AURA_OUTCOME_REPHRASE_SIMILARITY",
+        description="Cosine of two owner message embeddings that counts as a rephrase.",
+    )
+    outcome_rephrase_overlap: float = Field(
+        default=0.6,
+        validation_alias="AURA_OUTCOME_REPHRASE_OVERLAP",
+        description="Content-word overlap of two owner messages that counts as a rephrase.",
+    )
+
+    # =========================================================================
+    # BEHAVIOUR (B1..B5)
+    # =========================================================================
+
+    autonomy_default_level: str = Field(
+        default="important",
+        validation_alias="AURA_AUTONOMY_DEFAULT_LEVEL",
+        description="Initial autonomy level: silent, important or open.",
+        pattern="^(silent|important|open)$",
+    )
+    quiet_hours_start: str = Field(
+        default="22:00",
+        validation_alias="AURA_QUIET_HOURS_START",
+        description="Local HH:MM when quiet hours begin (app_timezone).",
+    )
+    quiet_hours_end: str = Field(
+        default="08:00",
+        validation_alias="AURA_QUIET_HOURS_END",
+        description="Local HH:MM when quiet hours end (app_timezone).",
+    )
+
+    autonomy_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_AUTONOMY_ENABLED",
+        description="Master flag for any unprompted delivery.",
+    )
+
+    workspace_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_WORKSPACE_ENABLED",
+        description="Behaviour workspace (B2).",
+    )
+
+    drives_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_DRIVES_ENABLED",
+        description="Drives (B2).",
+    )
+
+    goals_v2_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_GOALS_V2_ENABLED",
+        description="Goals v2 (B3).",
+    )
+
+    curiosity_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_CURIOSITY_ENABLED",
+        description="Curiosity (B4).",
+    )
+
+    interruptibility_model_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_INTERRUPTIBILITY_MODEL_ENABLED",
+        description="Interruptibility model (B5).",
+    )
+
+    dismissal_learning_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_DISMISSAL_LEARNING_ENABLED",
+        description="Learn from dismissed items (B5).",
     )
 
     # =========================================================================

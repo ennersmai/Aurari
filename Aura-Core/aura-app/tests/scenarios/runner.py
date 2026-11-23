@@ -199,6 +199,7 @@ async def _apply_surql_file(db: AsyncSurreal, file_name: str, label: str) -> Non
 _SCHEMA_FILES = [
     ("init_schema.surql", "Core schema (structural)"),
     ("schema_v2.surql", "Memory v2 schema"),
+    ("schema_behavior.surql", "Behaviour schema"),
     ("seed_emotions.surql", "Emotion + identity seeds"),
     ("register_local_tools.surql", "Local tool registrations"),
     ("seed_cultural_nodes.surql", "Cultural node seeds"),

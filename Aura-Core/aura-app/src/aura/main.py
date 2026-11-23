@@ -165,6 +165,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for surql_file, label in [
         ("init_schema.surql",          "Core schema (structural)"),
         ("schema_v2.surql",            "Memory v2 schema"),
+        ("schema_behavior.surql",      "Behaviour schema"),
         ("seed_emotions.surql",         "Emotion + identity seeds"),
         ("register_local_tools.surql",  "Local tool registrations"),
         ("seed_cultural_nodes.surql",   "Cultural node seeds"),
@@ -174,6 +175,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await _apply_surql_file(db, surql_file, label)
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{label}] loader failed (non-fatal): {e}")
+
+    # Owner control state (B1-01): load the singleton into the in-memory cache.
+    try:
+        from aura.autonomy.controls import load_controls
+
+        await load_controls(db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Autonomy controls load failed (non-fatal): {e}")
 
     # Load every tool into the registry now that the database is connected and
     # the skill rows above have been registered (W2-35).

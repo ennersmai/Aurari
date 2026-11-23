@@ -139,3 +139,68 @@ DEFINE INDEX IF NOT EXISTS fact_recorded_at ON fact FIELDS recorded_at;
 DEFINE INDEX IF NOT EXISTS entity_aliases ON entity FIELDS aliases;
 DEFINE INDEX IF NOT EXISTS episode_venue ON episode FIELDS venue;
 DEFINE INDEX IF NOT EXISTS episode_extraction_status ON episode FIELDS extraction_status;
+-- ============================================================================
+-- SKILLS V2 (G5-01, PRD agency 6.1)
+-- Skill documents live in their own tables. The old `skill` table (tree and
+-- tool records) is untouched; skill_doc.node is the optional link to it.
+-- ============================================================================
+
+DEFINE TABLE IF NOT EXISTS skill_doc SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS name ON skill_doc TYPE string;
+DEFINE FIELD IF NOT EXISTS when_to_use ON skill_doc TYPE string;
+DEFINE FIELD IF NOT EXISTS tags ON skill_doc TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS state ON skill_doc TYPE string DEFAULT "candidate"
+    ASSERT $value IN ["candidate", "trusted", "retired"];
+DEFINE FIELD IF NOT EXISTS active_version ON skill_doc TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS previous_version ON skill_doc TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS origin_speaker ON skill_doc TYPE string DEFAULT "owner"
+    ASSERT $value IN ["owner", "guest"];
+DEFINE FIELD IF NOT EXISTS workspace ON skill_doc TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS node ON skill_doc TYPE option<record<skill>>;
+DEFINE FIELD IF NOT EXISTS when_embedding ON skill_doc TYPE option<array<float, 768>>;
+DEFINE FIELD IF NOT EXISTS created_at ON skill_doc TYPE datetime;
+DEFINE FIELD IF NOT EXISTS updated_at ON skill_doc TYPE datetime;
+DEFINE FIELD IF NOT EXISTS last_used_at ON skill_doc TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS retired_at ON skill_doc TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS flagged ON skill_doc TYPE option<string>;
+DEFINE INDEX IF NOT EXISTS skill_doc_name ON skill_doc FIELDS name UNIQUE;
+DEFINE INDEX IF NOT EXISTS skill_doc_state ON skill_doc FIELDS state;
+
+-- One row per version. Old versions are never edited or deleted.
+DEFINE TABLE IF NOT EXISTS skill_version SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS skill ON skill_version TYPE record<skill_doc>;
+DEFINE FIELD IF NOT EXISTS version ON skill_version TYPE int;
+DEFINE FIELD IF NOT EXISTS body ON skill_version TYPE string;
+DEFINE FIELD IF NOT EXISTS tools ON skill_version TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS examples ON skill_version TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS pitfalls ON skill_version TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS source ON skill_version TYPE string
+    ASSERT $value IN ["taught", "distilled", "corrected", "imported"];
+DEFINE FIELD IF NOT EXISTS source_task ON skill_version TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS change_note ON skill_version TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS approved_at ON skill_version TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS approved_by ON skill_version TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS rejected ON skill_version TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS attempts ON skill_version TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS successes ON skill_version TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS practice_attempts ON skill_version TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS practice_successes ON skill_version TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS created_at ON skill_version TYPE datetime;
+DEFINE INDEX IF NOT EXISTS skill_version_unique ON skill_version FIELDS skill, version UNIQUE;
+
+-- One row each time a skill is offered to a turn or task.
+DEFINE TABLE IF NOT EXISTS skill_use SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS skill ON skill_use TYPE record<skill_doc>;
+DEFINE FIELD IF NOT EXISTS version ON skill_use TYPE int;
+DEFINE FIELD IF NOT EXISTS turn_id ON skill_use TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS task_id ON skill_use TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS requester_role ON skill_use TYPE string;
+DEFINE FIELD IF NOT EXISTS tools ON skill_use TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS fact_ids ON skill_use TYPE array<string> DEFAULT [];
+DEFINE FIELD IF NOT EXISTS outcome ON skill_use TYPE option<string>
+    ASSERT $value = NONE OR $value IN ["positive", "negative", "unknown"];
+DEFINE FIELD IF NOT EXISTS counted ON skill_use TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS practice ON skill_use TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS created_at ON skill_use TYPE datetime;
+DEFINE INDEX IF NOT EXISTS skill_use_turn ON skill_use FIELDS turn_id;
+DEFINE INDEX IF NOT EXISTS skill_use_task ON skill_use FIELDS task_id;
