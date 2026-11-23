@@ -226,7 +226,15 @@ class GoalEngine(BaseEngine):
         """
         if not self.active_goals:
             return []
-        
+
+        from aura.config import settings
+
+        if settings.autonomy_enabled:
+            from aura.autonomy.controls import may_initiate
+
+            if not (await may_initiate("pursue_goal", source="goal_engine")).allowed:
+                return []
+
         now = datetime.now(timezone.utc)
         candidates = []
         
@@ -721,6 +729,46 @@ Return ONLY a JSON object with:
             self.logger.error(f"Failed to load goals: {e}")
     
     async def pursue_goal_autonomously(
+        self,
+        goal_id: str,
+        loop_count: int,
+        orchestrator: Any,
+        tool_permissions: list[str] | None = None,
+        allow_interruption: bool = True,
+    ) -> dict[str, Any]:
+        """Gate (B1-06), then run the pursuit as a registered task the kill switch can cancel.
+
+        The gate and the registration apply only when ``autonomy_enabled``;
+        off means the old behaviour.
+        """
+        from aura.config import settings
+
+        if not settings.autonomy_enabled:
+            return await self._pursue_goal_impl(
+                goal_id, loop_count, orchestrator, tool_permissions, allow_interruption
+            )
+        from aura.autonomy.controls import may_initiate
+        from aura.autonomy.registry import register_autonomous_task
+
+        decision = await may_initiate("pursue_goal", source="goal_engine", refs=[goal_id])
+        if not decision.allowed:
+            raise ValueError(f"autonomous pursuit refused: {decision.reason}")
+        task = asyncio.create_task(
+            self._pursue_goal_impl(goal_id, loop_count, orchestrator, tool_permissions, allow_interruption),
+            name=f"pursue_goal:{goal_id}",
+        )
+        register_autonomous_task(task, "pursue_goal", goal_id)
+        try:
+            return await task
+        except asyncio.CancelledError:
+            me = asyncio.current_task()
+            if task.cancelled() and (me is None or me.cancelling() == 0):
+                raise ValueError("autonomous pursuit cancelled by the kill switch") from None
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+
+    async def _pursue_goal_impl(
         self,
         goal_id: str,
         loop_count: int,

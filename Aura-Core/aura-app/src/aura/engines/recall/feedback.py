@@ -33,15 +33,24 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b)) / norm if norm else 0.0
 
 
-async def record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) -> None:
-    """Update the facts of ``packet`` from what ``reply`` used. Logs failures only."""
+async def record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) -> list[str]:
+    """Update the facts of ``packet`` from what ``reply`` used. Logs failures only.
+
+    Returns the ids of the facts the reply used (``"fact:<id>"``); empty on failure.
+    """
     try:
-        await _record_feedback(db, embeddings, packet, reply)
+        return await _record_feedback(db, embeddings, packet, reply)
     except Exception as exc:
         logger.warning("Recall feedback failed (non-critical): %s", exc)
+        return []
 
 
-async def _record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) -> None:
+def _id_text(value: Any) -> str:
+    table = getattr(value, "table_name", None)
+    return f"{table}:{value.id}" if table else str(value)
+
+
+async def _record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) -> list[str]:
     ids = [
         item.key
         for item in packet.trace.items
@@ -50,7 +59,7 @@ async def _record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) ->
         and item.key.startswith("fact:")
     ]
     if not ids or not reply:
-        return
+        return []
     rows = await db.query(
         "SELECT id, content, embedding FROM fact WHERE id IN $ids",
         {
@@ -60,7 +69,7 @@ async def _record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) ->
         },
     )
     if not rows:
-        return
+        return []
 
     reply_words = _content_words(reply)
     reply_vector = await embeddings.embed(reply)
@@ -106,3 +115,4 @@ async def _record_feedback(db: Any, embeddings: Any, packet: Any, reply: str) ->
         "BEGIN TRANSACTION; " + "; ".join(statements) + "; COMMIT TRANSACTION;",
         params,
     )
+    return [_id_text(i) for i in used]

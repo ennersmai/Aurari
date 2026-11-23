@@ -101,10 +101,17 @@ async def track_turn_outcome(
     text: str,
     experience_id: str | None,
     explicit_feedback: str | None = None,
+    on_outcome: Any = None,
 ) -> None:
-    """Classify the earlier owner turns against this one and patch them. Never raises."""
+    """Classify the earlier owner turns against this one and patch them. Never raises.
+
+    ``on_outcome(experience_id, signal)`` (async, optional) runs after each patch; G5-04
+    uses it to count skill uses. Its failures are logged and never reach the turn.
+    """
     try:
-        await _track(engine, embeddings, key, speaker, text, experience_id, explicit_feedback)
+        await _track(
+            engine, embeddings, key, speaker, text, experience_id, explicit_feedback, on_outcome
+        )
     except Exception as exc:
         logger.warning("Turn outcome tracking failed (non-critical): %s", exc)
 
@@ -117,7 +124,16 @@ async def _track(
     text: str,
     experience_id: str | None,
     explicit_feedback: str | None,
+    on_outcome: Any = None,
 ) -> None:
+    async def patched(eid: str, signal: str) -> None:
+        if on_outcome is None:
+            return
+        try:
+            await on_outcome(eid, signal)
+        except Exception as exc:
+            logger.warning("Outcome hook failed (non-critical): %s", exc)
+
     # Guest turns neither classify nor get classified.
     if speaker != "owner" or not experience_id or not (text or "").strip():
         return
@@ -147,6 +163,7 @@ async def _track(
             await engine.set_experience_outcome(
                 prev.experience_id, _outcome_dict(signal, source)
             )
+            await patched(prev.experience_id, signal)
             break
     ring.append(current)
 
@@ -156,3 +173,4 @@ async def _track(
         await engine.set_experience_outcome(
             experience_id, _outcome_dict(explicit_feedback, "explicit")
         )
+        await patched(experience_id, explicit_feedback)

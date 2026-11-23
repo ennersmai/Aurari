@@ -27,6 +27,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def smoothed_confidence(success_count: float, application_count: float) -> float:
+    """Smoothed success rate ``(successes + 1) / (total + 2)`` (insight confidence)."""
+    return (success_count + 1) / (application_count + 2)
+
+
 class LearningEngine(BaseEngine):
     """
     Learning Engine implementing 6-phase learning cycle.
@@ -2408,7 +2413,7 @@ IMPORTANT: Output an array of insight objects, not nested dicts.
 
             # Bayesian update of confidence
             # Simple formula: (successes + 1) / (total + 2)
-            new_confidence = (success_count + 1) / (application_count + 2)
+            new_confidence = smoothed_confidence(success_count, application_count)
 
             updates = {
                 "application_count": application_count,

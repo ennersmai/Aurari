@@ -1048,6 +1048,17 @@ class Settings(BaseSettings):
         description="Cosine of when_to_use embeddings at or above which a proposal "
         "becomes a new version of the existing skill (G5-02).",
     )
+    skill_attribution_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILL_ATTRIBUTION_ENABLED",
+        description="Record skill uses and update per-version statistics from outcomes "
+        "(G5-04). Also needs skills_v2_enabled.",
+    )
+    skill_mastery_quantile: float = Field(
+        default=0.2,
+        validation_alias="AURA_SKILL_MASTERY_QUANTILE",
+        description="Quantile of the Beta posterior used as the mastery lower bound (G5-04).",
+    )
 
     recall_feedback_enabled: bool = Field(
         default=False,

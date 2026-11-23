@@ -88,6 +88,10 @@ class TurnContext:
     route: str | None = None  # L1 route (P2-06); None with l1_routes_enabled off
     stakes: float | None = None  # L1 stakes 0..1 (P2-06)
     prompt_notes: list[str] = field(default_factory=list)
+    # Skills chosen for this turn as (skill name or doc id, version); G5-05 fills it,
+    # empty until then. ``turn_tools`` collects the tool names the loop ran (G5-04).
+    chosen_skills: list = field(default_factory=list)
+    turn_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1095,6 +1099,8 @@ Constraints:
         speaker: str = "owner",
         packet: ContextPacket | None = None,
         appraisal_task: "asyncio.Task | None" = None,
+        chosen_skills: list | None = None,
+        turn_tools: list[str] | None = None,
     ) -> None:
         """Schedule the post-response chain in the background (never awaited here)."""
         asyncio.create_task(self._post_response_chain(
@@ -1114,6 +1120,12 @@ Constraints:
             packet=packet,
             # Only passed when a parallel appraisal exists; flag off is unchanged.
             **({"appraisal_task": appraisal_task} if appraisal_task is not None else {}),
+            # Only passed when a skill was chosen for the turn (G5-04).
+            **(
+                {"chosen_skills": list(chosen_skills), "turn_tools": list(turn_tools or [])}
+                if chosen_skills
+                else {}
+            ),
         ))
 
     def _parallel_appraisal_active(self) -> bool:
@@ -1521,6 +1533,7 @@ Constraints:
 
         # Define on_tool_result callback for emotion appraisal when enabled
         async def _on_tool_result(tool_name: str, success: bool) -> None:
+            ctx.turn_tools.append(tool_name)
             if settings.emotion_appraisal_enabled:
                 if success:
                     event = tool_succeeded(tool_name)
@@ -1538,7 +1551,11 @@ Constraints:
             session=ctx.session,
             conversation_id=ctx.conversation_id,
             seed_results=seed,
-            on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
+            on_tool_result=(
+                _on_tool_result
+                if settings.emotion_appraisal_enabled or ctx.chosen_skills
+                else None
+            ),
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
             turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
             generate_final=_final,
@@ -1647,6 +1664,7 @@ Constraints:
 
         # Define on_tool_result callback for emotion appraisal when enabled
         async def _on_tool_result(tool_name: str, success: bool) -> None:
+            ctx.turn_tools.append(tool_name)
             if settings.emotion_appraisal_enabled:
                 if success:
                     event = tool_succeeded(tool_name)
@@ -1669,7 +1687,11 @@ Constraints:
             session=ctx.session,
             conversation_id=ctx.conversation_id,
             seed_results=seed,
-            on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
+            on_tool_result=(
+                _on_tool_result
+                if settings.emotion_appraisal_enabled or ctx.chosen_skills
+                else None
+            ),
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
             turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
             allow_task_graph=bool(ctx.tier_profile and ctx.tier_profile.allow_task_graph),
@@ -1936,6 +1958,8 @@ Constraints:
             speaker=ctx.speaker,
             packet=ctx.packet,
             appraisal_task=appraisal.task if appraisal is not None else None,
+            chosen_skills=ctx.chosen_skills,
+            turn_tools=ctx.turn_tools,
         )
         if appraisal is not None:
             appraisal.handed_off = True
@@ -2270,6 +2294,8 @@ Constraints:
         speaker: str = "owner",
         packet: ContextPacket | None = None,
         appraisal_task: "asyncio.Task | None" = None,
+        chosen_skills: list | None = None,
+        turn_tools: list[str] | None = None,
     ) -> None:
         """
         Execute post-response tasks in correct dependency order.
@@ -2324,6 +2350,15 @@ Constraints:
             from aura.engines.learning.outcomes import track_turn_outcome
             from aura.llm.embeddings import get_embeddings_client
 
+            on_outcome = None
+            if settings.skills_v2_enabled and settings.skill_attribution_enabled:
+                # G5-04: a patched turn outcome counts that turn's skill uses.
+                async def on_outcome(eid: str, signal: str) -> None:
+                    from aura.engines.learning.skill_stats import apply_outcome_for_turn
+                    from aura.engines.learning.skill_store import SkillStore
+
+                    await apply_outcome_for_turn(SkillStore(self.db), eid, signal)
+
             await track_turn_outcome(
                 self.learning_engine,
                 get_embeddings_client(),
@@ -2331,6 +2366,7 @@ Constraints:
                 speaker=speaker,
                 text=user_input,
                 experience_id=experience_id if isinstance(experience_id, str) else None,
+                **({"on_outcome": on_outcome} if on_outcome is not None else {}),
             )
 
         # 3. Store the memory v2 episode (only when the write flag is on).
@@ -2376,13 +2412,36 @@ Constraints:
                 self.logger.warning(f"Failed to store memory v2 episode: {e}")
 
         # 3b. Feedback on the recalled facts (W4-06). Logs its own failures.
+        used_fact_ids: list[str] = []
         if settings.recall_feedback_enabled and packet is not None:
             from aura.engines.recall.feedback import record_feedback
             from aura.llm.embeddings import get_embeddings_client
 
-            await record_feedback(
+            used_fact_ids = await record_feedback(
                 self.db, get_embeddings_client(), packet, response
             )
+
+        # 3c. Attribution (G5-04): one skill_use per skill chosen for this turn.
+        #     The outcome arrives with a later turn. Never affects the turn.
+        if chosen_skills and settings.skills_v2_enabled and settings.skill_attribution_enabled:
+            try:
+                from aura.engines.learning.skill_stats import record_skill_use
+                from aura.engines.learning.skill_store import SkillStore
+
+                skill_store = SkillStore(self.db)
+                for skill, version in chosen_skills:
+                    await record_skill_use(
+                        skill_store,
+                        skill,
+                        version,
+                        turn_id=experience_id if isinstance(experience_id, str) else None,
+                        task_id=None,
+                        requester_role="owner" if speaker == "owner" else "guest",
+                        tools=list(turn_tools or []),
+                        fact_ids=list(used_fact_ids),
+                    )
+            except Exception as exc:
+                self.logger.warning(f"Skill attribution failed (non-critical): {exc}")
 
         # 4. Run L2 Analysis (if enabled AND L2 layer not bypassed via inference cockpit)
         if enable_l2 and settings.layer_l2_enabled:

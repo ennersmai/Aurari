@@ -33,6 +33,7 @@ from aura.api.routes import inference_config as inference_config_routes
 from aura.api.routes import tiers as tiers_routes
 from aura.api.routes import skills as skills_routes
 from aura.api.routes import agenda as agenda_routes
+from aura.api.routes import autonomy as autonomy_routes
 from aura.api.routes import aura_events as aura_events_routes
 from aura.api.routes import discord as discord_routes
 from aura.discord.bot import bot_instance as discord_bot
@@ -531,6 +532,7 @@ app.include_router(delegations_routes.router, tags=["delegations"])
 app.include_router(skills_routes.router, tags=["skills"])
 app.include_router(aura_events_routes.router, tags=["aura-events"])
 app.include_router(agenda_routes.router, tags=["agenda"])
+app.include_router(autonomy_routes.router, tags=["autonomy"])
 
 # WebSocket endpoints
 @app.websocket("/ws/emotion")

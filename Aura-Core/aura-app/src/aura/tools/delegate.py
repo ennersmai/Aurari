@@ -178,6 +178,21 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
             "success": False,
         }
 
+    # G5-04: with skills on, a skill name resolves to a live version whose body goes
+    # in the brief. Flags off: the name stays a recorded text blob, as before.
+    skill_ref = None
+    if skill and settings.skills_v2_enabled and settings.skill_attribution_enabled:
+        from aura.engines.learning.skill_stats import resolve_live_skill
+
+        live = await resolve_live_skill(skill)
+        if live is None:
+            return {
+                "status": "ERROR",
+                "message": f"Skill '{skill}' has no live version.",
+                "success": False,
+            }
+        skill_ref, skill = (live[0], live[1]), live[2]
+
     # Import here to avoid circular imports
     from aura.executor.delegation import start_delegation
 
@@ -191,6 +206,8 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
         minutes=minutes,
         skill=skill,
         identity_overlay=_overlay_text(session),
+        skill_ref=skill_ref,
+        requester_role=arguments.get("_requester_role") or "guest",
     )
 
     logger.info(f"Delegation started: task={task_id}, agent={agent}, workspace={workspace}")

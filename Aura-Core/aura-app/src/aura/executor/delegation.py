@@ -118,6 +118,9 @@ class DelegationConfig:
     minutes: int
     skill: Optional[str] = None
     identity_overlay: Optional[str] = None
+    # G5-04: the live skill version whose body is in ``skill`` and who asked for the task.
+    skill_ref: Optional[tuple[str, int]] = None
+    requester_role: str = "guest"
 
 
 class DelegationRunner:
@@ -273,6 +276,7 @@ class DelegationRunner:
         )
         task_id = self._task.task_id
         _RUNNERS[task_id] = self
+        await self._record_skill_use(task_id)
         try:
             await self._start_session(task_queue, task_id, brief)
         except BaseException:
@@ -671,7 +675,7 @@ class DelegationRunner:
 
         # Close the task based on verdict
         if verdict == "PASS":
-            await self._finalize_task(task_queue, task_id, "succeeded", "Review passed")
+            await self._finalize_task(task_queue, task_id, "succeeded", "Review passed", reviewed=True)
         elif verdict == "FAIL":
             await self._finalize_task(task_queue, task_id, "failed", f"Review failed: {reason}")
         else:  # needs_owner (no verdict or expired)
@@ -758,8 +762,52 @@ class DelegationRunner:
         """
         return parse_verdict(summary)
 
-    async def _finalize_task(self, task_queue: Any, task_id: str, outcome: str, reason: str) -> None:
-        """Finalize the task with outcome and write memory/appraisal if enabled."""
+    async def _record_skill_use(self, task_id: str) -> None:
+        """G5-04: attribute the task to the skill version whose body is in the brief."""
+        if not self.config.skill_ref:
+            return
+        try:
+            from aura.engines.learning.skill_stats import record_skill_use
+            from aura.engines.learning.skill_store import SkillStore
+
+            skill, version = self.config.skill_ref
+            await record_skill_use(
+                SkillStore(), skill, version, turn_id=None, task_id=str(task_id),
+                requester_role=self.config.requester_role,
+            )
+        except Exception as e:
+            logger.warning(f"Skill use not recorded for {task_id}: {e}")
+
+    async def _count_skill_outcome(self, task_id: str, outcome: str, reviewed: bool) -> None:
+        """G5-04: succeeded with a passing review counts positive, failed negative;
+        needs_owner and anything else count nothing."""
+        if not self.config.skill_ref:
+            return
+        try:
+            from aura.engines.learning.outcomes import Turn, classify_outcome
+            from aura.engines.learning.skill_stats import apply_outcome_for_task
+            from aura.engines.learning.skill_store import SkillStore
+
+            if outcome == "succeeded" and reviewed:
+                signal, _ = await classify_outcome(
+                    None, Turn(experience_id="", text=""), task_tests_passed=True
+                )
+            elif outcome == "failed":
+                signal = "negative"
+            else:
+                return
+            await apply_outcome_for_task(SkillStore(), str(task_id), signal)
+        except Exception as e:
+            logger.warning(f"Skill outcome not counted for {task_id}: {e}")
+
+    async def _finalize_task(
+        self, task_queue: Any, task_id: str, outcome: str, reason: str, reviewed: bool = False
+    ) -> None:
+        """Finalize the task with outcome and write memory/appraisal if enabled.
+
+        ``reviewed`` is True when the review (tests) passed; only then does a
+        ``succeeded`` task count as a positive skill outcome (G5-04).
+        """
         # Update task status
         if outcome == "succeeded":
             await task_queue.db.merge(task_id, {
@@ -775,6 +823,8 @@ class DelegationRunner:
                 "blocker": reason,
             })
             logger.info(f"Task {task_id} marked as needs_owner: {reason}")
+
+        await self._count_skill_outcome(task_id, outcome, reviewed)
 
         # Memory v2 write (4.8): store episode and fact when enabled
         if settings.memory_v2_write_enabled:
@@ -1024,6 +1074,8 @@ async def start_delegation(
     minutes: int,
     skill: Optional[str] = None,
     identity_overlay: Optional[str] = None,
+    skill_ref: Optional[tuple[str, int]] = None,
+    requester_role: str = "guest",
 ) -> str:
     """Start a delegation in the background and return the task ID."""
     config = DelegationConfig(
@@ -1035,6 +1087,8 @@ async def start_delegation(
         minutes=minutes,
         skill=skill,
         identity_overlay=identity_overlay,
+        skill_ref=skill_ref,
+        requester_role=requester_role,
     )
     runner = DelegationRunner(config)
     task_id = await runner.run()
