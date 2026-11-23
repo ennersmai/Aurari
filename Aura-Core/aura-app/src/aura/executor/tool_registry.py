@@ -90,9 +90,10 @@ BUILTIN_RISK: dict[str, Risk] = {
     "terminal": "execute",
     "execute_code": "execute",
     "delegate_work": "execute",
+    "plan_task": "write",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "recall_tools", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "plan_task", "recall_tools", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:
@@ -265,7 +266,16 @@ class ToolRegistry:
         return self._records.get(name)
 
     def all(self) -> list[ToolRecord]:
-        return sorted(self._records.values(), key=lambda r: r.name)
+        """Every registered tool, by name. ``plan_task`` is listed (and so offered)
+        only under task_graphs_enabled AND tier_profiles_enabled AND a profile that
+        allows task graphs (P2-08); with the flags off the list is as before."""
+        from aura.tiers import plan_task_enabled
+
+        hide_plan = not plan_task_enabled()
+        return sorted(
+            (r for r in self._records.values() if not (hide_plan and r.name == "plan_task")),
+            key=lambda r: r.name,
+        )
 
     def record_call(self, name: str, success: bool, latency_ms: float) -> None:
         """Record one call; a no-op for unknown names."""

@@ -1291,6 +1291,13 @@ class Settings(BaseSettings):
                     "L2 post-analysis, tools offered, tool gating and the context budget. "
                     "Off means the pre-tier behaviour exactly.",
     )
+    task_graphs_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_TASK_GRAPHS_ENABLED",
+        description="When true (and tier profiles are on and the active profile allows task "
+                    "graphs, i.e. Titan), the plan_task tool is offered and callable. "
+                    "Off means the tool list is exactly as before.",
+    )
     tier_overrides_path: str = Field(
         default=".aura/tier_overrides.json",
         validation_alias="AURA_TIER_OVERRIDES_PATH",

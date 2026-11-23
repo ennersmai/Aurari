@@ -38,7 +38,7 @@ APP_DIR = Path(__file__).resolve().parents[2]
 TIER_NAMES: dict[int, str] = {0: "lean", 1: "core", 2: "titan"}
 
 # Tools only some tiers may use: tool name -> TierProfile boolean that allows it.
-# ``plan_task`` does not exist yet (P2-3x); the gate is ready for it.
+# ``plan_task`` (P2-08) is also behind settings.task_graphs_enabled; see plan_task_enabled().
 TIER_GATED_TOOLS: dict[str, str] = {
     "delegate_work": "allow_delegate",
     "plan_task": "allow_task_graph",
@@ -239,6 +239,14 @@ def tool_allowed(profile: TierProfile, tool_name: str) -> bool:
     """False only for a tier-gated tool the profile does not allow."""
     knob = TIER_GATED_TOOLS.get(tool_name)
     return knob is None or bool(getattr(profile, knob))
+
+
+def plan_task_enabled(profile: TierProfile | None = None) -> bool:
+    """plan_task is offered and callable only with task_graphs_enabled AND
+    tier_profiles_enabled AND a profile that allows task graphs (P2-08)."""
+    if not (settings.task_graphs_enabled and settings.tier_profiles_enabled):
+        return False
+    return bool((profile or active_profile()).allow_task_graph)
 
 
 def gated_tools_denied(profile: TierProfile) -> set[str]:

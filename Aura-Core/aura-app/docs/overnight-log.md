@@ -2680,3 +2680,18 @@ Tests deleted: none (no test covered only the removed modules). Shared behaviour
 Results: tests/unit 1022 passed, 2 skipped; npm test 82 passed; npm run build passed.
 
 **Supervisor (2026-11-23), G4-05:** Reviewed the deletion list. Checked that old task rows with `file_versions` / `file_annotations` still load (pydantic ignores extra fields). Full suite: 1176 passed, 3 skipped; frontend 82 tests, build clean.
+
+## P2-10 step 1: OpenCode v2.3.2 subagent research
+
+Wrote docs/opencode/subagents.md (no code changed). From the saved spec: subagents are child sessions (POST /api/session with parentID + agent) that report via the parent inbox; no task tool in the spec. Agent fields: model, system, description, mode, hidden, color, steps, disabled, permissions. Children inherit the parent location; per-child worktree unverified (try location or session.move). Events carry data.sessionID and session.created carries parentID, so attribution works. Per-agent model supported. Permission replies are per session. No max-parallel setting, only experimental.subagent_depth. Binary not on PATH; web docs not consulted. D4 needs relaxing for parallel worktrees (Mai decision).
+
+## P2-08 Task graph data and plan_task
+- Flag `task_graphs_enabled` (AURA_TASK_GRAPHS_ENABLED, default off). `tiers.plan_task_enabled(profile)` is true only with that flag AND tier_profiles_enabled AND a profile with allow_task_graph (Titan). `ToolRegistry.all()` hides plan_task otherwise, so `select_tools` never offers it and the tool list (and the coordinator's select call) is exactly as before with the flag off. The tool also refuses when called in any other case.
+- New: models/task_graph.py (TaskGraph, TaskNode, BlackboardEntry, status enums), executor/task_graph.py (TaskGraphStore: create_graph, get_graph, list_nodes, update_node_status, write_blackboard, list_blackboard; parameterised, RecordIDs for links, clock from get_clock), tools/plan_task.py (registered via BUILTIN_MODULES, risk "write"). Tables task_graph, task_node, blackboard_entry (SCHEMAFULL, indexes on graph) added to scripts/setup_tasks.surql. Node record id is `task_node:<graphhex>_<node id>`.
+- Validation: flags, owner, Titan, 1..max nodes, unique ids, known kinds, non-empty brief and success_criteria, dependencies exist, no self-dependency, acyclic (Kahn), at most one code node, budget <= profile limits (defaults to them), budget_share in (0,1] and sum <= 1.0 (absent shares split the remainder evenly). Each error says what is wrong and how to fix it.
+- Chat event: there is no conversation id inside a tool call, so no clean place in `message`. The "plan" event is a blackboard_entry of kind "plan" (JSON: goal, budget, nodes) plus a log line. P2-11 renders it from there.
+- created_by_turn is None (TODO P2-15: the coordinator does not give tools the turn id).
+- Existing tests touched: test_tool_registry.py builtin count 21 -> 22 (all() still 21 with the flag off).
+- Tests: tests/unit/test_plan_task.py, tests/scenarios/test_task_graph_embedded.py.
+
+**Supervisor (2026-11-23), P2-08:** Reviewed and accepted with no changes. `plan_task` is hidden in `ToolRegistry.all()` unless all three conditions hold, and the tool and the executor refuse it otherwise. The plan event is a blackboard entry of kind "plan" (tools have no conversation id); P2-11 renders it. Full suite: 1208 passed, 3 skipped.
