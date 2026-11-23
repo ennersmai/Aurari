@@ -416,3 +416,92 @@ async def test_flag_on_stream_ends_with_native_calls_marker(monkeypatch):
         {"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}
     ]
     assert "<available_tools>" not in client.seen[0]["messages"][0]["content"]
+
+# ---------------------------------------------------------------------------
+# P2-07: no repeated text when the streaming native path fails or loops
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedStreamClient:
+    """One scripted native stream per round, then the text stream."""
+
+    def __init__(self, rounds):
+        self.rounds = list(rounds)  # each: (items, error or None)
+        self.calls: list[str] = []
+
+    async def stream_with_tools(self, *, messages, model, tools, **kwargs):
+        self.calls.append("stream_with_tools")
+        items, error = self.rounds.pop(0)
+        for item in items:
+            yield item
+        if error is not None:
+            raise error
+
+    async def stream_complete(self, *, messages, model, **kwargs):
+        self.calls.append("stream_complete")
+        yield "native Hel"  # a sampled regeneration that repeats the prefix
+        yield "lo again"
+
+
+class _LoopExecutor:
+    def __init__(self):
+        self.extract_tool_calls = lambda text: []
+
+    async def execute_and_feedback(self, calls, requester_role, venue):
+        return "result"
+
+
+async def _run_loop(layers):
+    from aura.orchestrator.tool_loop import run_tool_loop
+
+    async def generate_round(loop_input, round_idx):
+        async for item in layers.stream_l3_synthesis(_context(), tools=[_record()]):
+            yield item
+
+    return [
+        ev async for ev in run_tool_loop(
+            user_input="hi",
+            generate_round=generate_round,
+            tool_executor=_LoopExecutor(),
+            requester_role="owner",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_text_tool_call_text_each_chunk_once(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    call = [{"tool": "web_search", "arguments": {"query": "x"}, "id": "c1"}]
+    client = _ScriptedStreamClient([
+        ([("text", "Let me "), ("text", "look. "), ("tool_calls", call)], None),
+        ([("text", "Here is "), ("text", "the answer.")], None),
+    ])
+    events = await _run_loop(_layers_with(client))
+
+    shown = "".join(e.text for e in events if e.kind in ("delta", "separator"))
+    assert shown == "Let me look. \n\nHere is the answer."
+    assert client.calls == ["stream_with_tools", "stream_with_tools"]
+
+
+@pytest.mark.asyncio
+async def test_native_stream_error_after_text_does_not_restream(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    client = _ScriptedStreamClient([
+        ([("text", "native Hel")], RuntimeError("stream broke")),
+    ])
+    events = await _run_loop(_layers_with(client))
+
+    shown = "".join(e.text for e in events if e.kind in ("delta", "separator"))
+    assert shown == "native Hel"
+    assert "stream_complete" not in client.calls
+
+
+@pytest.mark.asyncio
+async def test_native_stream_error_before_text_falls_back_to_text(monkeypatch):
+    monkeypatch.setattr(settings, "l3_native_tools", True)
+    client = _ScriptedStreamClient([([], RuntimeError("400 tools not supported"))])
+    events = await _run_loop(_layers_with(client))
+
+    shown = "".join(e.text for e in events if e.kind in ("delta", "separator"))
+    assert shown == "native Hello again"
+    assert client.calls == ["stream_with_tools", "stream_complete"]

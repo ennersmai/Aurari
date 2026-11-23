@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from aura.db.client import get_db_client
+from aura.tiers import DEPRECATED_REASONING_FIELDS, note_deprecated_reasoning_controls
 
 router = APIRouter()
 
@@ -61,10 +62,19 @@ class ChatRequest(BaseModel):
 
     # Advanced options (from frontend settings)
     context_limit: int | None = Field(default=None, ge=5, le=999, description="Max conversation history")
-    enable_l2: bool | None = Field(default=None, description="Enable L2 post-analysis (deprecated, use deep_analysis_enabled)")
-    reasoning_enabled: bool = Field(default=False, description="Enable deep reasoning for L3 (Grok/DeepSeek R1)")
-    l2_reasoning_enabled: bool = Field(default=False, description="Enable deep reasoning for L2 analysis (Grok/DeepSeek R1)")
-    deep_analysis_enabled: bool = Field(default=True, description="Enable L2 background analysis (async)")
+    # P2-42: deprecated and IGNORED. Still accepted so old clients do not get a 422.
+    # How much Aura thinks comes from the tier slider and the L1 route only.
+    enable_l2: bool | None = Field(default=None, description="Deprecated, ignored (P2-42)")
+    enable_l2_analysis: bool | None = Field(default=None, description="Deprecated, ignored (P2-42)")
+    reasoning_enabled: bool | None = Field(default=None, description="Deprecated, ignored (P2-42)")
+    l2_reasoning_enabled: bool | None = Field(default=None, description="Deprecated, ignored (P2-42)")
+    deep_analysis_enabled: bool | None = Field(default=None, description="Deprecated, ignored (P2-42)")
+
+    def note_deprecated_fields(self) -> None:
+        """Log one deprecation line per process if an old client sent any of them."""
+        note_deprecated_reasoning_controls(
+            [n for n in DEPRECATED_REASONING_FIELDS if getattr(self, n) is not None]
+        )
 
 
 class ChatResponse(BaseModel):
@@ -74,6 +84,10 @@ class ChatResponse(BaseModel):
     response: str
     emotional_state: dict[str, Any] = Field(default_factory=dict)
     learning_applied: bool = False
+    # P2-42: whether this turn used deep (L3) reasoning, the active tier, the L1 route.
+    deep_reasoning: bool = False
+    tier: str = "lean"
+    route: str | None = None
 
 
 @router.post("/message", response_model=ChatResponse)
@@ -89,6 +103,8 @@ async def send_message(request: ChatRequest) -> ChatResponse:
     Returns emotionally-aware, learned response.
     """
     orchestrator = get_orchestrator()
+    request.note_deprecated_fields()
+    turn_meta: dict[str, Any] = {}
 
     try:
         # Convert conversation history to dict format
@@ -103,21 +119,15 @@ async def send_message(request: ChatRequest) -> ChatResponse:
         logger = logging.getLogger(__name__)
         logger.info(f"[CHAT] Processing message - conversation_id: {request.conversation_id}, user_id: {request.user_id}")
         
-        # Use deep_analysis_enabled (defaults to True), but allow enable_l2 to override for backward compatibility
-        deep_analysis = request.enable_l2 if request.enable_l2 is not None else request.deep_analysis_enabled
-        
         response = await orchestrator.process_query(
             user_input=request.message,
             user_id=request.user_id,  # Commander identity from frontend settings
             conversation_history=history,
             context_limit=request.context_limit,
-            enable_l2_analysis=request.enable_l2,  # Keep for backward compatibility
             conversation_id=request.conversation_id,
-            reasoning_enabled=request.reasoning_enabled,
-            l2_reasoning_enabled=request.l2_reasoning_enabled,
-            deep_analysis_enabled=deep_analysis,
             session_id=request.session_id,
             context_mode=request.context_mode,
+            turn_meta=turn_meta,
         )
 
         # Get current emotional state for response
@@ -200,6 +210,9 @@ async def send_message(request: ChatRequest) -> ChatResponse:
                 "description": emotional_state.description,
             },
             learning_applied=True,
+            deep_reasoning=bool(turn_meta.get("deep_reasoning", False)),
+            tier=str(turn_meta.get("tier", "lean")),
+            route=turn_meta.get("route"),
         )
 
     except Exception as e:
@@ -309,9 +322,11 @@ async def stream_message(request: ChatRequest) -> StreamingResponse:
     but before [DONE] is yielded — eliminating the race condition from background tasks.
     """
     orchestrator = get_orchestrator()
+    request.note_deprecated_fields()
 
     async def generate():
         full_response = ""
+        turn_meta: dict[str, Any] = {}
         try:
             # Convert conversation history
             history = [
@@ -324,19 +339,14 @@ async def stream_message(request: ChatRequest) -> StreamingResponse:
             logger = logging.getLogger(__name__)
             logger.info(f"[CHAT STREAM] Processing stream - conversation_id: {request.conversation_id}, user_id: {request.user_id}")
 
-            # Use deep_analysis_enabled (defaults to True), but allow enable_l2 to override for backward compatibility
-            deep_analysis = request.enable_l2 if request.enable_l2 is not None else request.deep_analysis_enabled
-
             async for chunk in orchestrator.stream_query(
                 user_input=request.message,
                 user_id=request.user_id,
                 conversation_history=history,
                 conversation_id=request.conversation_id,  # Pass conversation_id to orchestrator
-                reasoning_enabled=request.reasoning_enabled,
-                l2_reasoning_enabled=request.l2_reasoning_enabled,
-                deep_analysis_enabled=deep_analysis,
                 session_id=request.session_id,
                 context_mode=request.context_mode,
+                turn_meta=turn_meta,
             ):
                 full_response += chunk
                 # JSON-encode the chunk to handle newlines/special chars safely
@@ -344,6 +354,9 @@ async def stream_message(request: ChatRequest) -> StreamingResponse:
 
             # PERSISTENCE: Save to database right after stream completes, before [DONE]
             await _persist_streamed_response(orchestrator, request, full_response)
+
+            # P2-42: turn metadata as a JSON object (chunks are JSON strings).
+            yield f"data: {json.dumps({'type': 'turn_meta', **turn_meta})}\n\n"
 
             yield "data: [DONE]\n\n"
 

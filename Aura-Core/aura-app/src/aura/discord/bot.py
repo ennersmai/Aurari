@@ -639,7 +639,6 @@ class AuraDiscordBot:
                 user_input=labelled_input,
                 user_id=user_id,
                 conversation_history=history,
-                deep_analysis_enabled=True,
                 requester_role=requester_role,
                 venue=venue,
             )

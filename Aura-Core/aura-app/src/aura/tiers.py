@@ -10,9 +10,9 @@ Defaults are the three constants below; ``.aura/tier_overrides.json`` (path in
 Everything here only matters while ``settings.tier_profiles_enabled`` is true.
 With the flag off no caller consults this module and behaviour is unchanged.
 
-A profile is a ceiling, never a grant. The client's reasoning toggles still
-exist until P2-42; the coordinator ANDs the client value with what the profile
-allows. The requester-role check always runs first (D9, D13).
+With the flag on, the profile and the L1 route decide how much Aura thinks;
+clients no longer send reasoning toggles (P2-42, ignored if still sent). The
+requester-role check always runs first (D9, D13).
 
 L3 reasoning until P2-06: L1 routes do not exist yet, so "route think" never
 happens, and no stakes value exists either. :func:`l3_reasoning_allowed` is
@@ -213,8 +213,8 @@ def l3_reasoning_allowed(profile: TierProfile, route: str | None, stakes: float 
     """May this turn use L3 deep reasoning under ``profile``?
 
     ``route`` is the L1 route and ``stakes`` the L1 stakes score; both are None
-    until P2-06, which makes this False on every tier. The client toggle is
-    ANDed with this by the caller.
+    until P2-06, which makes this False on every tier. The coordinator uses
+    this value alone (P2-42).
     """
     if profile.l3_reasoning == "never":
         return False
@@ -275,3 +275,32 @@ def trim_history(
         used += cost
         kept += 1
     return history[len(history) - kept:]
+
+
+# P2-42: the client no longer controls reasoning; old clients may still send these.
+DEPRECATED_REASONING_FIELDS = (
+    "reasoning_enabled",
+    "l2_reasoning_enabled",
+    "deep_analysis_enabled",
+    "enable_l2",
+    "enable_l2_analysis",
+)
+_deprecation_logged = False
+
+
+def note_deprecated_reasoning_controls(provided: list[str]) -> None:
+    """Log one deprecation line per process the first time any old field is sent."""
+    global _deprecation_logged
+    if provided and not _deprecation_logged:
+        _deprecation_logged = True
+        logger.warning(
+            "Deprecated reasoning controls ignored (%s): the tier slider and L1 "
+            "route decide how much Aura thinks (P2-42).",
+            ", ".join(provided),
+        )
+
+
+def reset_deprecation_latch() -> None:
+    """Re-arm the one-line deprecation log (tests)."""
+    global _deprecation_logged
+    _deprecation_logged = False

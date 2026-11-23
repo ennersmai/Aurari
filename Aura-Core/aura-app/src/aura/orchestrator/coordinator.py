@@ -46,7 +46,9 @@ from aura.tiers import (
     gated_tools_denied,
     l2_analysis_allowed,
     l2_reasoning_allowed,
+    TIER_NAMES,
     l3_reasoning_allowed,
+    note_deprecated_reasoning_controls,
     recall_budget_tokens,
     trim_history,
 )
@@ -102,6 +104,8 @@ class TurnEvent:
 
     kind: Literal["delta", "done"]
     text: str
+    # Final done event only: {"deep_reasoning", "tier", "route"} (P2-42).
+    meta: dict[str, Any] | None = None
 
 
 class SystemState(str, Enum):
@@ -1664,13 +1668,13 @@ Constraints:
         *,
         stream: bool,
         context_limit: int | None,
-        enable_l2: bool,
-        conversation_id: str | None,
-        reasoning_enabled: bool,
-        l2_reasoning_enabled: bool,
-        session_id: str | None,
-        context_mode: str,
-        requester_role: str,
+        enable_l2: bool | None = None,
+        conversation_id: str | None = None,
+        reasoning_enabled: bool | None = None,
+        l2_reasoning_enabled: bool | None = None,
+        session_id: str | None = None,
+        context_mode: str = "deep_work",
+        requester_role: str = "owner",
         venue: str = "app",
         appraisal: "_AppraisalHandle | None" = None,
     ):
@@ -1695,7 +1699,25 @@ Constraints:
         ``done`` event supplies the response; the post-response chain is
         scheduled before the ``done`` event so it still runs only after the
         last delta has been consumed, as today.
+
+        Reasoning controls (P2-42): ``enable_l2``, ``reasoning_enabled`` and
+        ``l2_reasoning_enabled`` are accepted for old callers and IGNORED (one
+        deprecation log line per process). Effective values:
+
+        * ``tier_profiles_enabled`` ON: ``enable_l2 = l2_analysis_allowed(profile)``,
+          ``l2_reasoning = l2_reasoning_allowed(profile)``,
+          ``reasoning = l3_reasoning_allowed(profile, route, stakes)``.
+        * ``tier_profiles_enabled`` OFF: fixed values equal to the old frontend
+          default request: reasoning False, l2_reasoning False, deep analysis
+          (enable_l2) True; L2 still needs ``settings.layer_l2_enabled``.
         """
+        note_deprecated_reasoning_controls([
+            n for n, v in (
+                ("enable_l2", enable_l2),
+                ("reasoning_enabled", reasoning_enabled),
+                ("l2_reasoning_enabled", l2_reasoning_enabled),
+            ) if v is not None
+        ])
         # Stage 1: set the LLM router context mode.
         self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
 
@@ -1758,12 +1780,13 @@ Constraints:
         # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
         profile = active_profile() if settings.tier_profiles_enabled else None
         history_for_turn = conversation_history
+        # P2-42: client values are ignored; the profile and route decide alone.
+        enable_l2, l2_reasoning_enabled, reasoning_enabled = True, False, False
         if profile is not None:
-            # The profile is a ceiling: the client toggles are ANDed with it (P2-03).
-            enable_l2 = enable_l2 and l2_analysis_allowed(profile)
-            l2_reasoning_enabled = l2_reasoning_enabled and l2_reasoning_allowed(profile)
+            enable_l2 = l2_analysis_allowed(profile)
+            l2_reasoning_enabled = l2_reasoning_allowed(profile)
             # Route and stakes are None unless l1_routes_enabled (P2-06).
-            reasoning_enabled = reasoning_enabled and l3_reasoning_allowed(profile, route, stakes)
+            reasoning_enabled = l3_reasoning_allowed(profile, route, stakes)
             if conversation_history:
                 history_for_turn = trim_history(conversation_history, profile, estimate_tokens)
             self._publish_trace("TIER", "profile_applied", {
@@ -1868,7 +1891,11 @@ Constraints:
             appraisal.handed_off = True
 
         # Stage 10: yield the final done event with the accumulated response.
-        yield TurnEvent("done", response)
+        yield TurnEvent("done", response, meta={
+            "deep_reasoning": bool(reasoning_enabled),
+            "tier": TIER_NAMES.get(settings.model_stack_index, "lean"),
+            "route": route,
+        })
 
     async def process_query(
         self,
@@ -1878,13 +1905,14 @@ Constraints:
         context_limit: int | None = None,
         enable_l2_analysis: bool | None = None,
         conversation_id: str | None = None,
-        reasoning_enabled: bool = False,
-        l2_reasoning_enabled: bool = False,
-        deep_analysis_enabled: bool = True,
+        reasoning_enabled: bool | None = None,
+        l2_reasoning_enabled: bool | None = None,
+        deep_analysis_enabled: bool | None = None,
         session_id: str | None = None,
         context_mode: str = "deep_work",
         requester_role: str = "owner",
         venue: str = "app",
+        turn_meta: dict[str, Any] | None = None,
     ) -> str:
         """
         Full orchestrated query processing.
@@ -1900,12 +1928,24 @@ Constraints:
 
         Returns:
             Generated response
+
+        ``reasoning_enabled``, ``l2_reasoning_enabled``, ``deep_analysis_enabled``
+        and ``enable_l2_analysis`` are deprecated and ignored (P2-42): see
+        :meth:`_turn_stages` for the effective values. If ``turn_meta`` is a
+        dict it is filled with ``deep_reasoning``, ``tier`` and ``route``.
         """
         self.logger.info(f"Processing query from user {user_id} (session={session_id or 'main'})")
 
-        # Use deep_analysis_enabled if provided, otherwise fall back to
-        # enable_l2_analysis for backward compatibility.
-        final_l2_enabled = deep_analysis_enabled if enable_l2_analysis is None else enable_l2_analysis
+        note_deprecated_reasoning_controls([
+            n for n, v in (
+                ("reasoning_enabled", reasoning_enabled),
+                ("l2_reasoning_enabled", l2_reasoning_enabled),
+                ("deep_analysis_enabled", deep_analysis_enabled),
+                ("enable_l2_analysis", enable_l2_analysis),
+            ) if v is not None
+        ])
+        if turn_meta is not None:
+            turn_meta.update(self._default_turn_meta())
 
         response = ""
         async for ev in self._turn_pipeline(
@@ -1914,10 +1954,7 @@ Constraints:
             conversation_history,
             stream=False,
             context_limit=context_limit,
-            enable_l2=final_l2_enabled,
             conversation_id=conversation_id,
-            reasoning_enabled=reasoning_enabled,
-            l2_reasoning_enabled=l2_reasoning_enabled,
             session_id=session_id,
             context_mode=context_mode,
             requester_role=requester_role,
@@ -1925,7 +1962,18 @@ Constraints:
         ):
             if ev.kind == "done":
                 response = ev.text
+                if turn_meta is not None and ev.meta:
+                    turn_meta.update(ev.meta)
         return response
+
+    @staticmethod
+    def _default_turn_meta() -> dict[str, Any]:
+        """Turn metadata for replies that never reach generation (P2-42)."""
+        return {
+            "deep_reasoning": False,
+            "tier": TIER_NAMES.get(settings.model_stack_index, "lean"),
+            "route": None,
+        }
 
     def _compute_resonance_score(self, emotional_state: EmotionState) -> float:
         """
@@ -2576,13 +2624,14 @@ Constraints:
         user_id: str = "default",
         conversation_history: list[dict[str, str]] | None = None,
         conversation_id: str | None = None,
-        reasoning_enabled: bool = False,
-        l2_reasoning_enabled: bool = False,
-        deep_analysis_enabled: bool = True,
+        reasoning_enabled: bool | None = None,
+        l2_reasoning_enabled: bool | None = None,
+        deep_analysis_enabled: bool | None = None,
         session_id: str | None = None,
         context_mode: str = "deep_work",
         requester_role: str = "owner",
         venue: str = "app",
+        turn_meta: dict[str, Any] | None = None,
     ):
         """
         Stream orchestrated response generation.
@@ -2591,18 +2640,27 @@ Constraints:
         It drives the pipeline with ``stream=True`` and yields the text of each
         ``delta`` event as it is produced; the final ``done`` event is ignored.
 
-        Yields text chunks as they're generated.
+        Yields text chunks as they're generated. The three reasoning keyword
+        args are deprecated and ignored (P2-42). If ``turn_meta`` is a dict it
+        is filled with ``deep_reasoning``, ``tier`` and ``route`` before the
+        stream ends.
         """
+        note_deprecated_reasoning_controls([
+            n for n, v in (
+                ("reasoning_enabled", reasoning_enabled),
+                ("l2_reasoning_enabled", l2_reasoning_enabled),
+                ("deep_analysis_enabled", deep_analysis_enabled),
+            ) if v is not None
+        ])
+        if turn_meta is not None:
+            turn_meta.update(self._default_turn_meta())
         async for ev in self._turn_pipeline(
             user_input,
             user_id,
             conversation_history,
             stream=True,
             context_limit=None,
-            enable_l2=deep_analysis_enabled,
             conversation_id=conversation_id,
-            reasoning_enabled=reasoning_enabled,
-            l2_reasoning_enabled=l2_reasoning_enabled,
             session_id=session_id,
             context_mode=context_mode,
             requester_role=requester_role,
@@ -2610,6 +2668,8 @@ Constraints:
         ):
             if ev.kind == "delta":
                 yield ev.text
+            elif ev.kind == "done" and turn_meta is not None and ev.meta:
+                turn_meta.update(ev.meta)
 
     async def _appraise_message(
         self,

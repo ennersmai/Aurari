@@ -6,8 +6,6 @@ import {
   Typography,
   Container,
   Slider,
-  Switch,
-  FormControlLabel,
   Button,
   TextField,
   Card,
@@ -38,7 +36,6 @@ export default function SettingsPage() {
   // Local state for form
   const [localUserId, setLocalUserId] = useState(settings.commanderIdentity);
   const [localContextLimit, setLocalContextLimit] = useState(settings.contextWindowSize);
-  const [localUseL2, setLocalUseL2] = useState(settings.enableL2Analysis);
   
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -51,7 +48,6 @@ export default function SettingsPage() {
       updateSettings({
         commanderIdentity: localUserId,
         contextWindowSize: localContextLimit,
-        enableL2Analysis: localUseL2
       });
       setSnackbar({
         open: true,
@@ -71,7 +67,6 @@ export default function SettingsPage() {
     resetSettings();
     setLocalUserId('Mai');
     setLocalContextLimit(20);
-    setLocalUseL2(true);
     setSnackbar({
       open: true,
       message: 'Settings reset to defaults',
@@ -203,36 +198,6 @@ export default function SettingsPage() {
             </Box>
 
             <Divider sx={{ my: 3 }} />
-
-            {/* L2 Reasoning */}
-            <Box sx={{ mb: 4 }}>
-              <FormControlLabel
-                control={
-                  <Switch
-                    checked={localUseL2}
-                    onChange={(e) => setLocalUseL2(e.target.checked)}
-                    sx={{
-                      '& .MuiSwitch-switchBase.Mui-checked': {
-                        color: '#f5cc7f',
-                      },
-                      '& .MuiSwitch-switchBase.Mui-checked + .MuiSwitch-track': {
-                        backgroundColor: '#c09c58',
-                      }
-                    }}
-                  />
-                }
-                label={
-                  <Box>
-                    <Typography variant="subtitle1">
-                      Deep Reasoning (L2 Analysis)
-                    </Typography>
-                    <Typography variant="body2" color="text.secondary">
-                      Enable background analysis for deeper understanding (async processing)
-                    </Typography>
-                  </Box>
-                }
-              />
-            </Box>
 
             {/* Action Buttons */}
             <Box sx={{ display: 'flex', gap: 2, mt: 4 }}>

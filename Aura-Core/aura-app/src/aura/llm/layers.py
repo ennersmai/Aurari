@@ -1786,8 +1786,11 @@ If you include any text before or after the JSON, the system will fail."""
 
         # Native tools: the schemas travel in the API parameter (W2-37).
         # A provider error (for example 400 "tools not supported") falls back
-        # to the text stream for this round.
+        # to the text stream for this round. Once text has reached the client
+        # the fallback must not run: it would stream a second, different answer
+        # after the first (P2-07). The round then ends with the text so far.
         if native_tools:
+            streamed_text = False
             try:
                 native_calls: list[dict] = []
                 async for kind, payload in self.client.stream_with_tools(
@@ -1801,12 +1804,20 @@ If you include any text before or after the JSON, the system will fail."""
                     **(self._get_sglang_extra_params("l3") or self._get_cloud_sampling_extras()),
                 ):
                     if kind == "text":
+                        streamed_text = True
                         yield payload
                     elif kind == "tool_calls":
                         native_calls = payload
                 yield NativeCalls(native_calls)
                 return
             except Exception as e:
+                if streamed_text:
+                    logger.error(
+                        f"L3 native tool stream failed after text was sent; "
+                        f"ending the round without a text retry: {e}"
+                    )
+                    yield NativeCalls([])
+                    return
                 logger.warning(
                     f"L3 native tool stream failed; falling back to text: {e}"
                 )

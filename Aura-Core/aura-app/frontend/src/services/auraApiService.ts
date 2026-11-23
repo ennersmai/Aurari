@@ -19,10 +19,27 @@ export interface SendMessageRequest {
   session_id?: string;          // Session this chat runs under (V1PRD §4)
   // Advanced options
   context_limit?: number;      // Max conversation history messages
-  enable_l2?: boolean;          // Enable L2 post-analysis (deprecated, use deep_analysis_enabled)
-  reasoning_enabled?: boolean;  // Enable deep reasoning (Grok/DeepSeek R1) - L3
-  l2_reasoning_enabled?: boolean;  // Enable deep reasoning for L2 analysis (Grok/DeepSeek R1)
-  deep_analysis_enabled?: boolean;  // Enable L2 background analysis (async)
+  // P2-42: no reasoning fields. The tier slider and the L1 route decide how much Aura thinks.
+}
+
+/** Per-turn metadata from the backend (P2-42). */
+export interface TurnMeta {
+  deep_reasoning: boolean;
+  tier: string;
+  route: string | null;
+}
+
+/** The JSON body of /chat/message and /chat/stream. Carries no reasoning controls (P2-42). */
+export function buildChatRequestBody(request: SendMessageRequest, stream: boolean) {
+  return {
+    message: request.message,
+    user_id: request.user_id || 'default',
+    conversation_history: request.conversation_history || [],
+    stream,
+    conversation_id: request.conversation_id,
+    session_id: request.session_id || 'main',
+    context_limit: request.context_limit,
+  };
 }
 
 export interface SendMessageResponse {
@@ -34,6 +51,9 @@ export interface SendMessageResponse {
     description: string;
   };
   learning_applied?: boolean;
+  deep_reasoning?: boolean;
+  tier?: string;
+  route?: string | null;
   debug_info?: {
     injected_memories?: string[];
     active_insights?: Array<{
@@ -94,7 +114,8 @@ class AuraApiService {
   async sendMessage(request: SendMessageRequest & { onToken?: (token: string) => void }): Promise<SendMessageResponse> {
     // If streaming callback is provided, use the streaming endpoint
     if (request.onToken) {
-        const streamRequest = { ...request, stream: true };
+        let turnMeta: TurnMeta | null = null;
+        const streamRequest = { ...request, stream: true, onMeta: (m: TurnMeta) => { turnMeta = m; } };
         let fullResponse = "";
         
         try {
@@ -115,7 +136,12 @@ class AuraApiService {
                     intensity: 0.5, // Approximation
                     description: emotionState.current_state
                 } : undefined,
-                learning_applied: true
+                learning_applied: true,
+                ...(turnMeta ? {
+                  deep_reasoning: (turnMeta as TurnMeta).deep_reasoning,
+                  tier: (turnMeta as TurnMeta).tier,
+                  route: (turnMeta as TurnMeta).route,
+                } : {}),
             };
         } catch (e) {
             console.error("Streaming failed, falling back to standard request:", e);
@@ -128,20 +154,7 @@ class AuraApiService {
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        message: request.message,
-        user_id: request.user_id || 'default',
-        conversation_history: request.conversation_history || [],
-        stream: request.stream || false,
-        conversation_id: request.conversation_id,
-        session_id: request.session_id || 'main',
-        // Pass advanced options to backend
-        context_limit: request.context_limit,
-        enable_l2: request.enable_l2,  // Backward compatibility
-        reasoning_enabled: request.reasoning_enabled || false,
-        l2_reasoning_enabled: request.l2_reasoning_enabled || false,
-        deep_analysis_enabled: request.deep_analysis_enabled !== undefined ? request.deep_analysis_enabled : true,
-      }),
+      body: JSON.stringify(buildChatRequestBody(request, request.stream || false)),
     });
 
     if (!response.ok) {
@@ -155,25 +168,14 @@ class AuraApiService {
   /**
    * Stream message response (Server-Sent Events)
    */
-  async *streamMessage(request: SendMessageRequest): AsyncGenerator<string, void, unknown> {
+  async *streamMessage(request: SendMessageRequest & { onMeta?: (meta: TurnMeta) => void }): AsyncGenerator<string, void, unknown> {
     const response = await fetch(`${this.baseUrl}/chat/stream`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        message: request.message,
-        user_id: request.user_id || 'default',
-        conversation_history: request.conversation_history || [],
-        stream: true,
-        conversation_id: request.conversation_id,  // CRITICAL: Pass conversation_id for persistence
-        session_id: request.session_id || 'main',
-        context_limit: request.context_limit,
-        enable_l2: request.enable_l2,  // Backward compatibility
-        reasoning_enabled: request.reasoning_enabled || false,
-        l2_reasoning_enabled: request.l2_reasoning_enabled || false,
-        deep_analysis_enabled: request.deep_analysis_enabled !== undefined ? request.deep_analysis_enabled : true,
-      }),
+      // conversation_id is CRITICAL here: the backend persists the streamed reply with it.
+      body: JSON.stringify(buildChatRequestBody(request, true)),
     });
 
     if (!response.ok) {
@@ -206,6 +208,15 @@ class AuraApiService {
             try {
                 // Try parsing as JSON first (handles newlines and special chars)
                 const parsed = JSON.parse(data);
+                if (parsed && typeof parsed === 'object' && parsed.type === 'turn_meta') {
+                  // P2-42: final turn metadata event, not text.
+                  request.onMeta?.({
+                    deep_reasoning: !!parsed.deep_reasoning,
+                    tier: String(parsed.tier ?? ''),
+                    route: parsed.route ?? null,
+                  });
+                  continue;
+                }
                 yield parsed;
             } catch {
                 // Fallback to raw string (legacy)

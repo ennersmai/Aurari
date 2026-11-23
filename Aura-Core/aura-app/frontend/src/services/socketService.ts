@@ -50,6 +50,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   timestamp: string;
   conversationId: string;
+  /** P2-42: set on assistant messages from a live turn. */
+  turnMeta?: { deep_reasoning: boolean; tier: string; route: string | null };
 }
 
 export interface EmotionalState {

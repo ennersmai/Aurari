@@ -356,7 +356,7 @@ function MissionControlContent() {
       // FIX #1: Use ref for settings
       const response = await auraApi.sendMessage({
         message: messageContent, user_id: settingsRef.current.commanderIdentity, conversation_history: conversationHistory,
-        context_limit: settingsRef.current.contextWindowSize, enable_l2: settingsRef.current.enableL2Analysis,
+        context_limit: settingsRef.current.contextWindowSize,
         onToken: async (token) => {
           // FIX #3: Check abort during streaming
           if (activeRequestRef.current.aborted) return;

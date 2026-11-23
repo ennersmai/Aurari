@@ -29,6 +29,8 @@ import {
 } from '@mui/material';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatMessage from '@/components/chat/ChatMessage';
+import { TierChip } from '@/components/chat/TurnMarkers';
+import { useActiveTier } from '@/hooks/useActiveTier';
 import NeuralSidebar from '@/components/neural/NeuralSidebar';
 import { useSocket } from '@/hooks/useSocket';
 import { useAppDispatch, useAppSelector } from '@/hooks/useRedux';
@@ -68,9 +70,6 @@ import SchoolIcon from '@mui/icons-material/School';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import SettingsVoiceIcon from '@mui/icons-material/SettingsVoice';
-import PsychologyIcon from '@mui/icons-material/Psychology';
-import AnalyticsIcon from '@mui/icons-material/Analytics';
-import AutoAwesomeIcon from '@mui/icons-material/AutoAwesome';
 import BedtimeIcon from '@mui/icons-material/Bedtime';
 import WbSunnyIcon from '@mui/icons-material/WbSunny';
 import TimelineIcon from '@mui/icons-material/Timeline';
@@ -708,6 +707,7 @@ interface Message {
   role: string;
   timestamp: string;
   conversationId: string;
+  turnMeta?: { deep_reasoning: boolean; tier: string; route: string | null };
 }
 
 // Add this new component that will display model thinking in chat
@@ -843,14 +843,8 @@ export default function ChatPage() {
   const [modelStackIndex, setModelStackIndex] = useState(0);
   const [modelStackLoading, setModelStackLoading] = useState(false);
   
-  // Reasoning Toggle State
-  const [reasoningEnabled, setReasoningEnabled] = useState(false);
-  
-  // L2 Reasoning Toggle State
-  const [l2ReasoningEnabled, setL2ReasoningEnabled] = useState(false);
-  
-  // L2 Analysis Toggle State
-  const [deepAnalysisEnabled, setDeepAnalysisEnabled] = useState(true);
+  // P2-42: no reasoning toggles. The tier slider and the L1 route decide how much Aura thinks.
+  const activeTier = useActiveTier();
 
   // Cognitive Telemetry modal (L1/L2/L3 trace feed)
   const [telemetryOpen, setTelemetryOpen] = useState(false);
@@ -1644,10 +1638,6 @@ export default function ChatPage() {
         session_id: activeSession?.session_id ?? "main",  // V1PRD §4 — scope chat to active session
         conversation_history: conversationHistory,  // Pass conversation history for context
         context_limit: 50,
-        enable_l2: settings.enableL2Analysis ?? true,  // Use settings, default to true (backward compatibility)
-        reasoning_enabled: reasoningEnabled,  // Pass reasoning toggle state (L3)
-        l2_reasoning_enabled: l2ReasoningEnabled,  // Pass L2 reasoning toggle state
-        deep_analysis_enabled: deepAnalysisEnabled,  // Pass L2 analysis toggle state
         onToken: (token) => {
              // Append token to text buffer for TTS
              textBuffer.current += token;
@@ -1685,7 +1675,13 @@ export default function ChatPage() {
           content: response.response,
           role: 'assistant',
           timestamp: new Date().toISOString(),
-          conversationId: conversationId || 'temp'
+          conversationId: conversationId || 'temp',
+          // P2-42: lets the message show a deep-reasoning marker.
+          turnMeta: response.tier !== undefined ? {
+            deep_reasoning: !!response.deep_reasoning,
+            tier: response.tier,
+            route: response.route ?? null,
+          } : undefined,
         };
         
         dispatch(addMessage(assistantMessage));
@@ -1709,7 +1705,7 @@ export default function ChatPage() {
       console.error("Error sending message:", error);
       dispatch(endStreamingResponse());
     }
-  }, [conversationId, activeConversationId, commanderIdentity, messages, dispatch, settings.enableL2Analysis, checkForGoalPursuitRequest, checkForRestartRequired, isTTSEnabled, selectedVoice, ttsProvider, fishaudioAvailable, emotion, reasoningEnabled, l2ReasoningEnabled, deepAnalysisEnabled]);
+  }, [conversationId, activeConversationId, commanderIdentity, messages, dispatch, checkForGoalPursuitRequest, checkForRestartRequired, isTTSEnabled, selectedVoice, ttsProvider, fishaudioAvailable, emotion]);
   
   // Simplify toggle handlers to avoid type issues
   const toggleLeftDrawer = () => {
@@ -2278,25 +2274,8 @@ export default function ChatPage() {
                   {conversationId ? "Conversation" : "New Chat"}
                 </Typography>
 
-                {/* Center-Right: Deep Reasoning toggle (L3) */}
-                <Tooltip title={reasoningEnabled ? "Disable Deep Reasoning (L3)" : "Enable Deep Reasoning (L3)"}>
-                  <IconButton
-                    onClick={() => setReasoningEnabled(!reasoningEnabled)}
-                    color={reasoningEnabled ? "primary" : "default"}
-                    size="small"
-                    sx={{
-                      background: reasoningEnabled ? 'rgba(192,156,88,0.08)' : 'rgba(255,255,255,0.02)',
-                      border: '1px solid',
-                      borderColor: reasoningEnabled ? 'rgba(192,156,88,0.2)' : 'rgba(255,255,255,0.06)',
-                      borderRadius: '8px',
-                      backdropFilter: 'blur(8px)',
-                      WebkitBackdropFilter: 'blur(8px)',
-                      '&:hover': { background: reasoningEnabled ? 'rgba(192,156,88,0.15)' : 'rgba(255,255,255,0.06)' },
-                    }}
-                  >
-                    <PsychologyIcon />
-                  </IconButton>
-                </Tooltip>
+                {/* Read-only active tier chip. TODO(P2-14): open the Dashboard's Tiers section. */}
+                <TierChip tier={activeTier} onClick={() => router.push('/mission-control')} />
 
               </Box>
               
@@ -2360,42 +2339,6 @@ export default function ChatPage() {
                   }}
                 >
                   {isTTSEnabled ? <VolumeUpIcon /> : <VolumeOffIcon />}
-                </IconButton>
-
-                <IconButton
-                  onClick={() => setL2ReasoningEnabled(!l2ReasoningEnabled)}
-                  color={l2ReasoningEnabled ? "primary" : "default"}
-                  size="small"
-                  title={l2ReasoningEnabled ? "Disable L2 Reasoning" : "Enable L2 Reasoning"}
-                  sx={{
-                    background: l2ReasoningEnabled ? 'rgba(192,156,88,0.08)' : 'rgba(255,255,255,0.02)',
-                    border: '1px solid',
-                    borderColor: l2ReasoningEnabled ? 'rgba(192,156,88,0.2)' : 'rgba(255,255,255,0.06)',
-                    borderRadius: '8px',
-                    backdropFilter: 'blur(8px)',
-                    WebkitBackdropFilter: 'blur(8px)',
-                    '&:hover': { background: l2ReasoningEnabled ? 'rgba(192,156,88,0.15)' : 'rgba(255,255,255,0.06)' },
-                  }}
-                >
-                  <AutoAwesomeIcon />
-                </IconButton>
-
-                <IconButton
-                  onClick={() => setDeepAnalysisEnabled(!deepAnalysisEnabled)}
-                  color={deepAnalysisEnabled ? "primary" : "default"}
-                  size="small"
-                  title={deepAnalysisEnabled ? "Disable Background Analysis (L2)" : "Enable Background Analysis (L2)"}
-                  sx={{
-                    background: deepAnalysisEnabled ? 'rgba(192,156,88,0.08)' : 'rgba(255,255,255,0.02)',
-                    border: '1px solid',
-                    borderColor: deepAnalysisEnabled ? 'rgba(192,156,88,0.2)' : 'rgba(255,255,255,0.06)',
-                    borderRadius: '8px',
-                    backdropFilter: 'blur(8px)',
-                    WebkitBackdropFilter: 'blur(8px)',
-                    '&:hover': { background: deepAnalysisEnabled ? 'rgba(192,156,88,0.15)' : 'rgba(255,255,255,0.06)' },
-                  }}
-                >
-                  <AnalyticsIcon />
                 </IconButton>
 
                 <IconButton

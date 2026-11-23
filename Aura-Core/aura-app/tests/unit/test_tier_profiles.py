@@ -466,8 +466,9 @@ async def test_l3_reasoning_is_off_on_every_tier_until_p2_06(wired, monkeypatch,
         (0, True, True, False, False),   # Lean: profile off, ceiling wins
         (1, True, True, True, False),    # Core: analysis yes, no L2 reasoning
         (2, True, True, True, True),     # Titan: both
-        (2, False, True, False, True),   # the client can still switch things off
-        (2, True, False, True, False),
+        # P2-42: the client values are ignored, the profile decides alone.
+        (2, False, False, True, True),
+        (1, False, True, True, False),
     ],
 )
 async def test_l2_ceiling_rule(wired, monkeypatch, index, client_l2, client_l2r, want_l2, want_l2r):
@@ -496,11 +497,12 @@ async def test_flag_off_is_todays_behaviour(wired, monkeypatch):
     assert wired._select_calls[0] == {"requester_role": "owner"}
     offered = wired.llm_layers.l3_synthesis.call_args.kwargs["tools"]
     assert len(offered) == 12 and "delegate_work" in [r.name for r in offered]
-    assert wired.llm_layers.l3_synthesis.call_args.kwargs["reasoning_enabled"] is True
+    # P2-42: flag off uses the old frontend default request, not the client values.
+    assert wired.llm_layers.l3_synthesis.call_args.kwargs["reasoning_enabled"] is False
     loop = wired._loop_kwargs[0]
     assert loop["turn_budget_seconds"] is None and loop["turn_budget_usd"] is None
     assert wired._fake_recall_engine.recall.call_args.args[0].token_budget is None
     assert wired.llm_layers.l3_synthesis.call_args.args[0].conversation_history == history
     post = wired._post_response_chain.call_args.kwargs
-    assert post["enable_l2"] is True and post["l2_reasoning_enabled"] is True
+    assert post["enable_l2"] is True and post["l2_reasoning_enabled"] is False
     assert not [c for c in wired._publish_trace.call_args_list if c.args[1] == "profile_applied"]

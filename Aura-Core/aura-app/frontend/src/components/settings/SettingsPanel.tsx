@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Settings, ChevronDown, ChevronUp, User, Brain, Layers, Save, RotateCcw } from 'lucide-react';
+import { Settings, ChevronDown, ChevronUp, User, Layers, Save, RotateCcw } from 'lucide-react';
 import { useSettings } from '@/contexts/SettingsContext';
 import { cn } from '@/lib/utils';
 
@@ -14,13 +14,11 @@ export default function SettingsPanel() {
   // Local state for inputs (before save)
   const [localIdentity, setLocalIdentity] = useState(settings.commanderIdentity);
   const [localContextSize, setLocalContextSize] = useState(settings.contextWindowSize);
-  const [localEnableL2, setLocalEnableL2] = useState(settings.enableL2Analysis);
 
   const handleSave = () => {
     updateSettings({
       commanderIdentity: localIdentity,
       contextWindowSize: localContextSize,
-      enableL2Analysis: localEnableL2,
     });
     setIsDirty(false);
   };
@@ -29,15 +27,13 @@ export default function SettingsPanel() {
     resetSettings();
     setLocalIdentity('Mai');
     setLocalContextSize(20);
-    setLocalEnableL2(true);
     setIsDirty(false);
   };
 
   const checkDirty = () => {
     const changed = 
       localIdentity !== settings.commanderIdentity ||
-      localContextSize !== settings.contextWindowSize ||
-      localEnableL2 !== settings.enableL2Analysis;
+      localContextSize !== settings.contextWindowSize;
     setIsDirty(changed);
   };
 
@@ -131,38 +127,6 @@ export default function SettingsPanel() {
                 </p>
               </div>
 
-              {/* L2 Analysis Toggle */}
-              <div className="space-y-2">
-                <label className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-mono text-green-400">
-                    <Brain size={12} />
-                    <span>DEEP_REASONING (L2)</span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      setLocalEnableL2(!localEnableL2);
-                      checkDirty();
-                    }}
-                    className={cn(
-                      "relative w-12 h-6 rounded-full transition-colors",
-                      localEnableL2 ? "bg-green-600" : "bg-gray-700"
-                    )}
-                  >
-                    <motion.div
-                      animate={{ x: localEnableL2 ? 24 : 2 }}
-                      transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                      className="absolute top-1 w-4 h-4 bg-white rounded-full"
-                    />
-                  </button>
-                </label>
-                <p className="text-[10px] text-gray-500">
-                  {localEnableL2 
-                    ? '✅ Async post-response analysis running (learns from every interaction)'
-                    : '❌ L2 disabled (no learning or meta-analysis)'
-                  }
-                </p>
-              </div>
-
               {/* Action Buttons */}
               <div className="flex gap-2 pt-2 border-t border-green-900/50">
                 <button
@@ -194,8 +158,6 @@ export default function SettingsPanel() {
                 • Identity: <span className="text-blue-100">{settings.commanderIdentity}</span>
                 <br />
                 • Context: <span className="text-blue-100">{settings.contextWindowSize} msgs</span>
-                <br />
-                • L2: <span className="text-blue-100">{settings.enableL2Analysis ? 'ENABLED' : 'DISABLED'}</span>
               </div>
             </div>
           </motion.div>

@@ -192,7 +192,7 @@ async def test_c_plain_chat_pins_stream_behaviour(turn_orchestrator):
     # context with user_id == "default" and recent_critique is None.
     assert len(orch.llm_layers._stream_calls) == 1
     ctx, kwargs = orch.llm_layers._stream_calls[0]
-    assert kwargs["reasoning_enabled"] is True
+    assert kwargs["reasoning_enabled"] is False  # P2-42: client value ignored
     assert ctx.user_id == "default"
     assert ctx.recent_critique is None
 
@@ -440,9 +440,8 @@ async def test_j_post_response_chain_kwargs_match_w2_02(turn_orchestrator):
     assert kwargs["response"] == "abcd"
     assert kwargs["user_id"] == "u1"
     assert kwargs["conversation_id"] == "c1"
-    # stream path: enable_l2 == deep_analysis_enabled (not resolved via
-    # enable_l2_analysis as in process_query).
-    assert kwargs["enable_l2"] is False
+    # P2-42: the client flag is ignored; flag off means enable_l2 True.
+    assert kwargs["enable_l2"] is True
 
 
 # ---------------------------------------------------------------------------

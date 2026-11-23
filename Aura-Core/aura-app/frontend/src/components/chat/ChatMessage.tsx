@@ -6,6 +6,7 @@ import MarkdownRenderer from './MarkdownRenderer';
 import PersonIcon from '@mui/icons-material/Person';
 import SpiralAvatar from '@/components/SpiralAvatar';
 import type { ChartJsConfig } from './ChartRenderer';
+import { DeepReasoningMarker } from './TurnMarkers';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -79,6 +80,7 @@ export default function ChatMessage({ message, isLastMessage = false, onViewChar
           >
             {formattedTime}
           </Typography>
+          {!isUser && <DeepReasoningMarker meta={message.turnMeta} />}
         </Box>
         
         <Paper

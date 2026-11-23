@@ -13,9 +13,6 @@ export interface AuraSettings {
   // Context Window
   contextWindowSize: number; // 5-100
   
-  // L2 Reasoning
-  enableL2Analysis: boolean;
-  
   // X-Ray Debug Mode
   enableXRayDebug: boolean;
   
@@ -32,7 +29,6 @@ interface SettingsContextType {
 const defaultSettings: AuraSettings = {
   commanderIdentity: 'Mai',
   contextWindowSize: 20,
-  enableL2Analysis: true,
   enableXRayDebug: false,
   theme: 'dark',
 };
@@ -49,6 +45,8 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
         const stored = localStorage.getItem(SETTINGS_KEY);
         if (stored) {
           const parsed = JSON.parse(stored);
+          // P2-42: enableL2Analysis was dropped; old stored values are discarded.
+          if (parsed && typeof parsed === 'object') delete parsed.enableL2Analysis;
           return { ...defaultSettings, ...parsed };
         }
       } catch (error) {

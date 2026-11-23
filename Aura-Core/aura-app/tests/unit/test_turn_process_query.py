@@ -482,13 +482,13 @@ async def test_l_forced_seed_target_skill_id_seeds_tool_loop(turn_orchestrator):
 # (m) _post_response_chain kwargs and enable_l2 resolution
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_m_post_response_chain_kwargs_enable_l2_from_deep_when_none(turn_orchestrator):
+async def test_m_post_response_chain_kwargs_ignore_client_l2_flag(turn_orchestrator):
     orch = turn_orchestrator
     orch.llm_layers.l1_classify_intent = AsyncMock(return_value={"intent": "CHAT"})
     orch.llm_layers.l3_synthesis = AsyncMock(return_value="resp")
     orch.tool_executor.extract_tool_calls = MagicMock(return_value=[])
 
-    # enable_l2_analysis is None -> enable_l2 == deep_analysis_enabled (False here).
+    # P2-42: the deprecated client flags are ignored; flag off means enable_l2 True.
     await orch.process_query(
         "hello",
         user_id="u1",
@@ -514,7 +514,7 @@ async def test_m_post_response_chain_kwargs_enable_l2_from_deep_when_none(turn_o
     assert set(kwargs.keys()) == expected_keys
     assert kwargs["venue"] == "app"
     assert kwargs["speaker"] == "owner"
-    assert kwargs["enable_l2"] is False
+    assert kwargs["enable_l2"] is True
     assert kwargs["user_input"] == "hello"
     assert kwargs["response"] == "resp"
     assert kwargs["user_id"] == "u1"

@@ -257,14 +257,15 @@ async def test_titan_high_stakes_turns_reasoning_on(orch):
     assert _reasoning(orch) is False
 
 
-async def test_client_toggle_still_wins_when_off(orch):
+async def test_client_toggle_is_ignored_p2_42(orch):
     await _turn(orch, _l1("think"), index=2, reasoning=False)
-    assert _reasoning(orch) is False
+    assert _reasoning(orch) is True
 
 
 async def test_routes_do_not_change_reasoning_without_tier_profiles(orch):
+    # P2-42: flag off means the old frontend default (reasoning False), whatever was sent.
     await _turn(orch, _l1("think", 0.9), index=0, tiers=False, reasoning=True)
-    assert _reasoning(orch) is True
+    assert _reasoning(orch) is False
     await _turn(orch, _l1("think", 0.9), index=2, tiers=False, reasoning=False)
     assert _reasoning(orch) is False
 
