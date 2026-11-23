@@ -2422,3 +2422,21 @@
   - `tests/scenarios/test_dreaming_v2_archive_embedded.py` (new) - seven tests: 91 vs 89 days and pinned; ephemeral episodes by age and nothing deleted; rows without the field; ablation; an archived superseded fact absent from the recall trace and the temporal channel; an archived current fact hidden from all five channels (hit before, not after); `what_changed` marks the link.
 - **Archived condition:** `archived != true` everywhere (reads and the UPDATEs). Verified on the embedded engine: defining the field later does not backfill existing rows, so they hold NONE and `archived = false` matches none of them, while `archived != true` matches both those and `false` rows.
 - **Test result:** see the supervisor run.
+
+---
+
+## W4-10: Themes: communities, summaries, prioritised replay
+- **Status:** DONE
+- **Files changed:**
+  - `scripts/schema_v2.surql` - `theme`: `visibility`, `embedding` (768), `updated_at`, `fact_count`, all `option<...>` (a required field cannot be added to a table that has rows); relation `member_of` fact -> theme; `entity.summary_updated_at option<datetime>`.
+  - `src/aura/config.py` - `dreaming_replay_batch` (200), `dreaming_replay_recency_days` (14), `dreaming_theme_min_facts` (4), `dreaming_theme_summary_words` (80), `dreaming_theme_max_per_cycle` (10), `dreaming_entity_summary_max_per_cycle` (10).
+  - `src/aura/engines/dreaming/themes.py` (new) - pure `select_replay`, `label_propagation`, `communities`, `trim_words`; `update_themes` and `update_entity_summaries` (batched queries, one per relation).
+  - `src/aura/engines/dreaming/engine.py` - `_update_themes`, run after the archive phase under the same two flags. Replay "since the last cycle" uses `last_dream_cycle` (in memory, None after a restart, which replays everything).
+  - `tests/unit/test_dream_themes.py`, `tests/scenarios/test_dreaming_v2_themes_embedded.py` (new).
+- **Replay:** current unarchived facts ranked by `salience * exp(-age_days / recency_days)` (ties: newer, then id), top batch plus every fact recorded after the last cycle. Graph: replayed facts, their one-hop neighbours through shared entities, `about` edges (weight 1) and `co_used` edges (its weight).
+- **Communities:** weighted label propagation, sorted visit order, ties to the smallest label, run per fact visibility (a fact of another visibility drops out with its edges, so entities cannot bridge visibilities). Communities of at least 4 facts become candidates.
+- **Themes:** match the existing theme holding at least half of the community as `member_of` (else create). Unchanged member set: nothing. Changed: one model call, summary trimmed to the word cap in code, embedding, then one transaction replaces the `member_of` edges. Empty or failed reply: skipped and left eligible. Cap reached: remaining communities untouched until the next cycle.
+- **Entity summaries:** owner, current, unarchived facts only; entities with an owner fact newer than `summary_updated_at`; `summary_updated_at` set only when the summary was written.
+- **Model path:** `self._llm_layers.client.complete` (plain text), the same client as the retry phase.
+- **Tests:** theme created once then updated; no theme mixes visibilities; entity summary ignores guild and private facts; caps hold and the rest follow next cycle; empty reply skips and long reply is trimmed; ablation; label propagation, replay ordering.
+- **Supervisor (2026-11-23), W4-10:** after a restart (`last_dream_cycle` is in memory only) the first cycle replayed every current fact, uncapped; now it replays only the top batch, and "recorded since the last cycle" is capped at the newest `dreaming_replay_batch`. A changed community replaced the theme's whole `member_of` set, so members outside the cycle's replay and neighbours fell out of long topics; they now stay while current and unarchived, and only facts the cycle placed in another community leave. No dedicated test for member retention yet (W4-12's 90-day run covers theme stability). Suite: 743 passed, 3 skipped.

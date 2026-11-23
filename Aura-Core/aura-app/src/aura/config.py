@@ -600,6 +600,43 @@ class Settings(BaseSettings):
         ge=1,
     )
 
+    dreaming_replay_batch: int = Field(
+        default=200,
+        validation_alias="AURA_DREAMING_REPLAY_BATCH",
+        description="Top current facts by salience and recency the dream cycle replays (plus every fact recorded since the last cycle).",
+        ge=1,
+    )
+    dreaming_replay_recency_days: int = Field(
+        default=14,
+        validation_alias="AURA_DREAMING_REPLAY_RECENCY_DAYS",
+        description="Recency scale in days for replay priority: salience * exp(-age_days / this).",
+        ge=1,
+    )
+    dreaming_theme_min_facts: int = Field(
+        default=4,
+        validation_alias="AURA_DREAMING_THEME_MIN_FACTS",
+        description="Smallest community of facts that becomes a theme.",
+        ge=1,
+    )
+    dreaming_theme_summary_words: int = Field(
+        default=80,
+        validation_alias="AURA_DREAMING_THEME_SUMMARY_WORDS",
+        description="Word cap for theme and entity summaries.",
+        ge=1,
+    )
+    dreaming_theme_max_per_cycle: int = Field(
+        default=10,
+        validation_alias="AURA_DREAMING_THEME_MAX_PER_CYCLE",
+        description="Model calls for theme summaries per dream cycle.",
+        ge=1,
+    )
+    dreaming_entity_summary_max_per_cycle: int = Field(
+        default=10,
+        validation_alias="AURA_DREAMING_ENTITY_SUMMARY_MAX_PER_CYCLE",
+        description="Model calls for entity summaries per dream cycle.",
+        ge=1,
+    )
+
     # Memory v2 entity resolution (W3-14)
     memory_entity_match_threshold: float = Field(
         default=0.92,

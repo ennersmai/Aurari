@@ -22,6 +22,7 @@ DEFINE FIELD IF NOT EXISTS aliases ON entity TYPE array<string> DEFAULT []
 DEFINE FIELD IF NOT EXISTS summary ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding ON entity TYPE option<array<float, 768>>;
 DEFINE FIELD IF NOT EXISTS created_at ON entity TYPE datetime;
+DEFINE FIELD IF NOT EXISTS summary_updated_at ON entity TYPE option<datetime>;
 
 -- One conversational turn or event, verbatim. The evidence layer.
 DEFINE TABLE IF NOT EXISTS episode SCHEMAFULL;
@@ -77,6 +78,10 @@ DEFINE FIELD IF NOT EXISTS recorded_at ON question TYPE datetime;
 DEFINE TABLE IF NOT EXISTS theme SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS content ON theme TYPE string;
 DEFINE FIELD IF NOT EXISTS recorded_at ON theme TYPE datetime;
+DEFINE FIELD IF NOT EXISTS visibility ON theme TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS embedding ON theme TYPE option<array<float, 768>>;
+DEFINE FIELD IF NOT EXISTS updated_at ON theme TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS fact_count ON theme TYPE option<int>;
 
 -- Something Aura expects about the user or a task, scored once known.
 DEFINE TABLE IF NOT EXISTS prediction SCHEMAFULL;
@@ -88,7 +93,7 @@ DEFINE FIELD IF NOT EXISTS error ON prediction TYPE option<float>;
 -- ============================================================================
 -- MEMORY V2 TYPED RELATIONS (PRD 4.3)
 -- ============================================================================
--- led_to, member_of and abstracted_into are left for M5 to M7.
+-- led_to and abstracted_into are left for M5 to M7.
 
 DEFINE TABLE IF NOT EXISTS derived_from TYPE RELATION IN fact OUT episode SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS about TYPE RELATION IN fact OUT entity SCHEMAFULL;
@@ -97,6 +102,7 @@ DEFINE TABLE IF NOT EXISTS next TYPE RELATION IN episode OUT episode SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS supersedes TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS contradicts TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS answers TYPE RELATION IN fact OUT question SCHEMAFULL;
+DEFINE TABLE IF NOT EXISTS member_of TYPE RELATION IN fact OUT theme SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS co_used TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS weight ON co_used TYPE float DEFAULT 1;
 -- One edge per stored pair: feedback strengthens it rather than adding a twin.

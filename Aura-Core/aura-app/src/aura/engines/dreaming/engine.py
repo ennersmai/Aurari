@@ -27,6 +27,7 @@ from aura.clock import get_clock
 from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
+from aura.engines.dreaming.themes import update_entity_summaries, update_themes
 from aura.engines.memory.v2.extraction import run_extraction
 from aura.models.memory import DreamConsolidationReport
 
@@ -149,6 +150,12 @@ class DreamingEngine(BaseEngine):
                 await self._archive_v2_rows()
             except Exception as e:
                 self.logger.error(f"Archive phase failed: {e}", exc_info=True)
+
+        if settings.dreaming_v2_enabled and settings.memory_v2_write_enabled:
+            try:
+                await self._update_themes()
+            except Exception as e:
+                self.logger.error(f"Themes phase failed: {e}", exc_info=True)
 
         # Phase 1: Tiered Pruning
         try:
@@ -861,6 +868,22 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
         )
         self.logger.info(
             f"[DREAM-V2] Archive phase: facts={len(facts or [])}, episodes={len(episodes or [])}"
+        )
+
+    async def _update_themes(self) -> None:
+        """Themes from communities of replayed facts, then entity summaries."""
+        client = getattr(self._llm_layers, "client", None)
+        if client is None:
+            self.logger.warning("No model client available; skipping themes phase")
+            return
+        from aura.llm.embeddings import get_embeddings_client
+
+        theme_calls = await update_themes(
+            self.db, client, get_embeddings_client(), self.last_dream_cycle
+        )
+        entity_calls = await update_entity_summaries(self.db, client)
+        self.logger.info(
+            f"[DREAM-V2] Themes phase: theme_calls={theme_calls}, entity_calls={entity_calls}"
         )
 
     # =========================================================================
