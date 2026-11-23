@@ -46,6 +46,9 @@ class SynthesisContext:
         offered_tools: list | None = None,
         venue: str = "app",
         prompt_notes: list[str] | None = None,
+        skill_index: str | None = None,
+        skill_body: str | None = None,
+        skill_name: str | None = None,
     ):
         """Initialize synthesis context."""
         self.user_input = user_input
@@ -64,6 +67,10 @@ class SynthesisContext:
         self.venue = venue
         # One-line notes the coordinator adds to the prompt (P2-06).
         self.prompt_notes = prompt_notes or []
+        # Skill index (one line per live skill) and the chosen skill's body (G5-05).
+        self.skill_index = skill_index
+        self.skill_body = skill_body
+        self.skill_name = skill_name
 
 
 L1_ROUTES = ("chat", "tool", "think", "task", "teach")
@@ -1413,6 +1420,18 @@ The marker MUST use the EXACT goal_id from the suggestions above.
         if context.prompt_notes:
             lines = "".join(f"  {n}\n" for n in context.prompt_notes)
             prompt += f"<notes>\n{lines}</notes>\n"
+
+        # 6.2. Skills (G5-05): the index as one-liners, the body of the chosen skill only.
+        if context.skill_index or context.skill_body:
+            prompt += "<skills>\n"
+            if context.skill_index:
+                prompt += f"<skill_index>\n{context.skill_index}\n</skill_index>\n"
+            if context.skill_body:
+                prompt += (
+                    f'<skill_in_use name="{context.skill_name or ""}">\n'
+                    f"{context.skill_body}\n</skill_in_use>\n"
+                )
+            prompt += "</skills>\n"
 
         # 6.4. Tools offered to the model for this turn (W2-35)
         if include_tools and context.offered_tools:

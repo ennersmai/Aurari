@@ -208,6 +208,7 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
         identity_overlay=_overlay_text(session),
         skill_ref=skill_ref,
         requester_role=arguments.get("_requester_role") or "guest",
+        conversation_id=arguments.get("_conversation_id"),
     )
 
     logger.info(f"Delegation started: task={task_id}, agent={agent}, workspace={workspace}")

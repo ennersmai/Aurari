@@ -1060,6 +1060,40 @@ class Settings(BaseSettings):
         description="Quantile of the Beta posterior used as the mastery lower bound (G5-04).",
     )
 
+    skill_selection_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILL_SELECTION_ENABLED",
+        description="Put the skill index and the chosen skill's body in the prompt (G5-05). "
+        "Also needs skills_v2_enabled.",
+    )
+    skill_relevance_floor: float = Field(
+        default=0.55,
+        validation_alias="AURA_SKILL_RELEVANCE_FLOOR",
+        description="Minimum cosine of request and when_to_use for a skill to be chosen (G5-05).",
+    )
+    skill_candidates_max: int = Field(
+        default=8,
+        validation_alias="AURA_SKILL_CANDIDATES_MAX",
+        description="Most skills that enter the sampler per turn (G5-05).",
+    )
+    skill_trial_attempts: int = Field(
+        default=10,
+        validation_alias="AURA_SKILL_TRIAL_ATTEMPTS",
+        description="While the active version has fewer attempts, the previous version "
+        "is also sampled (G5-05).",
+    )
+    skill_index_max: int = Field(
+        default=50,
+        validation_alias="AURA_SKILL_INDEX_MAX",
+        description="Most one-line skill stubs placed in the prompt (G5-05).",
+    )
+    skill_embed_timeout_ms: int = Field(
+        default=300,
+        validation_alias="AURA_SKILL_EMBED_TIMEOUT_MS",
+        description="Timeout of the request embedding call when the turn has none; on "
+        "timeout no skill is chosen (G5-05).",
+    )
+
     recall_feedback_enabled: bool = Field(
         default=False,
         validation_alias="AURA_RECALL_FEEDBACK_ENABLED",

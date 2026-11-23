@@ -1,6 +1,6 @@
 """Chat API with full orchestration."""
 
-from typing import Any
+from typing import Any, Literal
 from datetime import datetime
 import json
 
@@ -369,6 +369,79 @@ async def stream_message(request: ChatRequest) -> StreamingResponse:
         generate(),
         media_type="text/event-stream",
     )
+
+
+class OutcomeRequest(BaseModel):
+    """Owner thumbs on one reply (B1-03). One of experience_id / message_id."""
+
+    experience_id: str | None = None
+    message_id: str | None = None
+    signal: Literal["up", "down"]
+    # No route has a role check (the app API is unauthenticated, the owner's own UI), so
+    # the caller states its role; anything but "owner" is refused.
+    requester_role: str = "owner"
+
+
+async def _experience_for_message(db: Any, message_id: str) -> str | None:
+    """The experience of an assistant message: ``meta.experience_id`` when stored, else the
+    newest experience whose logged response equals the message text. (The experience is
+    logged in a background task after the reply, so the message cannot carry the id.)"""
+    rows = await db.select(message_id)
+    msg = rows[0] if rows else None
+    if not isinstance(msg, dict) or msg.get("role") != "assistant":
+        return None
+    meta = msg.get("meta")
+    if isinstance(meta, dict) and meta.get("experience_id"):
+        return str(meta["experience_id"])
+    found = await db.query(
+        "SELECT experience_id FROM experience WHERE aura_response.response = $text "
+        "ORDER BY timestamp DESC LIMIT 1",
+        {"text": msg.get("content", "")},
+    )
+    for row in found:
+        if isinstance(row, dict) and row.get("experience_id"):
+            return str(row["experience_id"])
+    return None
+
+
+@router.post("/outcome")
+async def post_outcome(request: OutcomeRequest) -> dict[str, Any]:
+    """Record an explicit up/down on a reply; beats any implicit outcome (B1-03)."""
+    from aura.config import settings
+
+    if not settings.outcome_signals_enabled:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+    if request.requester_role != "owner":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Owner only")
+    if bool(request.experience_id) == bool(request.message_id):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Give exactly one of experience_id or message_id",
+        )
+    orchestrator = get_orchestrator()
+    experience_id = request.experience_id
+    if not experience_id:
+        experience_id = await _experience_for_message(get_db_client(), request.message_id or "")
+        if not experience_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No experience for that message"
+            )
+
+    from aura.engines.learning.outcomes import apply_explicit_outcome
+
+    on_outcome = None
+    if settings.skills_v2_enabled and settings.skill_attribution_enabled:
+
+        async def on_outcome(eid: str, signal: str) -> None:
+            from aura.engines.learning.skill_stats import apply_outcome_for_turn
+            from aura.engines.learning.skill_store import SkillStore
+
+            await apply_outcome_for_turn(SkillStore(orchestrator.db), eid, signal)
+
+    stored = await apply_explicit_outcome(
+        orchestrator.learning_engine, experience_id, request.signal, on_outcome
+    )
+    return {"experience_id": experience_id, "signal": stored, "source": "explicit"}
 
 
 @router.get("/task-reports")

@@ -476,6 +476,13 @@ class TaskGraphScheduler:
             hooks=code_node.CodeNodeHooks(set_status, escalate, wait_started, wait_ended, decision_pending),
         )
         out = await runner.run()
+        if out.ok:
+            # Review passed (with or without a merge) or the owner approved the merge (B1-03).
+            from aura.engines.learning.outcomes import record_task_evidence
+
+            await record_task_evidence(
+                getattr(graph, "conversation_id", None), getattr(graph, "created_at", None)
+            )
         return NodeOutcome(ok=out.ok, report=out.report, transcript=out.transcript, refs=out.refs)
 
     async def _run_think(

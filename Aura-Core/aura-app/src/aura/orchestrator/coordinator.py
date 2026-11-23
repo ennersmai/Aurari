@@ -92,6 +92,10 @@ class TurnContext:
     # empty until then. ``turn_tools`` collects the tool names the loop ran (G5-04).
     chosen_skills: list = field(default_factory=list)
     turn_tools: list[str] = field(default_factory=list)
+    # G5-05: skill index text, the chosen skill's body and name; None when off.
+    skill_index: str | None = None
+    skill_body: str | None = None
+    skill_name: str | None = None
 
 
 @dataclass
@@ -674,6 +678,53 @@ Constraints:
             r.name for r in get_tool_registry().all()
             if not session.is_tool_allowed(r.name)[0]
         }
+
+    async def _select_skills(
+        self, ctx: "TurnContext", user_input: str, requester_role: str, profile: Any
+    ) -> None:
+        """Fill ``ctx.skill_*`` and ``ctx.chosen_skills`` (G5-05). Never fails the turn.
+
+        The recall engine keeps its embedding private, so the request is embedded
+        once here (timeout ``skill_embed_timeout_ms``; on timeout no skill). The
+        tool filter is the tier's gated tools plus the session's allow/denylist.
+        """
+        from aura.engines.learning.skill_index import select_for_turn, selection_enabled
+
+        if not selection_enabled() or requester_role != "owner":
+            return
+        try:
+            import random
+
+            from aura.engines.learning.skill_store import SkillStore
+            from aura.llm.embeddings import get_embeddings_client
+
+            denied = gated_tools_denied(profile) if profile else set()
+            session = ctx.session
+
+            def tool_allowed(name: str) -> bool:
+                if name in denied:
+                    return False
+                return session is None or session.is_tool_allowed(name)[0]
+
+            result = await select_for_turn(
+                SkillStore(self.db),
+                user_input,
+                requester_role,
+                random.Random(),
+                embed=get_embeddings_client().embed,
+                tool_allowed=tool_allowed,
+            )
+            ctx.skill_index = result.index_text or None
+            ctx.skill_body = result.body or None
+            ctx.skill_name = result.chosen_name
+            if result.chosen is not None:
+                ctx.chosen_skills.append(result.chosen)
+            sc = ctx.synthesis_context
+            sc.skill_index, sc.skill_body, sc.skill_name = (
+                ctx.skill_index, ctx.skill_body, ctx.skill_name,
+            )
+        except Exception as e:
+            self.logger.warning(f"Skill selection failed (non-critical): {e}")
 
     async def _pre_intent_reply(self, user_input: str, user_id: str) -> str | None:
         """
@@ -1495,6 +1546,9 @@ Constraints:
                 offered_tools=None if final else ctx.offered_tools,
                 venue=ctx.venue,
                 prompt_notes=ctx.prompt_notes,
+                skill_index=ctx.skill_index,
+                skill_body=ctx.skill_body,
+                skill_name=ctx.skill_name,
             )
 
             round_response = await self.llm_layers.l3_synthesis(
@@ -1642,6 +1696,9 @@ Constraints:
                 offered_tools=None if final else ctx.offered_tools,
                 venue=ctx.venue,
                 prompt_notes=ctx.prompt_notes,
+                skill_index=ctx.skill_index,
+                skill_body=ctx.skill_body,
+                skill_name=ctx.skill_name,
             )
 
             round_response = ""
@@ -1909,6 +1966,9 @@ Constraints:
         except Exception as e:
             self.logger.warning(f"Tool selection failed (non-critical): {e}")
             ctx.offered_tools = []
+
+        # Stage 6.6: skill index and the chosen skill's body (G5-05). No model call.
+        await self._select_skills(ctx, user_input, requester_role, profile)
 
         # Stage 7: cache the system prompt for debugging (before synthesis).
         await self._cache_system_prompt(ctx.synthesis_context, user_input, user_id)

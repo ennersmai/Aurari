@@ -121,6 +121,10 @@ class DelegationConfig:
     # G5-04: the live skill version whose body is in ``skill`` and who asked for the task.
     skill_ref: Optional[tuple[str, int]] = None
     requester_role: str = "guest"
+    # B1-03: the conversation that asked for the task and when, so a passing review can
+    # mark the requesting turn positive. No experience id exists yet at request time.
+    conversation_id: Optional[str] = None
+    requested_at: Optional[Any] = None
 
 
 class DelegationRunner:
@@ -825,6 +829,10 @@ class DelegationRunner:
             logger.info(f"Task {task_id} marked as needs_owner: {reason}")
 
         await self._count_skill_outcome(task_id, outcome, reviewed)
+        if outcome == "succeeded" and reviewed and self.config.requester_role == "owner":
+            from aura.engines.learning.outcomes import record_task_evidence
+
+            await record_task_evidence(self.config.conversation_id, self.config.requested_at)
 
         # Memory v2 write (4.8): store episode and fact when enabled
         if settings.memory_v2_write_enabled:
@@ -1076,6 +1084,7 @@ async def start_delegation(
     identity_overlay: Optional[str] = None,
     skill_ref: Optional[tuple[str, int]] = None,
     requester_role: str = "guest",
+    conversation_id: Optional[str] = None,
 ) -> str:
     """Start a delegation in the background and return the task ID."""
     config = DelegationConfig(
@@ -1089,6 +1098,8 @@ async def start_delegation(
         identity_overlay=identity_overlay,
         skill_ref=skill_ref,
         requester_role=requester_role,
+        conversation_id=conversation_id,
+        requested_at=get_clock().now() if conversation_id else None,
     )
     runner = DelegationRunner(config)
     task_id = await runner.run()

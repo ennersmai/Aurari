@@ -210,7 +210,8 @@ class ToolExecutor:
             if session is not None and tool_name == "delegate_work":
                 arguments["_session"] = session
             # plan_task reports into this conversation (P2-11); same reserved-key rule.
-            if conversation_id and tool_name == "plan_task":
+            # delegate_work links a passing task to the requesting turn (B1-03).
+            if conversation_id and tool_name in ("plan_task", "delegate_work"):
                 arguments["_conversation_id"] = conversation_id
 
         

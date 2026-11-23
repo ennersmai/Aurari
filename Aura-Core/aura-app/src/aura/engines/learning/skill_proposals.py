@@ -71,6 +71,7 @@ async def propose_skill(
     version = await store.add_version(
         doc.id, draft.get("body", ""), source, tools=draft.get("tools"),
         pitfalls=draft.get("pitfalls"), source_task=source_task,
+        examples=[source_task] if source_task else None,
         change_note=draft.get("change_note") or (f"merged into '{doc.name}'" if merged else None),
     )
     await _ask_owner(decisions or get_decision_service(), doc, version, origin_speaker)

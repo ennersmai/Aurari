@@ -7,6 +7,16 @@ explicit positive feedback or passing tests of a delegated task, and otherwise
 
 Turns are kept in a small in-memory ring per conversation (no persistence). When
 the conversation id is unknown the caller keys the ring by user id.
+
+B1-03 adds two more sources (``source`` values only; the signal vocabulary stays
+``positive|negative|unknown``): ``explicit`` (owner thumbs through
+``POST /chat/outcome``, applied by :func:`apply_explicit_outcome`) and ``task``
+(a delegated task or code node finished with a passing review or an approved
+merge, applied by :func:`record_task_evidence` to the turn that requested it).
+An explicit signal beats everything and is never replaced by a task signal.
+
+Consumers of the outcome: skill statistics (G5-04, through ``on_outcome``),
+prediction settlement (B6) and dismissal learning (B5-03).
 """
 
 from __future__ import annotations
@@ -15,6 +25,7 @@ import logging
 import math
 from collections import deque
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from aura.config import settings
@@ -28,6 +39,33 @@ CORRECTION_MARKERS: tuple[str, ...] = ("no,", "that's not", "that’s not", "i m
 _RING_CAP_KEYS = 256  # bound on the number of conversations kept
 
 _rings: dict[str, deque["Turn"]] = {}
+
+
+@dataclass
+class _Logged:
+    """One owner turn remembered for task evidence (B1-03)."""
+
+    at: datetime
+    experience_id: str
+    source: str | None = None  # source of the last patch, if any
+
+
+_TURN_LOG_CAP = 64
+_turn_log: dict[str, deque[_Logged]] = {}
+# The engine and hook of the last tracked turn; task evidence has no coordinator in hand.
+_bound: dict[str, Any] = {"engine": None, "on_outcome": None}
+
+
+def _now() -> datetime:
+    from aura.clock import get_clock
+
+    return _aware(get_clock().now())
+
+
+def _aware(value: Any) -> datetime:
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
 
 
 @dataclass
@@ -90,6 +128,67 @@ def _outcome_dict(signal: str, source: str) -> dict[str, Any]:
 
 def reset_rings() -> None:
     _rings.clear()
+    _turn_log.clear()
+    _bound.update(engine=None, on_outcome=None)
+
+
+def _mark(experience_id: str, source: str, *, resolve: bool = False) -> None:
+    for log in _turn_log.values():
+        for entry in log:
+            if entry.experience_id == experience_id:
+                entry.source = source
+    if resolve:
+        for ring in _rings.values():
+            for turn in ring:
+                if turn.experience_id == experience_id:
+                    turn.resolved = True
+
+
+async def apply_explicit_outcome(
+    engine: Any, experience_id: str, signal: str, on_outcome: Any = None
+) -> str:
+    """Owner thumbs: ``signal`` is ``up`` or ``down``. Overrides any implicit outcome
+    and calls the same downstream hook as G5-03. Returns the stored signal."""
+    stored = {"up": "positive", "down": "negative"}[signal]
+    _mark(experience_id, "explicit", resolve=True)
+    await engine.set_experience_outcome(experience_id, _outcome_dict(stored, "explicit"))
+    if on_outcome is not None:
+        try:
+            await on_outcome(experience_id, stored)
+        except Exception as exc:
+            logger.warning("Outcome hook failed (non-critical): %s", exc)
+    return stored
+
+
+async def record_task_evidence(conversation_id: str | None, requested_at: Any) -> str | None:
+    """A task requested in ``conversation_id`` at ``requested_at`` finished with a passing
+    review or an approved merge: mark the turn that requested it positive, source ``task``.
+
+    The requesting turn is the first owner turn logged at or after ``requested_at`` (a turn
+    is logged right after its reply, and a task is requested during that reply). Returns the
+    experience id patched, or None (flag off, unknown turn, explicit signal present). Never raises.
+    """
+    try:
+        if not settings.outcome_signals_enabled or not conversation_id or requested_at is None:
+            return None
+        engine = _bound["engine"]
+        if engine is None:
+            return None
+        since = _aware(requested_at)
+        entry = next((e for e in _turn_log.get(conversation_id, ()) if e.at >= since), None)
+        if entry is None or entry.source in ("explicit", "task"):
+            return None
+        entry.source = "task"
+        await engine.set_experience_outcome(
+            entry.experience_id, _outcome_dict("positive", "task")
+        )
+        hook = _bound["on_outcome"]
+        if hook is not None:
+            await hook(entry.experience_id, "positive")
+        return entry.experience_id
+    except Exception as exc:
+        logger.warning("Task evidence not recorded (non-critical): %s", exc)
+        return None
 
 
 async def track_turn_outcome(
@@ -137,6 +236,12 @@ async def _track(
     # Guest turns neither classify nor get classified.
     if speaker != "owner" or not experience_id or not (text or "").strip():
         return
+    _bound.update(engine=engine, on_outcome=on_outcome)
+    log = _turn_log.get(key)
+    if log is None:
+        if len(_turn_log) >= _RING_CAP_KEYS:
+            _turn_log.pop(next(iter(_turn_log)))
+        log = _turn_log[key] = deque(maxlen=_TURN_LOG_CAP)
     ring = _rings.get(key)
     if ring is None:
         if len(_rings) >= _RING_CAP_KEYS:
@@ -160,16 +265,19 @@ async def _track(
         signal, source = await classify_outcome(prev, current, embeddings)
         if signal == "negative":
             prev.resolved = True
+            _mark(prev.experience_id, source)
             await engine.set_experience_outcome(
                 prev.experience_id, _outcome_dict(signal, source)
             )
             await patched(prev.experience_id, signal)
             break
     ring.append(current)
+    log.append(_Logged(at=_now(), experience_id=experience_id))
 
     if explicit_feedback in ("positive", "negative"):
         # Thumbs on this turn's own reply overrides.
         current.resolved = True
+        _mark(experience_id, "explicit")
         await engine.set_experience_outcome(
             experience_id, _outcome_dict(explicit_feedback, "explicit")
         )
