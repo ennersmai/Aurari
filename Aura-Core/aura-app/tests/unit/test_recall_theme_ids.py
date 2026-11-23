@@ -41,3 +41,11 @@ async def test_theme_query_binds_bare_fact_ids():
         RecordID("fact", "81n800zrm8eggdub8p8z"),
         RecordID("fact", "abc"),
     ]
+
+
+def test_to_record_id_strips_digit_id_brackets():
+    from surrealdb import RecordID
+    from aura.db.query_utils import to_record_id
+    rid = RecordID("fact", "81n8abc")
+    assert to_record_id(str(rid)) == rid
+    assert to_record_id("fact:abc") == RecordID("fact", "abc")

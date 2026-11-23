@@ -51,12 +51,16 @@ def to_record_id(thing: Any) -> Any:
     A ``"table:id"`` string with both a non-empty table and a non-empty
     id becomes ``RecordID(table, id)``.  Anything else — a value that is
     already a ``RecordID``, a bare table name like ``"memory"`` with no
-    colon, or any non-string value — is returned unchanged.
+    colon, or any non-string value — is returned unchanged. Angle brackets
+    from ``str(RecordID)`` (digit-leading ids) are stripped from the id.
     """
     if RecordID is not None and isinstance(thing, RecordID):
         return thing
     if isinstance(thing, str) and ":" in thing:
         table, _, rid = thing.partition(":")
+        # ``str(RecordID)`` wraps ids that start with a digit as ``table:⟨id⟩``;
+        # the brackets are not part of the id (2026-11-24, theme recall bug).
+        rid = rid.replace("⟨", "").replace("⟩", "")
         if table and rid and RecordID is not None:
             return RecordID(table, rid)
     return thing
