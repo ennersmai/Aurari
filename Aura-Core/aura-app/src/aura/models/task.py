@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from aura.clock import get_clock
 from aura.models.base import BaseModel
 
 
@@ -61,7 +62,7 @@ class TaskStepRecord(BaseModel):
     result: str | None = None
     success: bool = True
     duration_ms: int = 0
-    timestamp: float = Field(default_factory=lambda: datetime.utcnow().timestamp())
+    timestamp: float = Field(default_factory=lambda: get_clock().now().timestamp())
     emotional_state_snapshot: EmotionalSnapshot | None = Field(
         default=None,
         description="Emotional state frozen at step creation time",
@@ -100,6 +101,10 @@ class Task(BaseModel):
     # delegated tasks without guessing from session_id.
     delegated: bool = Field(default=False, description="Task runs as an OpenCode delegation")
 
+    # Who asked for a delegated task, and whether its review passed (G6-01).
+    requested_by_role: str | None = Field(default=None, description="owner or guest")
+    reviewed: bool | None = Field(default=None, description="Review passed (delegated tasks)")
+
     # Memory isolation
     task_memory_namespace: str = Field(
         default="",
@@ -107,8 +112,8 @@ class Task(BaseModel):
     )
 
     # Timestamps
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: get_clock().now())
+    updated_at: datetime = Field(default_factory=lambda: get_clock().now())
     completed_at: datetime | None = None
 
     # Emotional tracking

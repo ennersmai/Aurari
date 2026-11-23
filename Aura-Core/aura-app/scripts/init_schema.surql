@@ -229,11 +229,13 @@ DEFINE FIELD origin ON goal TYPE string;
 DEFINE INDEX goal_status ON goal FIELDS status;
 DEFINE INDEX goal_priority ON goal FIELDS priority;
 
+-- Legacy goal-task fields are optional: TaskQueueService (setup_tasks.surql) writes the
+-- agent-task shape. OVERWRITE fixes databases created before this change (2026-11-24).
 DEFINE TABLE task SCHEMAFULL;
-DEFINE FIELD goal_id ON task TYPE record<goal>;
-DEFINE FIELD description ON task TYPE string;
+DEFINE FIELD OVERWRITE goal_id ON task TYPE option<record<goal>>;
+DEFINE FIELD OVERWRITE description ON task TYPE option<string>;
 DEFINE FIELD status ON task TYPE string DEFAULT "pending";
-DEFINE FIELD created ON task TYPE datetime;
+DEFINE FIELD OVERWRITE created ON task TYPE option<datetime>;
 DEFINE FIELD completed ON task TYPE option<datetime>;
 DEFINE FIELD result ON task TYPE option<string>;
 DEFINE FIELD session_id ON task TYPE string DEFAULT "main";

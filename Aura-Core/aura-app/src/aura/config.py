@@ -1094,6 +1094,33 @@ class Settings(BaseSettings):
         "timeout no skill is chosen (G5-05).",
     )
 
+    skill_distill_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILL_DISTILL_ENABLED",
+        description="Draft skills from finished delegated tasks while dreaming (G6-01). "
+        "Also needs skills_v2_enabled.",
+    )
+    skill_distill_min_steps: int = Field(
+        default=3,
+        validation_alias="AURA_SKILL_DISTILL_MIN_STEPS",
+        description="Fewest steps a task needs before it can be distilled (G6-01).",
+    )
+    skill_distill_max_per_cycle: int = Field(
+        default=2,
+        validation_alias="AURA_SKILL_DISTILL_MAX_PER_CYCLE",
+        description="Most tasks drafted in one dreaming cycle (G6-01).",
+    )
+    skill_distill_lookback_hours: float = Field(
+        default=72.0,
+        validation_alias="AURA_SKILL_DISTILL_LOOKBACK_HOURS",
+        description="How far back finished tasks are scanned for distillation (G6-01).",
+    )
+    skill_body_max_chars: int = Field(
+        default=6000,
+        validation_alias="AURA_SKILL_BODY_MAX_CHARS",
+        description="Longest skill body accepted from a draft or import (G6-01).",
+    )
+
     recall_feedback_enabled: bool = Field(
         default=False,
         validation_alias="AURA_RECALL_FEEDBACK_ENABLED",

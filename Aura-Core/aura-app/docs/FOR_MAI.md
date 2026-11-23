@@ -72,6 +72,8 @@ Settings go in Aura's `.env` unless noted.
 
 ## 5. Known follow-ups (no decision needed, listed so they are not lost)
 
+- **Fixed 2026-11-24, worth knowing:** against a database built from the real schema scripts, task creation and every task status update failed: required legacy fields, dates written as text, a status check without `needs_owner`, and step writes aimed at the wrong table. Delegations and task records were affected; the tests used fakes, so this was not seen before. Fixed, with real-database tests. If your live database already has a `task` table, restarting Aura applies the corrected field definitions (OVERWRITE).
+
 - If a sub-session cannot be resolved (session runtime error), the turn runs as the main session, so its tool allowlist is not applied (fail-open, as namespace and overlay already were). Sessions are owner-created, so the risk is low; failing closed would be a one-line change if you prefer it.
 
 - Memory v2 has no session namespaces (G4-04a finding): `episode` and `fact` have no namespace field and fact recall applies no namespace filter, so a sub-session's memories are not isolated once v2 is on. Only the old `memory` table honours namespaces. This needs its own card (schema, write path, recall filters).

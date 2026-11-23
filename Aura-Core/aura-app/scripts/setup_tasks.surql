@@ -8,9 +8,9 @@ DEFINE TABLE IF NOT EXISTS task SCHEMAFULL;
 
 DEFINE FIELD IF NOT EXISTS task_id            ON TABLE task TYPE string;
 DEFINE FIELD IF NOT EXISTS goal               ON TABLE task TYPE string;
-DEFINE FIELD IF NOT EXISTS status             ON TABLE task TYPE string
+DEFINE FIELD OVERWRITE status                ON TABLE task TYPE string
     DEFAULT "queued"
-    ASSERT $value IN ["queued", "running", "paused", "waiting_approval", "complete", "failed"];
+    ASSERT $value IN ["queued", "running", "paused", "waiting_approval", "complete", "failed", "needs_owner"];
 DEFINE FIELD IF NOT EXISTS current_step_index ON TABLE task TYPE int    DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS steps              ON TABLE task TYPE array  DEFAULT [];
 DEFINE FIELD IF NOT EXISTS workspace_path     ON TABLE task TYPE string DEFAULT "";
@@ -20,9 +20,13 @@ DEFINE FIELD IF NOT EXISTS updated_at         ON TABLE task TYPE datetime DEFAUL
 DEFINE FIELD IF NOT EXISTS completed_at       ON TABLE task TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS resonance_scores   ON TABLE task TYPE array  DEFAULT [];
 DEFINE FIELD IF NOT EXISTS blocker            ON TABLE task TYPE option<string>;
-DEFINE FIELD IF NOT EXISTS blocker_info       ON TABLE task TYPE option<object>;
+DEFINE FIELD OVERWRITE blocker_info          ON TABLE task TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS file_annotations   ON TABLE task TYPE object DEFAULT {};
 DEFINE FIELD IF NOT EXISTS file_versions      ON TABLE task TYPE object DEFAULT {};
+DEFINE FIELD IF NOT EXISTS requested_by_role  ON TABLE task TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS session_id         ON TABLE task TYPE string DEFAULT "main";
+DEFINE FIELD IF NOT EXISTS delegated          ON TABLE task TYPE option<bool>;
+DEFINE FIELD IF NOT EXISTS reviewed           ON TABLE task TYPE option<bool>;
 
 -- Indexes for fast lookups
 DEFINE INDEX IF NOT EXISTS idx_task_status ON TABLE task COLUMNS status;

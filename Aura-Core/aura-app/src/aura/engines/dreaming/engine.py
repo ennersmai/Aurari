@@ -157,6 +157,12 @@ class DreamingEngine(BaseEngine):
             except Exception as e:
                 self.logger.error(f"Themes phase failed: {e}", exc_info=True)
 
+        if settings.skills_v2_enabled and settings.skill_distill_enabled:
+            try:
+                await self._distill_skills()
+            except Exception as e:
+                self.logger.error(f"Skill distillation phase failed: {e}", exc_info=True)
+
         # Phase 1: Tiered Pruning
         try:
             report.pruned = await self._tiered_pruning()
@@ -885,6 +891,18 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
         self.logger.info(
             f"[DREAM-V2] Themes phase: theme_calls={theme_calls}, entity_calls={entity_calls}"
         )
+
+    async def _distill_skills(self) -> None:
+        """G6-01: draft skills from finished owner tasks; each becomes an unapproved candidate."""
+        client = getattr(self._llm_layers, "client", None)
+        if client is None:
+            self.logger.warning("No model client available; skipping skill distillation")
+            return
+        from aura.engines.learning.skill_distill import distill_cycle
+        from aura.llm.embeddings import get_embeddings_client
+
+        count = await distill_cycle(self.db, client, get_embeddings_client())
+        self.logger.info(f"[DREAM] Skill distillation: proposed={count}")
 
     # =========================================================================
     # HELPERS

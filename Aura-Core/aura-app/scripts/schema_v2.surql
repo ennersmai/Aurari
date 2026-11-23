@@ -204,3 +204,10 @@ DEFINE FIELD IF NOT EXISTS practice ON skill_use TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS created_at ON skill_use TYPE datetime;
 DEFINE INDEX IF NOT EXISTS skill_use_turn ON skill_use FIELDS turn_id;
 DEFINE INDEX IF NOT EXISTS skill_use_task ON skill_use FIELDS task_id;
+
+-- Delegated tasks already looked at for skill distillation (G6-01).
+DEFINE TABLE IF NOT EXISTS skill_distill_log SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS task_id ON skill_distill_log TYPE string;
+DEFINE FIELD IF NOT EXISTS outcome ON skill_distill_log TYPE string;
+DEFINE FIELD IF NOT EXISTS distilled_at ON skill_distill_log TYPE datetime;
+DEFINE INDEX IF NOT EXISTS skill_distill_log_task ON skill_distill_log FIELDS task_id UNIQUE;

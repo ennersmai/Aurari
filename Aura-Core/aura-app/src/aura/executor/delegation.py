@@ -281,6 +281,7 @@ class DelegationRunner:
         task_id = self._task.task_id
         _RUNNERS[task_id] = self
         await self._record_skill_use(task_id)
+        await self._merge_task_fields(task_queue, task_id, {"requested_by_role": self.config.requester_role})
         try:
             await self._start_session(task_queue, task_id, brief)
         except BaseException:
@@ -307,7 +308,7 @@ class DelegationRunner:
         await task_queue.db.merge(task_id, {
             "session_id": self._session_id,
             "status": TaskStatus.RUNNING.value,
-            "updated_at": get_clock().now().isoformat(),
+            "updated_at": get_clock().now(),
         })
 
         # 4. Send the brief to start the session
@@ -667,7 +668,7 @@ class DelegationRunner:
         if not files_changed:
             await task_queue.db.merge(task_id, {
                 "status": TaskStatus.COMPLETE.value,
-                "updated_at": get_clock().now().isoformat(),
+                "updated_at": get_clock().now(),
             })
             logger.info(f"Delegation succeeded (no files changed): {task_id}")
             await self._finalize_task(task_queue, task_id, "succeeded", "No files changed")
@@ -782,6 +783,13 @@ class DelegationRunner:
         except Exception as e:
             logger.warning(f"Skill use not recorded for {task_id}: {e}")
 
+    async def _merge_task_fields(self, task_queue: Any, task_id: str, fields: dict[str, Any]) -> None:
+        """G6-01: keep the requester role and review result on the task record."""
+        try:
+            await task_queue.db.merge(task_id, fields)
+        except Exception as e:
+            logger.warning(f"Task fields not stored for {task_id}: {e}")
+
     async def _count_skill_outcome(self, task_id: str, outcome: str, reviewed: bool) -> None:
         """G5-04: succeeded with a passing review counts positive, failed negative;
         needs_owner and anything else count nothing."""
@@ -816,18 +824,20 @@ class DelegationRunner:
         if outcome == "succeeded":
             await task_queue.db.merge(task_id, {
                 "status": TaskStatus.COMPLETE.value,
-                "updated_at": get_clock().now().isoformat(),
+                "updated_at": get_clock().now(),
             })
         elif outcome == "failed":
             await task_queue.fail_task(task_id, reason=reason)
         elif outcome == "needs_owner":
             await task_queue.db.merge(task_id, {
                 "status": TaskStatus.NEEDS_OWNER.value,
-                "updated_at": get_clock().now().isoformat(),
+                "updated_at": get_clock().now(),
                 "blocker": reason,
             })
             logger.info(f"Task {task_id} marked as needs_owner: {reason}")
 
+        if reviewed:
+            await self._merge_task_fields(task_queue, task_id, {"reviewed": True})
         await self._count_skill_outcome(task_id, outcome, reviewed)
         if outcome == "succeeded" and reviewed and self.config.requester_role == "owner":
             from aura.engines.learning.outcomes import record_task_evidence

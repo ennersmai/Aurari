@@ -9,15 +9,44 @@ query your task queue via the REST API built on top of this service.
 """
 
 import logging
-from datetime import datetime
+from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.db.query_utils import extract_rows
 from aura.models.task import BlockerInfo, Task, TaskStatus, TaskStepRecord
 
 logger = logging.getLogger(__name__)
+
+
+def _plain(value: Any) -> Any:
+    """Python-mode dump helper: enums become their string values, recursively.
+
+    Datetimes stay datetime objects (SurrealDB rejects ISO strings for
+    ``datetime`` fields).
+    """
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain(v) for v in value]
+    return value
+
+
+def _record_id(task_id: str) -> Any:
+    """Typed RecordID for query bindings (a bare string would name a table)."""
+    from surrealdb import RecordID
+
+    table, _, rid = task_id.partition(":")
+    return RecordID(table, rid) if rid else task_id
+
+
+def _dump(model: Any) -> dict[str, Any]:
+    """Whole-model write payload: python mode, no NONE-valued keys, enums as strings."""
+    return _plain(model.model_dump(exclude_none=True))
 
 
 class TaskQueueService:
@@ -47,6 +76,7 @@ class TaskQueueService:
         task_id = f"task:{short_id}"
         namespace = f"task_{short_id}"
 
+        now = get_clock().now()
         task = Task(
             task_id=task_id,
             goal=goal,
@@ -55,9 +85,11 @@ class TaskQueueService:
             task_memory_namespace=namespace,
             session_id=session_id,
             delegated=delegated,
+            created_at=now,
+            updated_at=now,
         )
 
-        await self.db.create(task_id, task.model_dump(mode="json"))
+        await self.db.create(task_id, _dump(task))
         logger.info(f"Task created: {task_id} (session={session_id}) — {goal[:80]}")
         return task
 
@@ -205,11 +237,11 @@ class TaskQueueService:
 
     async def complete_task(self, task_id: str) -> Task | None:
         """Mark task as completed."""
-        now = datetime.utcnow()
+        now = get_clock().now()
         await self.db.merge(task_id, {
             "status": TaskStatus.COMPLETE.value,
-            "completed_at": now.isoformat(),
-            "updated_at": now.isoformat(),
+            "completed_at": now,
+            "updated_at": now,
             "blocker": None,
         })
         logger.info(f"Task completed: {task_id}")
@@ -217,11 +249,11 @@ class TaskQueueService:
 
     async def fail_task(self, task_id: str, reason: str = "") -> Task | None:
         """Mark task as failed."""
-        now = datetime.utcnow()
+        now = get_clock().now()
         await self.db.merge(task_id, {
             "status": TaskStatus.FAILED.value,
-            "completed_at": now.isoformat(),
-            "updated_at": now.isoformat(),
+            "completed_at": now,
+            "updated_at": now,
             "blocker": reason or None,
         })
         logger.info(f"Task failed: {task_id} — {reason[:100]}")
@@ -232,7 +264,7 @@ class TaskQueueService:
         await self.db.merge(task_id, {
             "status": TaskStatus.WAITING_APPROVAL.value,
             "blocker": blocker,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_clock().now(),
         })
 
     async def set_blocker_info(self, task_id: str, blocker_data: dict[str, Any]) -> None:
@@ -240,8 +272,8 @@ class TaskQueueService:
         try:
             info = BlockerInfo(**blocker_data)
             await self.db.merge(task_id, {
-                "blocker_info": info.model_dump(mode="json"),
-                "updated_at": datetime.utcnow().isoformat(),
+                "blocker_info": _dump(info),
+                "updated_at": get_clock().now(),
             })
         except Exception as e:
             logger.error(f"Failed to set blocker_info for {task_id}: {e}")
@@ -252,14 +284,14 @@ class TaskQueueService:
             "status": TaskStatus.RUNNING.value,
             "blocker": None,
             "blocker_info": None,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_clock().now(),
         })
 
     async def _update_status(self, task_id: str, status: TaskStatus) -> Task | None:
         """Generic status update helper."""
         await self.db.merge(task_id, {
             "status": status.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_clock().now(),
             "blocker": None,
         })
         return await self.get_task(task_id)
@@ -276,11 +308,12 @@ class TaskQueueService:
                 UPDATE $task_id SET
                     steps += [$step],
                     current_step_index = $idx,
-                    updated_at = time::now()
+                    updated_at = $now
                 """,
                 {
-                    "task_id": task_id,
-                    "step": step.model_dump(mode="json"),
+                    "task_id": _record_id(task_id),
+                    "now": get_clock().now(),
+                    "step": _dump(step),
                     "idx": step.step_number,
                 },
             )
@@ -299,9 +332,9 @@ class TaskQueueService:
                 s.success = False
                 break
         await self.db.merge(task_id, {
-            "steps": [s.model_dump(mode="json") for s in task.steps],
+            "steps": [_dump(s) for s in task.steps],
             "status": TaskStatus.PAUSED.value,
-            "updated_at": datetime.utcnow().isoformat(),
+            "updated_at": get_clock().now(),
         })
 
     # =========================================================================
@@ -315,9 +348,9 @@ class TaskQueueService:
                 """
                 UPDATE $task_id SET
                     resonance_scores += [$score],
-                    updated_at = time::now()
+                    updated_at = $now
                 """,
-                {"task_id": task_id, "score": score},
+                {"task_id": _record_id(task_id), "now": get_clock().now(), "score": score},
             )
         except Exception as e:
             logger.error(f"Failed to add resonance score to {task_id}: {e}")
@@ -370,7 +403,7 @@ class TaskQueueService:
                     await self.db.merge(task.task_id, {
                         "status": TaskStatus.PAUSED.value,
                         "blocker": "System restart — task was interrupted",
-                        "updated_at": datetime.utcnow().isoformat(),
+                        "updated_at": get_clock().now(),
                     })
                     interrupted.append(task)
                     logger.warning(f"Recovered interrupted task: {task.task_id} — {task.goal[:60]}")
