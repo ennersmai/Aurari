@@ -77,6 +77,12 @@ BUILTIN_RISK: dict[str, Risk] = {
     "workspace_info": "read",
     "web_search": "read",
     "generate_chart": "read",
+    "recall": "read",
+    "timeline": "read",
+    "evidence": "read",
+    "what_changed": "read",
+    "pin": "write",
+    "unpin": "write",
     "write_file": "write",
     "edit_file": "write",
     "create_directory": "write",
@@ -86,7 +92,7 @@ BUILTIN_RISK: dict[str, Risk] = {
     "delegate_work": "execute",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "recall_tools", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:

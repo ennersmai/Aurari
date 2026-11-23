@@ -143,6 +143,7 @@ class ToolExecutor:
         *,
         requester_role: Literal["owner", "trusted", "guest"],
         approved: bool = False,
+        venue: str = "app",
     ) -> Dict[str, Any]:
         """
         Execute a single tool call.
@@ -151,6 +152,8 @@ class ToolExecutor:
             tool_call: Dictionary with "tool" and "arguments" keys
             requester_role: Role of the caller. Only "owner" may execute tools;
                 other roles are refused before any tool is run.
+            venue: Venue of the call. With ``requester_role`` it reaches the
+                tool in the reserved ``_venue`` / ``_requester_role`` arguments.
             approved: When true, the runtime has already obtained user
                 approval for this call (e.g. a previously-gated terminal or
                 filesystem write). The executor sets the reserved
@@ -196,6 +199,8 @@ class ToolExecutor:
             }
             if approved:
                 arguments["_runtime_approved"] = True
+            arguments["_venue"] = venue
+            arguments["_requester_role"] = requester_role
 
         
         if not tool_name:
@@ -213,6 +218,8 @@ class ToolExecutor:
         try:
             # 1. Fetch skill from database
             skill_data = await self._get_skill_by_name(tool_name)
+            if not skill_data:
+                skill_data = self._builtin_skill(tool_name)
             if not skill_data:
                 self.logger.error(f"❌ Tool '{tool_name}' not found in skill database. Cannot execute.")
                 result = {
@@ -298,6 +305,28 @@ class ToolExecutor:
                 pass
             return result
     
+    @staticmethod
+    def _builtin_skill(tool_name: str) -> Optional[Dict[str, Any]]:
+        """A skill record for a builtin tool that has no row in the skill table.
+
+        Builtins come from ``BUILTIN_MODULES`` (the registry offers them to the
+        model); without this they were offered but could not run unless
+        register_local_tools.surql also listed them.
+        """
+        record = get_tool_registry().get(tool_name)
+        if record is None or record.transport != "builtin":
+            return None
+        return {
+            "id": f"builtin:{tool_name}",
+            "name": tool_name,
+            "skill_type": "local_function",
+            "execution_config": {
+                "module": f"aura.tools.{record.source}",
+                "function": "run",
+                "tool_key": tool_name,
+            },
+        }
+
     async def _get_skill_by_name(self, tool_name: str) -> Optional[Dict[str, Any]]:
         """
         Fetch skill record from database by name.
@@ -864,6 +893,7 @@ class ToolExecutor:
         tool_calls: list[Dict[str, Any]],
         *,
         requester_role: Literal["owner", "trusted", "guest"],
+        venue: str = "app",
     ) -> str:
         """
         Execute multiple tool calls and format results for L3 feedback.
@@ -872,6 +902,7 @@ class ToolExecutor:
             tool_calls: List of tool call dictionaries
             requester_role: Role of the caller; passed through to each
                 ``execute_tool_call`` unchanged.
+            venue: Venue of the turn; passed through the same way.
             
         Returns:
             Formatted string with execution results
@@ -883,7 +914,9 @@ class ToolExecutor:
         results = []
         for tool_call in tool_calls:
             self.logger.info(f"🔧 Executing tool call: {tool_call.get('tool', 'unknown')} with args: {tool_call.get('arguments', {})}")
-            result = await self.execute_tool_call(tool_call, requester_role=requester_role)
+            result = await self.execute_tool_call(
+                tool_call, requester_role=requester_role, venue=venue
+            )
             self.logger.info(f"🔧 Tool execution result - success: {result.get('success')}, result length: {len(str(result.get('result', '')))}, error: {result.get('error')}")
             results.append(result)
         

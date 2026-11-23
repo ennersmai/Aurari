@@ -69,6 +69,7 @@ async def run_tool_loop(
     generate_round: RoundFn,
     tool_executor: Any,
     requester_role: str,
+    venue: str = "app",
     max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
     seed_results: str | None = None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None,
@@ -123,7 +124,9 @@ async def run_tool_loop(
             final_text = strip_tool_calls(round_text)
             break
 
-        results = await tool_executor.execute_and_feedback(calls, requester_role=requester_role)
+        results = await tool_executor.execute_and_feedback(
+            calls, requester_role=requester_role, venue=venue
+        )
         if not results:
             final_text = strip_tool_calls(round_text)
             break

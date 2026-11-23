@@ -305,7 +305,7 @@ async def test_real_executor_owner_role_executes():
 
     # Tool should be invoked with x=1 (force_execute and _runtime_approved stripped)
     assert len(invoked) == 1
-    assert invoked[0] == {"x": 1}
+    assert invoked[0] == {"x": 1, "_venue": "app", "_requester_role": "owner"}
     assert "succeeded" in feedback.lower()
 
 

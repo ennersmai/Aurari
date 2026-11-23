@@ -207,7 +207,7 @@ async def test_executor_strips_approval_keys_before_tool_runs():
 
     assert invoked, "the tool should have run"
     seen = invoked[0]
-    assert seen == {"keep": 1}, seen
+    assert seen == {"keep": 1, "_venue": "app", "_requester_role": "owner"}, seen
     assert "force_execute" not in seen
     assert "_runtime_approved" not in seen
     assert "_anything" not in seen
@@ -236,7 +236,7 @@ async def test_executor_sets_runtime_approved_only_when_approved():
         approved=True,
     )
 
-    assert invoked == [{"keep": 1, "_runtime_approved": True}], invoked
+    assert invoked == [{"keep": 1, "_runtime_approved": True, "_venue": "app", "_requester_role": "owner"}], invoked
 
 
 # ---------------------------------------------------------------------------

@@ -26,6 +26,7 @@ from typing import Any
 from aura.clock import get_clock
 from aura.config import settings
 from aura.db.query_utils import to_record_id
+from aura.engines.memory.v2.identity import visible_in_venue
 from aura.models.memory import Memory
 
 from .assembly import assemble, normalise_text
@@ -37,6 +38,8 @@ from .channels import (
     fact_lexical_channel,
     fact_temporal_channel,
     lexical_channel,
+    _episode_visibility,
+    _rid,
 )
 from .fusion import rrf
 from .gate import needs_recall
@@ -873,35 +876,188 @@ class RecallEngine:
 
     async def timeline(
         self,
-        experience_id: str,
+        experience_id: str = "",
         steps: int = 3,
         direction: str = "forward",
+        *,
+        venue: str = "app",
+        entity: str | None = None,
+        time_range: tuple[Any, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Delegate to MemoryManager.traverse_timeline.
+        """Ordered episodes and facts the venue may read (PRD 6.4).
 
-        This is the Recall Engine's entry point for the ``traverse_timeline``
-        internal tool (PRD 6.4, M2 fifth injector). It returns the result
-        unchanged so the orchestrator's formatting stays the same.
+        With ``memory_v2_recall_enabled`` on, returns ``{"kind", "id", "at",
+        "text"}`` entries, oldest first, for the ``entity`` (matched by alias)
+        and/or the ``time_range``. With it off, delegates unchanged to
+        ``MemoryManager.traverse_timeline`` (the ``traverse_timeline`` tool).
         """
         memory_manager = await self._get_memory_manager()
-        return await memory_manager.traverse_timeline(
-            experience_id=experience_id,
-            steps=steps,
-            direction=direction,
+        if not settings.memory_v2_recall_enabled:
+            return await memory_manager.traverse_timeline(
+                experience_id=experience_id,
+                steps=steps,
+                direction=direction,
+            )
+
+        db = memory_manager.db
+        params: dict[str, Any] = {
+            "visible": visible_in_venue(venue),
+            "k": int(settings.recall_temporal_k),
+        }
+        where: list[str] = []
+        if entity is not None:
+            entity_ids = await self._entity_ids(db, entity)
+            if not entity_ids:
+                return []
+            params["eids"] = entity_ids
+        if time_range is not None:
+            params["start"], params["end"] = time_range
+            where.append("recorded_at >= $start AND recorded_at <= $end")
+        fact_where = ["visibility IN $visible", *where]
+        episode_where = list(where)
+        if entity is not None:
+            fact_where.append("id IN (SELECT VALUE in FROM about WHERE out IN $eids)")
+            episode_where.append(
+                "id IN (SELECT VALUE in FROM mentions WHERE out IN $eids)"
+            )
+        facts = await db.query(
+            "SELECT id, content, recorded_at FROM fact WHERE "
+            + " AND ".join(fact_where)
+            + " ORDER BY recorded_at DESC LIMIT $k",
+            params,
         )
+        episodes = await db.query(
+            "SELECT id, user_text, venue, recorded_at FROM episode"
+            + (" WHERE " + " AND ".join(episode_where) if episode_where else "")
+            + " ORDER BY recorded_at DESC LIMIT $ek",
+            # Episodes carry a venue, not a visibility, so they are filtered
+            # below; over-fetch so other venues' episodes do not use up k.
+            {**params, "ek": params["k"] * 5},
+        )
+        visible = set(params["visible"])
+        readable_episodes = [
+            r for r in episodes or [] if _episode_visibility(r["venue"]) in visible
+        ][: params["k"]]
+        # The newest k of each kind, shown oldest first.
+        entries = [
+            {"kind": "fact", "id": str(r["id"]), "at": r["recorded_at"],
+             "text": r["content"]}
+            for r in facts or []
+        ] + [
+            {"kind": "episode", "id": str(r["id"]), "at": r["recorded_at"],
+             "text": r["user_text"]}
+            for r in readable_episodes
+        ]
+        return sorted(entries, key=lambda e: e["at"])
 
     async def evidence(
         self,
         insight_id: str,
+        *,
+        venue: str = "app",
     ) -> list[dict[str, Any]]:
-        """Delegate to MemoryManager.fetch_supporting_evidence.
+        """The episodes a fact was ``derived_from`` (PRD 6.4).
 
-        This is the Recall Engine's entry point for the ``fetch_supporting_evidence``
-        internal tool (PRD 6.4, M2 fifth injector). It returns the result
-        unchanged so the orchestrator's formatting stays the same.
+        With ``memory_v2_recall_enabled`` on, ``insight_id`` is a fact id; a
+        fact the venue may not read has no evidence, and an episode is returned
+        only when the visibility its facts get is readable in the venue. With
+        it off, delegates unchanged to ``MemoryManager.fetch_supporting_evidence``.
         """
         memory_manager = await self._get_memory_manager()
-        return await memory_manager.fetch_supporting_evidence(insight_id=insight_id)
+        if not settings.memory_v2_recall_enabled:
+            return await memory_manager.fetch_supporting_evidence(
+                insight_id=insight_id
+            )
+
+        visible = visible_in_venue(venue)
+        rows = await memory_manager.db.query(
+            "SELECT id, user_text, venue, recorded_at FROM episode WHERE id IN "
+            "(SELECT VALUE out FROM derived_from WHERE in IN "
+            "(SELECT VALUE id FROM fact WHERE id = $fact AND visibility IN $visible)) "
+            "ORDER BY recorded_at",
+            {"fact": _rid(insight_id), "visible": visible},
+        )
+        return [
+            row for row in rows or []
+            if _episode_visibility(row["venue"]) in visible
+        ]
+
+    # ------------------------------------------------------------------
+    # Recall tools over memory v2 (W4-05)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _entity_ids(db: Any, name: str) -> list[Any]:
+        """Ids of the entities whose aliases contain the lowercased ``name``."""
+        alias = " ".join(name.split()).lower()
+        rows = await db.query(
+            "SELECT VALUE id FROM entity WHERE aliases CONTAINS $alias",
+            {"alias": alias},
+        )
+        return list(rows or [])
+
+    async def recall_facts(
+        self,
+        query: str,
+        venue: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        """Ranked fact rows for ``query`` through the fact path of recall.
+
+        ``filters`` may name a ``kind`` and/or a ``provenance`` to keep.
+        """
+        request = RecallRequest(
+            user_id="owner", user_input=query, limit=limit, venue=venue
+        )
+        candidates, _, _, _ = await self._build_fact_memories(request)
+        rows = [c.payload for c in candidates]
+        for key in ("kind", "provenance"):
+            if (filters or {}).get(key):
+                rows = [r for r in rows if r.get(key) == filters[key]]
+        return rows
+
+    async def what_changed(
+        self, entity: str, venue: str
+    ) -> list[list[dict[str, Any]]]:
+        """``supersedes`` chains among readable facts about ``entity``, oldest first."""
+        db = (await self._get_memory_manager()).db
+        entity_ids = await self._entity_ids(db, entity)
+        if not entity_ids:
+            return []
+        facts = await db.query(
+            "SELECT id, content, recorded_at FROM fact WHERE visibility IN $visible "
+            "AND id IN (SELECT VALUE in FROM about WHERE out IN $eids)",
+            {"visible": visible_in_venue(venue), "eids": entity_ids},
+        )
+        by_id = {str(f["id"]): f for f in facts or []}
+        edges = await db.query(
+            "SELECT in, out FROM supersedes WHERE in IN $ids AND out IN $ids",
+            {"ids": [f["id"] for f in by_id.values()]},
+        )
+        older = {str(e["in"]): str(e["out"]) for e in edges or []}
+        superseded = set(older.values())
+        chains = []
+        for head in (i for i in older if i not in superseded):
+            chain = [head]
+            while chain[-1] in older:
+                chain.append(older[chain[-1]])
+            chains.append([by_id[i] for i in reversed(chain)])
+        return sorted(chains, key=lambda c: c[0]["recorded_at"])
+
+    async def set_pinned(self, fact_id: str, venue: str, pinned: bool) -> bool:
+        """Pin or unpin a fact the venue may read; False when there is none."""
+        db = (await self._get_memory_manager()).db
+        rows = await db.query(
+            "UPDATE fact SET pinned = $pinned WHERE id = $fact "
+            "AND visibility IN $visible RETURN id",
+            {
+                "pinned": pinned,
+                "fact": _rid(fact_id),
+                "visible": visible_in_venue(venue),
+            },
+        )
+        return bool(rows)
 
 
 # =============================================================================

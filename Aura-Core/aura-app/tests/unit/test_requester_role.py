@@ -122,7 +122,7 @@ async def test_owner_call_still_executes():
 
     # The tool function was invoked exactly once with the supplied arguments.
     assert len(invoked) == 1
-    assert invoked[0] == {"x": 1}
+    assert invoked[0] == {"x": 1, "_venue": "app", "_requester_role": "owner"}
     # The executor wraps the tool's string result in a success dict.
     assert result["success"] is True
     assert "ok:1" in result["result"]
@@ -158,5 +158,5 @@ async def test_owner_via_execute_and_feedback_executes():
     )
 
     assert len(invoked) == 1
-    assert invoked[0] == {"x": 2}
+    assert invoked[0] == {"x": 2, "_venue": "app", "_requester_role": "owner"}
     assert "succeeded" in feedback.lower()

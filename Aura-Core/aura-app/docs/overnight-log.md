@@ -2370,3 +2370,14 @@
 - **Files:** new `src/aura/engines/recall/rerank.py` (pure: drop superseded unless a time range, drop imagined unless `mode == "creative"`; fused score rescaled to (0, 1] by the best one, then provenance weight, `0.5 + 0.5 * confidence`, `1 + 0.2 * salience`, `exp(-age / 365 d)`; plus `0.10 * cosine(signature - baseline, deviation)`, never above 0 when fear/sadness/anger/shame/disgust deviations outweigh the positive ones; then MMR, lambda 0.7); `engine.py` (flag on: rerank all fused hits, then the limit; the fact's signature is its source episode's, read in the same batched SELECT; deviation and baseline from `request.emotional_state`, already filled by the coordinator); `models.py` (`mode` gains `"creative"`); `config.py` (all numbers).
 - **Supervisor change:** MMR was pure-Python pairwise cosines re-computed every pick (about n^3 768-dim products, seconds on the fast path); now numpy with a running max similarity and a stop at the request limit: 80 candidates in 3.9 ms.
 - **Tests:** each rule on hand-built candidates, MMR keeps one of five near-duplicates in the top three, engine ablation. Suite: 703 passed, 3 skipped.
+
+---
+
+## W4-05: Recall tools
+- **Status:** DONE (Sonnet agent, reviewed by the supervisor)
+- **Files:** new `src/aura/tools/recall_tools.py` (`recall`, `timeline`, `evidence`, `what_changed` risk read; `pin`, `unpin` risk write, owner-only); `engine.py` (v2 `timeline`, `evidence`, `what_changed`, `set_pinned`, all filtered by `visible_in_venue`, episodes by `_episode_visibility`; flag off keeps the old behaviour); `tool_registry.py` (module and risks); `tool_executor.py` (reserved `_venue` / `_requester_role` set after the model's underscore keys are stripped).
+- **Supervisor changes:**
+  - The venue never reached tools on the coordinator path (`run_tool_loop`, `_forced_seed`, `execute_and_feedback` had no venue), so the owner's tool calls in a guild read with `app` visibility. Threaded `ctx.venue` through; recall tools refuse a non-owner arriving with `app`.
+  - Builtin tools (all of `BUILTIN_MODULES`, including W3's `delegate_work`) were offered to the model but could only run with a row in `register_local_tools.surql`, which they do not have. The executor now falls back to the registry's builtin record.
+  - `timeline` returned the oldest k items and filtered episodes by visibility after the limit; now the newest k of each kind (episodes over-fetched, then filtered), shown oldest first.
+- **Tests:** each tool on the embedded engine, `what_changed` Lisbon then Porto, guest venue sees no owner fact through any tool, guest cannot pin; builtin dispatch without a skill row with the turn's venue. Suite: 709 passed, 3 skipped.

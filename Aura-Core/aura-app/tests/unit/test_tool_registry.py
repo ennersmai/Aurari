@@ -90,7 +90,7 @@ def test_load_builtin_tools_returns_the_15_builtin_records():
     records = load_builtin_tools()
     names = sorted(r.name for r in records)
     assert names == sorted(BUILTIN_RISK.keys())
-    assert len(records) == 15  # 14 + delegate_work (W3-32)
+    assert len(records) == 21  # 15 + the six recall tools (W4-05)
     assert all(r.transport == "builtin" for r in records)
     assert all(r.health.status == "online" for r in records)
     # Every record comes from one of the builtin modules.
@@ -243,7 +243,7 @@ async def test_refresh_registers_builtins_then_skill_rows():
     await registry.refresh(FakeDB([mcp_row, local_row]))
 
     records = registry.all()
-    assert len(records) == 16  # 15 builtins + 1 MCP tool
+    assert len(records) == 22  # 21 builtins + 1 MCP tool
     # The local_function row for web_search only copied its embedding.
     web_search = registry.get("web_search")
     assert web_search.description_embedding == [0.42]
@@ -255,7 +255,7 @@ async def test_refresh_registers_builtins_then_skill_rows():
 async def test_refresh_keeps_builtins_when_the_database_fails():
     registry = get_tool_registry()
     await registry.refresh(RaisingDB())
-    assert len(registry.all()) == 15
+    assert len(registry.all()) == 21
 
 
 async def test_refresh_mcp_tool_replaces_same_name_record():

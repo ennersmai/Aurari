@@ -1387,7 +1387,7 @@ Constraints:
         except Exception:
             pass
 
-        seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx):
             loop_context = SynthesisContext(
@@ -1446,6 +1446,7 @@ Constraints:
             generate_round=_round,
             tool_executor=self.tool_executor,
             requester_role=requester_role,
+            venue=ctx.venue,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
         ):
@@ -1467,6 +1468,7 @@ Constraints:
         user_input: str,
         tool_schema_str: str,
         requester_role: str,
+        venue: str = "app",
     ) -> str | None:
         """Seed the tool loop with a deterministic forced tool call."""
         self.logger.info("[WRENCH] Using FORCED TOOL CALL MODE to seed the tool loop")
@@ -1474,7 +1476,9 @@ Constraints:
         self.logger.info(f"[BOX] Raw tool call from forced mode: {raw_tool_call[:300]}...")
         seed_calls = self.tool_executor.extract_tool_calls(raw_tool_call)
         if seed_calls:
-            seed_results = await self.tool_executor.execute_and_feedback(seed_calls, requester_role=requester_role)
+            seed_results = await self.tool_executor.execute_and_feedback(
+                seed_calls, requester_role=requester_role, venue=venue
+            )
             if seed_results:
                 return seed_results
         self.logger.warning("⚠️ Forced tool call mode produced no valid tool calls; proceeding with normal tool loop")
@@ -1507,7 +1511,7 @@ Constraints:
         except Exception:
             pass
 
-        seed = await self._forced_seed(user_input, tool_schema_str, requester_role) if use_forced_tool_mode and tool_schema_str else None
+        seed = await self._forced_seed(user_input, tool_schema_str, requester_role, ctx.venue) if use_forced_tool_mode and tool_schema_str else None
 
         async def _round(loop_input, round_idx):
             loop_context = SynthesisContext(
@@ -1556,6 +1560,7 @@ Constraints:
             generate_round=_round,
             tool_executor=self.tool_executor,
             requester_role=requester_role,
+            venue=ctx.venue,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
         ):
