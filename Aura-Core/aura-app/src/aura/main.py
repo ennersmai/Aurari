@@ -24,12 +24,10 @@ from aura.api.routes import recall as recall_routes
 from aura.api.routes import system_state as system_state_routes
 from aura.api.routes import voice as voice_routes
 from aura.api.routes import local_ai as local_ai_routes
-from aura.api.routes import agent as agent_routes
 from aura.api.routes import cultural as cultural_routes
 from aura.api.routes import sessions as session_routes
 from aura.api.routes import school as school_routes
 from aura.api.routes import tasks as task_routes
-from aura.api.routes import workspace as workspace_routes
 from aura.api.routes import cognition as cognition_routes
 from aura.api.routes import inference_config as inference_config_routes
 from aura.api.routes import tiers as tiers_routes
@@ -51,7 +49,6 @@ from aura.engines.learning.engine import LearningEngine
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.llm.layers import LLMLayers
 from aura.llm.unified_provider import UnifiedLLMClient
-from aura.executor.tool_executor import ToolExecutor
 from aura.executor.tool_registry import get_tool_registry
 from aura.orchestrator.coordinator import Orchestrator
 from aura.orchestrator.message_bus import MessageBus
@@ -299,24 +296,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await session_runtime.initialise()
     logger.info("✓ SessionRuntime initialized (MAIN session ready)")
 
-    # Initialize Task Queue and recover interrupted tasks (must be before agent loop)
+    # Initialize Task Queue and recover interrupted tasks
     task_queue = get_task_queue()
     interrupted = await task_queue.recover_interrupted_tasks()
     if interrupted:
         logger.warning(f"Recovered {len(interrupted)} interrupted task(s) from previous run")
     task_routes.set_dependencies(task_queue)
-    workspace_routes.set_task_queue(task_queue)
     logger.info("✓ Task Queue initialized")
-
-    # Initialize Agent Loop dependencies (after task queue so it can persist)
-    tool_executor = ToolExecutor()
-    tool_executor.set_llm_layers(llm_layers)  # L5 self-healing for agent loop
-    agent_routes.set_dependencies(llm_layers, tool_executor, task_queue, emotion_engine)
-    logger.info("✓ Agent Loop executor initialized")
-
-    # Start workspace filesystem watcher for live WebSocket updates
-    workspace_routes.start_workspace_watcher()
-    logger.info("✓ Workspace filesystem watcher started")
 
     # Set engine references in routes
     emotion_routes.set_emotion_engine(emotion_engine)
@@ -502,10 +488,8 @@ app.include_router(system_state_routes.router, prefix="/system", tags=["system"]
 app.include_router(conversations_routes.router, prefix="/api/conversations", tags=["conversations"])
 app.include_router(voice_routes.router, tags=["voice"])
 app.include_router(local_ai_routes.router, tags=["local-ai"])
-app.include_router(agent_routes.router, tags=["agent"])
 app.include_router(cultural_routes.router, tags=["cultural"])
 app.include_router(task_routes.router, tags=["tasks"])
-app.include_router(workspace_routes.router, tags=["workspace"])
 app.include_router(session_routes.router, tags=["sessions"])
 app.include_router(school_routes.router, prefix="/school", tags=["school"])
 app.include_router(cognition_routes.router, tags=["cognition"])

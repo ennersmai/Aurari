@@ -126,15 +126,3 @@ class Task(BaseModel):
         default=None,
         description="Structured escalation data for frontend rendering",
     )
-
-    # File annotations: path -> list of memory-backed notes
-    file_annotations: dict[str, list[dict[str, Any]]] = Field(
-        default_factory=dict,
-        description="Per-file annotations from Aura's reasoning (stored in task memory)",
-    )
-
-    # File version history: path -> list of content snapshots
-    file_versions: dict[str, list[dict[str, Any]]] = Field(
-        default_factory=dict,
-        description="Previous versions of files for diff view",
-    )

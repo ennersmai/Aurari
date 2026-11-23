@@ -14,7 +14,7 @@ After W1-02:
   strips ``force_execute`` and every underscore-prefixed key from the
   model-supplied arguments, then sets ``_runtime_approved`` itself only when
   ``approved`` is true.
-* ``agent_loop`` grants approval by calling the executor with
+* delegated work grants approval by calling the executor with
   ``approved=True`` instead of mutating the arguments.
 
 The tests drive the real ``terminal`` tool through the executor (with

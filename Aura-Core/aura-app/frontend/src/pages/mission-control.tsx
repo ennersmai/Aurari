@@ -7,7 +7,6 @@ import NeuralSidebar from "@/components/neural/NeuralSidebar";
 import CognitiveStatus from "@/components/cognitive/CognitiveStatus";
 import SettingsPanel from "@/components/settings/SettingsPanel";
 import AIProviderPanel from "@/components/settings/AIProviderPanel";
-import AgentLoopPanel from "@/components/agent/AgentLoopPanel";
 import VoiceClonePanel from "@/components/voice/VoiceClonePanel";
 import CulturalPanel from "@/components/cultural/CulturalPanel";
 import MemoryIntrospectionPanel from "@/components/memory/MemoryIntrospectionPanel";
@@ -649,7 +648,6 @@ function MissionControlContent() {
         <InferenceCockpit />
         <SettingsPanel />
         <AIProviderPanel />
-        <AgentLoopPanel />
         <VoiceClonePanel />
         <CulturalPanel />
         <MemoryIntrospectionPanel />

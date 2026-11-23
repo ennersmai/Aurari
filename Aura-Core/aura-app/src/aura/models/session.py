@@ -192,7 +192,7 @@ class Session(BaseModel):
 
 
 class SessionContext(BaseModel):
-    """Lightweight runtime context passed to ToolExecutor and AgentLoop.
+    """Lightweight runtime context passed to ToolExecutor.
 
     Carries only what the executor needs to enforce session scope. Built
     by SessionRuntime when an agent is attached to a session.

@@ -1267,22 +1267,6 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
-    # AGENT LOOP Configuration
-    # =========================================================================
-    agent_loop_max_iterations: int = Field(
-        default=10,
-        validation_alias="AURA_AGENT_LOOP_MAX_ITERATIONS",
-        description="Maximum iterations for free-running agent loops before requiring human confirmation",
-        ge=1,
-        le=50,
-    )
-    agent_loop_require_approval: bool = Field(
-        default=True,
-        validation_alias="AURA_AGENT_LOOP_REQUIRE_APPROVAL",
-        description="Require human approval for destructive actions (file writes, code execution)",
-    )
-
-    # =========================================================================
     # TOOL SELECTION Configuration (W2-30)
     # =========================================================================
     tool_selection_threshold: int = Field(

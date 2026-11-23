@@ -23,6 +23,7 @@
 - **Phase 2 (docs/AURA_PHASE2_PLAN.md), Part 1 done** (P2-01, P2-02, 2026-11-23): tier audit, then every LLM call, trace, fallback and the settings UI follow the active stack; a grep test forbids `settings.lN_model` outside config.py.
 - **Phase 2 step 2 done** (P2-02b, P2-03..P2-06, 2026-11-23): per-tier fallbacks; tier profiles (`AURA_TIER_PROFILES_ENABLED`); tier API with D3 enforced; L4 appraisal in parallel with a deadline (`AURA_APPRAISAL_PARALLEL_ENABLED`); L1 route and stakes (`AURA_L1_ROUTES_ENABLED`). All flags off. Suite 1061 passed, 3 skipped.
 - **Phase 2 step 3 done** (P2-07, P2-41, P2-42, 2026-11-23): no repeated text on native-stream failure; tool loop ended by time, cost and no-progress guards with a 40-round safety breaker (`AURA_TOOL_LOOP_BUDGETS_ENABLED`, off); the chat reasoning toggles removed. G4 carded (G4-01..05); G4-01 done. Suite 1105 passed, 3 skipped.
+- **G4 done** (G4-01..G4-05 plus G4-04a, 2026-11-23): delegation controls API, blocker monitor, heartbeat, emotion per step, re-attach after restart, the Workbench page, parity proven (docs/metrics/g4_parity.md), session allowlist and overlay on the chat and delegation paths; the agent loop, workspace routes, IDE chat store and IDE page removed (T15). Suite 1176 passed, 3 skipped. Next: Phase 2 Part 4 (P2-08..P2-11).
 - **Unexpected session:** while W3-05 ran, a second OpenCode session (an old W2-30 one, probably resumed from the app) worked in the same tree and committed only a log note (d106d17). Nothing else changed.
 - **Follow-ups noted:** remaining direct time reads (DreamingEngine.tick, parts of manager.py); the native-tools streaming fallback can repeat already streamed text (fix before enabling `AURA_L3_NATIVE_TOOLS`).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
@@ -2663,3 +2664,19 @@ Tests: tests/unit/test_native_tool_calls.py (3 new). FOR_MAI.md section 1 row up
 - Not fixed: the session context is held on the orchestrator (`self._current_session_context`), like the existing namespace and overlay, so two concurrent turns on different sessions can race. Pre-existing pattern.
 
 **Supervisor (2026-11-23), G4-04a:** Memory namespace on the closing write dropped (memory v2 has no namespaces; FOR_MAI follow-up). Fixed a race: `_turn_stages` read the session context from the shared `self._current_session_context` many awaits after `_resolve_session`, so a concurrent turn on another session could give a restricted sub-session the main session's (unrestricted) tool set. `_resolve_session` now returns the context and the turn keeps it locally. Remaining: if session resolution fails, the turn runs as main (fail-open; pre-existing behaviour for namespace and overlay). Full suite: 1173 passed, 3 skipped.
+
+## G4-05: Remove the agent loop, workspace routes, IDE chat store and IDE page (T15)
+
+Inventory (grep of src, tests, frontend/src): agent_loop.py, routes/agent.py, routes/workspace.py, main.py (imports, set_dependencies, watcher start, include_router x2), routes/tasks.py (`_agent_loop_runner`), task_queue.py (4 methods), config.py (`agent_loop_*`), models/task.py, models/session.py and session_runtime.py (docstrings plus an `_active_loops` abort block), tests/unit/test_tool_approval_runtime.py (docstring only), frontend ide.tsx, components/ide/{AuraIDE,TaskTimeline}.tsx, components/agent/AgentLoopPanel.tsx, mission-control.tsx. No frontend service or hook called /agent/* or /workspace/* (`/config/agent/` is unrelated and stays). No frontend IDE chat store existed.
+
+Deleted: src/aura/executor/agent_loop.py, src/aura/api/routes/agent.py, src/aura/api/routes/workspace.py, frontend/src/pages/ide.tsx, frontend/src/components/ide/, frontend/src/components/agent/AgentLoopPanel.tsx.
+
+Edited: main.py (removed routers, deps, watcher, unused ToolExecutor import); tasks.py (removed `_agent_loop_runner`; resume of a non-delegated task now returns 409 "resume is not supported; delegate the work instead", 404 if missing; delegated resume unchanged); task_queue.py (removed add_file_annotation, save_file_version, store_ide_chat_message, get_ide_chat_history); config.py (removed agent_loop_max_iterations, agent_loop_require_approval; nothing else read them); session_runtime.py (removed the abort-via-`_active_loops` block and AgentLoop wording; SessionContext untouched); models/session.py (docstring); mission-control.tsx (panel removed; it already links to /workbench); test_tool_approval_runtime.py (docstring).
+
+Task fields: `file_annotations` and `file_versions` removed from the Pydantic Task model (nothing read them). They stay in scripts/setup_tasks.surql as option fields for existing rows; no longer written.
+
+Tests deleted: none (no test covered only the removed modules). Shared behaviour (approval via approved=True, session scope) is covered by test_tool_approval_runtime.py and the G4-04/G4-04a tests. Added tests/unit/test_g4_removed.py (T15: AST import walk, no /agent/ or /workspace/ routes, ide.tsx absent).
+
+Results: tests/unit 1022 passed, 2 skipped; npm test 82 passed; npm run build passed.
+
+**Supervisor (2026-11-23), G4-05:** Reviewed the deletion list. Checked that old task rows with `file_versions` / `file_annotations` still load (pydantic ignores extra fields). Full suite: 1176 passed, 3 skipped; frontend 82 tests, build clean.

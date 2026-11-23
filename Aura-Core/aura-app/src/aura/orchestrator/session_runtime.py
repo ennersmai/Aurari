@@ -7,7 +7,7 @@ agent's tool calls.
 
 Persistence is delegated to SurrealDB via the existing db client. Live
 agent attachments are kept in-memory only — they're rebuilt from running
-AgentLoops on restart, not from disk.
+agents on restart, not from disk.
 
 **Important invariant:** the MAIN session is a singleton-equivalent
 wrapper over the global engines and always exists. Calls without a
@@ -278,22 +278,6 @@ class SessionRuntime:
             except Exception as e:
                 logger.warning(f"Failed to archive/delete memories for session {session_id}: {e}")
 
-        # Abort any running agent loops in this session (V1PRD §4.7)
-        try:
-            from aura.api.routes.agent import _active_loops
-            async with self._lock:
-                attached = set(self._agents_by_session.get(session_id, set()))
-            for task_id in list(attached):
-                loop = _active_loops.get(task_id)
-                if loop is not None:
-                    try:
-                        loop.abort()
-                        logger.info(f"Aborted agent {task_id} during end_session({session_id})")
-                    except Exception as e:
-                        logger.warning(f"Failed to abort agent {task_id}: {e}")
-        except ImportError:
-            pass  # agent_routes not loaded yet; non-fatal
-
         async with self._lock:
             self._agents_by_session.pop(session_id, None)
         return await self._transition(session_id, SessionStatus.ENDED, ended=True)
@@ -325,7 +309,7 @@ class SessionRuntime:
     async def attach_agent(self, session_id: str, agent_id: str) -> SessionContext:
         """Register an agent in a session. Enforces max_concurrent_agents.
 
-        Returns the SessionContext the caller should pass to ToolExecutor / AgentLoop.
+        Returns the SessionContext the caller should pass to ToolExecutor.
         """
         session = await self.get_session(session_id)
         if session is None:

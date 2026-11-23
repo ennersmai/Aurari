@@ -18,14 +18,12 @@ router = APIRouter(prefix="/tasks", tags=["tasks"])
 
 # Global references (set during startup)
 _task_queue: Any = None
-_agent_loop_runner: Any = None
 
 
-def set_dependencies(task_queue: Any, agent_loop_runner: Any = None) -> None:
+def set_dependencies(task_queue: Any) -> None:
     """Set dependencies from main.py lifespan."""
-    global _task_queue, _agent_loop_runner
+    global _task_queue
     _task_queue = task_queue
-    _agent_loop_runner = agent_loop_runner
 
 
 def _get_tq() -> Any:
@@ -133,6 +131,14 @@ async def resume_task(task_id: str) -> TaskResponse:
     tq = _get_tq()
     if not task_id.startswith("task:"):
         task_id = f"task:{task_id}"
+    existing = await tq.get_task(task_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
+    if not existing.delegated:
+        raise HTTPException(
+            status_code=409,
+            detail="resume is not supported; delegate the work instead",
+        )
     task = await tq.resume_task(task_id)
     if not task:
         raise HTTPException(status_code=404, detail=f"Task not found: {task_id}")
