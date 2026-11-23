@@ -44,6 +44,7 @@ DEFINE FIELD deviation_change ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD dominant_change ON emotion_event TYPE option<string>;
 DEFINE FIELD size ON emotion_event TYPE float DEFAULT 0;
 DEFINE FIELD mood_bias ON emotion_event TYPE option<float>;
+DEFINE FIELD capped ON emotion_event TYPE option<bool>;
 DEFINE INDEX emotion_event_at ON emotion_event FIELDS at;
 
 -- ============================================================================

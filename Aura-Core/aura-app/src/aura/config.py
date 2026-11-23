@@ -431,50 +431,37 @@ class Settings(BaseSettings):
         description="L5 Structure: JSON extraction & retry logic. Disable → 1-shot call, no repair.",
     )
 
+    def model_for(self, layer: str) -> str:
+        """Return the model of ``layer`` ("l1".."l5") for the active stack."""
+        if layer not in ("l1", "l2", "l3", "l4", "l5"):
+            raise ValueError(f"Unknown layer {layer!r}; expected 'l1'..'l5'")
+        suffix = {1: "1", 2: "2"}.get(self.model_stack_index, "")
+        return getattr(self, f"{layer}_model{suffix}")
+
     @property
     def active_l1_model(self) -> str:
         """Return the L1 model for the active stack."""
-        if self.model_stack_index == 1:
-            return self.l1_model1
-        elif self.model_stack_index == 2:
-            return self.l1_model2
-        return self.l1_model
+        return self.model_for("l1")
 
     @property
     def active_l2_model(self) -> str:
         """Return the L2 model for the active stack."""
-        if self.model_stack_index == 1:
-            return self.l2_model1
-        elif self.model_stack_index == 2:
-            return self.l2_model2
-        return self.l2_model
+        return self.model_for("l2")
 
     @property
     def active_l3_model(self) -> str:
         """Return the L3 model for the active stack."""
-        if self.model_stack_index == 1:
-            return self.l3_model1
-        elif self.model_stack_index == 2:
-            return self.l3_model2
-        return self.l3_model
+        return self.model_for("l3")
 
     @property
     def active_l4_model(self) -> str:
         """Return the L4 model for the active stack."""
-        if self.model_stack_index == 1:
-            return self.l4_model1
-        elif self.model_stack_index == 2:
-            return self.l4_model2
-        return self.l4_model
+        return self.model_for("l4")
 
     @property
     def active_l5_model(self) -> str:
         """Return the L5 model for the active stack."""
-        if self.model_stack_index == 1:
-            return self.l5_model1
-        elif self.model_stack_index == 2:
-            return self.l5_model2
-        return self.l5_model
+        return self.model_for("l5")
 
     @property
     def active_embeddings_model(self) -> str:
@@ -555,7 +542,7 @@ class Settings(BaseSettings):
     memory_extraction_model: str = Field(
         default="",
         validation_alias="AURA_MEMORY_EXTRACTION_MODEL",
-        description="Model used for memory v2 extraction. Empty uses settings.l2_model.",
+        description="Model used for memory v2 extraction. Empty uses the active stack L2 model (settings.active_l2_model).",
     )
     memory_extraction_max_attempts: int = Field(
         default=3,
@@ -1083,39 +1070,53 @@ class Settings(BaseSettings):
     # Starting values: a person never seen gets the stranger values, the owner
     # (entity key "owner") gets the owner values for affection, trust and
     # familiarity (tension starts at the stranger value).
-    emotion_relationship_stranger_affection: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotion_relationship_stranger_trust: float = Field(default=0.3, ge=0.0, le=1.0)
-    emotion_relationship_stranger_familiarity: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotion_relationship_stranger_tension: float = Field(default=0.0, ge=0.0, le=1.0)
-    emotion_relationship_owner_affection: float = Field(default=0.5, ge=0.0, le=1.0)
-    emotion_relationship_owner_trust: float = Field(default=0.7, ge=0.0, le=1.0)
-    emotion_relationship_owner_familiarity: float = Field(default=0.6, ge=0.0, le=1.0)
+    emotion_relationship_stranger_affection: float = Field(default=0.0, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_STRANGER_AFFECTION")
+    emotion_relationship_stranger_trust: float = Field(default=0.3, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_STRANGER_TRUST")
+    emotion_relationship_stranger_familiarity: float = Field(default=0.0, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_STRANGER_FAMILIARITY")
+    emotion_relationship_stranger_tension: float = Field(default=0.0, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_STRANGER_TENSION")
+    emotion_relationship_owner_affection: float = Field(default=0.5, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_OWNER_AFFECTION")
+    emotion_relationship_owner_trust: float = Field(default=0.7, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_OWNER_TRUST")
+    emotion_relationship_owner_familiarity: float = Field(default=0.6, ge=0.0, le=1.0, validation_alias="AURA_EMOTION_RELATIONSHIP_OWNER_FAMILIARITY")
     # Mapping into the dimension's range: love baseline = affection * love_scale,
     # trust baseline = trust * trust_scale. The scales are chosen so the owner's
     # starting values give the configured global baselines (love 0.05 = 0.5 * 0.1,
     # trust 0.2 = 0.7 * 0.2857), so turning the flag on barely moves the owner.
-    emotion_relationship_love_scale: float = Field(default=0.1, ge=0.0)
-    emotion_relationship_trust_scale: float = Field(default=0.2 / 0.7, ge=0.0)
+    emotion_relationship_love_scale: float = Field(default=0.1, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_LOVE_SCALE")
+    emotion_relationship_trust_scale: float = Field(default=0.2 / 0.7, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_TRUST_SCALE")
     emotion_relationship_warmth_gain: float = Field(
         default=0.5, ge=0.0,
         description="Positive-warmth impulses are multiplied by 1 + gain * (affection + familiarity) / 2.",
+        validation_alias="AURA_EMOTION_RELATIONSHIP_WARMTH_GAIN",
     )
     emotion_stranger_familiarity: float = Field(
         default=0.2, ge=0.0, le=1.0,
         description="A person with familiarity below this is a stranger for the hostility cap.",
+        validation_alias="AURA_EMOTION_STRANGER_FAMILIARITY",
     )
     emotion_stranger_hostility_cap: float = Field(
         default=0.3, ge=0.0,
         description="Cap on each negative-dimension impulse per event from a stranger.",
+        validation_alias="AURA_EMOTION_STRANGER_HOSTILITY_CAP",
     )
     # Step sizes per event (each field is clamped to [0, 1]; no time decay).
-    emotion_relationship_familiarity_step: float = Field(default=0.03, ge=0.0)
-    emotion_relationship_affection_gain: float = Field(default=0.02, ge=0.0)
-    emotion_relationship_affection_loss: float = Field(default=0.005, ge=0.0)
-    emotion_relationship_tension_rise: float = Field(default=0.03, ge=0.0)
-    emotion_relationship_tension_ease: float = Field(default=0.02, ge=0.0)
-    emotion_relationship_trust_gain: float = Field(default=0.02, ge=0.0)
-    emotion_relationship_trust_loss: float = Field(default=0.03, ge=0.0)
+    emotion_relationship_familiarity_step: float = Field(default=0.03, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_FAMILIARITY_STEP")
+    emotion_relationship_affection_gain: float = Field(default=0.02, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_AFFECTION_GAIN")
+    emotion_relationship_affection_loss: float = Field(default=0.005, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_AFFECTION_LOSS")
+    emotion_relationship_tension_rise: float = Field(default=0.03, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_TENSION_RISE")
+    emotion_relationship_tension_ease: float = Field(default=0.02, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_TENSION_EASE")
+    emotion_relationship_trust_gain: float = Field(default=0.02, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_TRUST_GAIN")
+    emotion_relationship_trust_loss: float = Field(default=0.03, ge=0.0, validation_alias="AURA_EMOTION_RELATIONSHIP_TRUST_LOSS")
+    # Venue caps (W4-15, Emotion PRD 7)
+    emotion_guest_cap_enabled: bool = Field(
+        default=False,
+        description="Limit how far guests together can move her state: the sum of the size of guest emotion_events in the last hour is capped. Off by default.",
+        validation_alias="AURA_EMOTION_GUEST_CAP_ENABLED",
+    )
+    emotion_guest_cap_per_hour: float = Field(
+        default=0.5, ge=0.0,
+        description="Budget (sum of emotion_event size) for all guest events in a sliding hour.",
+        validation_alias="AURA_EMOTION_GUEST_CAP_PER_HOUR",
+    )
 
     # =========================================================================
     # SYSTEM STATE MACHINE (Sleep/Wake Cycle)
@@ -1383,16 +1384,9 @@ class Settings(BaseSettings):
         Returns:
             Fallback model ID if available, None otherwise
         """
-        if model_id == self.l1_model:
-            return self.l1_model_fallback
-        if model_id == self.l2_model:
-            return self.l2_model_fallback
-        if model_id == self.l3_model:
-            return self.l3_model_fallback
-        if model_id == self.l4_model:
-            return self.l4_model_fallback
-        if model_id == self.l5_model:
-            return self.l5_model_fallback
+        for layer in ("l1", "l2", "l3", "l4", "l5"):
+            if model_id == self.model_for(layer):
+                return getattr(self, f"{layer}_model_fallback")
         return None
 
 

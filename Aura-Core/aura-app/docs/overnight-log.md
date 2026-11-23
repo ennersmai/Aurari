@@ -19,6 +19,8 @@
 - **Wave 3 complete** (2026-11-20). Review in docs/metrics/wave-3.md. Python suite 655 passed; frontend 67 tests and build pass. **Everything waiting on Mai is in docs/FOR_MAI.md.**
 - **Wave 4, M5 done** (W4-01..W4-07, 2026-11-23): entity, temporal and graph channels, rerank, recall tools, feedback; probes multi-hop 5/5 and temporal 5/5 (docs/metrics/m5.md). Suite 718 passed.
 - **Wave 4, M6 done** (W4-08..W4-12, 2026-11-23): dreaming v2 retry, archive, themes and entity summaries, theme recall; 90 simulated days with long-topic, single-fact and updated-fact probes all passing on days 30, 60, 90 (docs/metrics/m6.md). Suite 749 passed. From W4-03 on, code cards go to Sonnet agents (OpenCode on free models failed or needed heavy fixes on every code card).
+- **Wave 4, E4/E5 done** (W4-13..W4-15, 2026-11-23): mood (valence, arousal, control), relationships on person entities (baseline for love and trust, warmth scaling, stranger cap), guest venue caps (0.5 per sliding hour). All flags off. FX-01 and FX-02 (emotion translator and lexicon) done. **Wave 4 complete.** Suite 944 passed, 3 skipped.
+- **Phase 2 (docs/AURA_PHASE2_PLAN.md), Part 1 done** (P2-01, P2-02, 2026-11-23): tier audit, then every LLM call, trace, fallback and the settings UI follow the active stack; a grep test forbids `settings.lN_model` outside config.py.
 - **Unexpected session:** while W3-05 ran, a second OpenCode session (an old W2-30 one, probably resumed from the app) worked in the same tree and committed only a log note (d106d17). Nothing else changed.
 - **Follow-ups noted:** remaining direct time reads (DreamingEngine.tick, parts of manager.py); the native-tools streaming fallback can repeat already streamed text (fix before enabling `AURA_L3_NATIVE_TOOLS`).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
@@ -2532,3 +2534,22 @@
 **Supervisor (2026-11-23), P2-01:** Reviewed: the stack is switched through the real route function, each layer x stack gets a distinct model name, the xfails are strict, and every caller must make a request. Added a section to `tier_audit.md` that the worker missed: `LLMLayers` caches `l1_model..l5_model` at init, and `school.py:158`, `goal/engine.py:405`, `learning/engine.py:816` and `agent_loop.py:403` read that cache, so they ignore stack switches. P2-02 must cover them.
 
 **Supervisor (2026-11-23), W4-14:** Reviewed the engine and maths diffs against the card; no changes. Follow-up: the relationship read and the UPDATE are not atomic, which matters once P2-05 runs appraisal in parallel. Also, a brand-new guest's first message is not counted, because the entity is created after appraisal. Full suite with P2-01: 922 passed, 3 skipped, 8 xfailed.
+
+## P2-02: fix the tier slider
+- config.py: `model_for(layer)` (l1..l5, ValueError otherwise); `active_lX_model` call it; `get_fallback` now matches the active stack's models; `memory_extraction_model` description fixed.
+- Switched to the active stack: memory v2 extraction, dream themes, latent summary, coordinator traces (768, 1420, 1543, 2175), main.py startup log.
+- `unified_provider._get_cloud_fallback`: map built per call from the active stack's models and the per-layer fallback settings (the fallback fields are not per stack).
+- `LLMLayers.lX_model` are now read-only properties of the active stack (school, goal, learning, agent_loop unchanged).
+- `POST /system/model-stack` uses `object.__setattr__` like inference-config. `get_model_stack` unchanged in behaviour; available_stacks built by loop (the grep test forbids `settings.l1_model`).
+- settings.tsx shows active models from `useInferenceConfig`.
+- Tests: xfails removed from test_tier_audit.py, fallback test added, new tests/unit/test_no_stack0_model_reads.py.
+
+## W4-15: venue caps for guests
+- config.py: `emotion_guest_cap_enabled` (False), `emotion_guest_cap_per_hour` (0.5). schema: `emotion_event.capped option<bool>`.
+- engine.py: guest event = `kind == "message"` and person_id set and not "owner" (tool events and events without person_id are never guests). In-memory deque of (at, size), pruned on use, rebuilt from the table in `initialize` (one parameterised query: guest message rows with `at > $since`). Chosen to avoid a DB read per appraisal and to survive restarts.
+- Cap runs after relationship scaling: impulses are scaled so the size that gets recorded (largest per-dimension state change) fits the remaining budget; no budget means the event is written with size 0, `capped: true`, empty impulses, and the state does not move. `capped` is true whenever an event was scaled down or blocked, false otherwise; absent when the flag is off or the event is not a guest event.
+- Tests: tests/unit/test_emotion_guest_cap.py (9), tests/scenarios/test_emotion_guest_cap_embedded.py (1, real schema: `capped` persists, window rebuilds). Guard checks: 7 reverts (kind check, owner check, pruning, window append, scaling, no-budget block, load on init) each fail at least one test.
+- Tests: unit suite 790 passed, 2 skipped.
+
+**Supervisor (2026-11-23), W4-15 + P2-02:** Reviewed both diffs; no changes. W4-15 marks `capped` on scaled-down events too, not only blocked ones (more useful for the inspector). P2-02: there are no per-stack fallback settings, so fallbacks are shared across tiers (noted in FOR_MAI section 5). Full suite: 944 passed, 3 skipped.
+**Supervisor (2026-11-23), config:** W4-14 and W4-15 settings had no `validation_alias` (no env prefix is configured, so `AURA_*` names did nothing). All 21 now have `AURA_<NAME>` aliases; checked by loading two from the environment.

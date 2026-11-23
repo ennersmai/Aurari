@@ -6,6 +6,7 @@ Implements Emotion FRD FR-EE-003 (Real-time Processing).
 
 import asyncio
 import logging
+from collections import deque
 from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
@@ -77,6 +78,10 @@ class EmotionEngine(BaseEngine):
         # speaker; None until a person's message is appraised.
         self._rel_baseline: dict[str, float] | None = None
 
+        # Guest venue cap (W4-15): (timestamp, size) of guest events in the last hour.
+        self._guest_window: deque[tuple[datetime, float]] = deque()
+        self._guest_window_loaded = False
+
         # Timing
         self._last_tick_time = get_clock().now()
         self._last_persistence_time = get_clock().now()
@@ -100,6 +105,9 @@ class EmotionEngine(BaseEngine):
         except Exception as e:
             self.logger.warning(f"Could not load previous state: {e}")
             self.logger.info("Starting with baseline emotional state")
+
+        if settings.emotion_guest_cap_enabled:
+            await self._load_guest_window()
 
         # Hydrate per-emotion physics from the SurrealDB emotion table.
         # This resolves the split-brain: physics parameters are now DB-driven,
@@ -393,6 +401,71 @@ class EmotionEngine(BaseEngine):
             self.logger.warning(f"Failed to read relationship for {person_id}: {e}")
         return rel_math.resolve(row, person_id == "owner", settings), exists
 
+    @staticmethod
+    def _is_guest_event(event: AppraisalEvent) -> bool:
+        """A guest event is a message with a person_id other than ``"owner"``.
+
+        Tool events carry the tool name in person_id, so only ``kind == "message"``
+        counts; an event without person_id is never a guest event.
+        """
+        return (
+            event.kind == "message"
+            and bool(event.person_id)
+            and event.person_id != "owner"
+        )
+
+    async def _load_guest_window(self) -> None:
+        """Rebuild the in-memory guest window from the emotion_event table.
+
+        The window is kept in memory (no DB read per appraisal) and rebuilt here
+        on load, so it survives a restart. One parameterised query, guest rows
+        of the last hour only.
+        """
+        self._guest_window.clear()
+        since = get_clock().now() - timedelta(hours=1)
+        try:
+            rows = await self.db.query(
+                "SELECT at, size FROM emotion_event "
+                "WHERE kind = $kind AND person_id != NONE AND person_id != $owner "
+                "AND at > $since ORDER BY at",
+                {"kind": "message", "owner": "owner", "since": since},
+            )
+            for row in rows or []:
+                if isinstance(row, dict) and row.get("at") is not None:
+                    self._guest_window.append((row["at"], float(row.get("size") or 0.0)))
+        except Exception as e:
+            self.logger.warning(f"Failed to rebuild guest window: {e}")
+        self._guest_window_loaded = True
+
+    async def _guest_budget_remaining(self) -> float:
+        """Budget left in the sliding hour (prunes the window first)."""
+        if not self._guest_window_loaded:
+            await self._load_guest_window()
+        cutoff = get_clock().now() - timedelta(hours=1)
+        while self._guest_window and self._guest_window[0][0] <= cutoff:
+            self._guest_window.popleft()
+        used = sum(size for _, size in self._guest_window)
+        return settings.emotion_guest_cap_per_hour - used
+
+    def _size_of(self, impulses: dict[str, float]) -> float:
+        """The size ``appraise`` would record for these impulses (largest
+        per-dimension change of the state), without changing the state."""
+        new = self.physics.apply_influence(self.current_vector, impulses, 1.0).model_dump()
+        old = self.current_vector.model_dump()
+        return max((abs(new[k] - old[k]) for k in new), default=0.0)
+
+    def _fit_to_budget(
+        self, impulses: dict[str, float], remaining: float
+    ) -> dict[str, float]:
+        """Scale impulses so the event's size is at most ``remaining``."""
+        for _ in range(5):
+            size = self._size_of(impulses)
+            if size <= remaining:
+                break
+            factor = (remaining / size) * (1.0 - 1e-9)
+            impulses = {k: v * factor for k, v in impulses.items()}
+        return impulses
+
     async def explain(self, since: datetime | None = None) -> list[EmotionCause]:
         """
         Get emotion events since the given time (default: last hour), newest first.
@@ -524,6 +597,19 @@ class EmotionEngine(BaseEngine):
                     impulses, rel, event.appraisal.warmth, settings
                 )
 
+        # Venue cap (W4-15): last limit, after relationship scaling.
+        guest_cap = settings.emotion_guest_cap_enabled and self._is_guest_event(event)
+        capped = False
+        blocked = False
+        if guest_cap and impulses:
+            remaining = await self._guest_budget_remaining()
+            if remaining <= 0.0:
+                blocked = capped = True
+            else:
+                fitted = self._fit_to_budget(impulses, remaining)
+                capped = fitted != impulses
+                impulses = fitted
+
         # If no impulses matched, log at DEBUG and return current state
         if not impulses:
             await self._update_relationship(event, rel, rel_exists)
@@ -536,6 +622,28 @@ class EmotionEngine(BaseEngine):
         # Store baseline before applying influence
         baseline = self.config.baseline
         old_vector = self.current_vector.model_copy()
+
+        if blocked:
+            # No budget left: record the event with size 0, leave the state alone.
+            try:
+                await self.db.create("emotion_event", {
+                    "at": get_clock().now(),
+                    "kind": event.kind,
+                    "source": event.source,
+                    "ref": event.ref,
+                    "person_id": event.person_id,
+                    "venue": event.venue,
+                    "appraisal": event.appraisal.model_dump(),
+                    "impulses": {},
+                    "deviation_change": {k: 0.0 for k in old_vector.model_dump()},
+                    "dominant_change": None,
+                    "size": 0.0,
+                    "capped": True,
+                })
+            except Exception as e:
+                self.logger.error(f"Failed to write emotion_event: {e}")
+            await self._update_relationship(event, rel, rel_exists)
+            return await self.get_current_state()
 
         # Apply impulses through physics (same as apply_influence)
         # Note: impulses_for already multiplies by appraisal.intensity, so we pass 1.0
@@ -588,6 +696,9 @@ class EmotionEngine(BaseEngine):
         }
         if mood_bias is not None:
             event_record["mood_bias"] = mood_bias
+        if guest_cap:
+            event_record["capped"] = capped
+            self._guest_window.append((at, max_change))
         try:
             await self.db.create("emotion_event", event_record)
         except Exception as e:
