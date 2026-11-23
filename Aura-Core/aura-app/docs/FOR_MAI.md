@@ -48,6 +48,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] Verify finding S1 on a private Discord server (build plan section 6 item 2).
 - [ ] The probe set needs your real usage (docs/metrics/probes/README.md).
 - [ ] Avatar asset for V8 (build plan section 6 item 5).
+- [ ] Open `/workbench` (G4-03, replaces the IDE link) and check the layout with a real delegation: task list, live steps, diff summary, approve/deny, guidance, abort.
 - [ ] Run the L1 route fixture set against each stack's L1 model (command in docs/metrics/l1_routes.md).
 - [ ] Don't resume old Aura sessions in the OpenCode app while cards run: on 2026-11-20 an old W2-30 session ran in the same folder as W3-05 (it only added a log note).
 

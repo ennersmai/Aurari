@@ -314,3 +314,16 @@ async def test_list_and_detail(queue, decisions, api):
     assert one.status_code == 200 and one.json()["delegation"]["task_id"] == "task:2"
     assert (await api.get(f"/delegations/{plain.task_id}")).status_code == 404
     await _finish(client)
+
+
+def test_blocker_serialised_in_workbench_shape():
+    from aura.api.routes.delegations import _blocker
+    from aura.models.task import BlockerInfo
+    t = Task(task_id="task:b", goal="g", session_id="ses_b", delegated=True)
+    assert _blocker(t) is None
+    t.blocker = "stuck"
+    assert _blocker(t) == "stuck"
+    t.blocker_info = BlockerInfo(type="repeated_failure", last_reasoning="3 failed tool calls",
+                                 suggested_action="Try the other test runner.")
+    assert _blocker(t) == {"kind": "repeated_failure", "reason": "3 failed tool calls",
+                           "suggestion": "Try the other test runner."}

@@ -569,8 +569,8 @@ function MissionControlContent() {
           <button onClick={() => router.push('/chat')} className="glass-btn text-xs">
             <MessageSquare size={14} /> CHAT
           </button>
-          <button onClick={() => router.push('/ide')} className="glass-btn text-xs" style={{ borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
-            <Terminal size={14} /> IDE
+          <button onClick={() => router.push('/workbench')} className="glass-btn text-xs" style={{ borderColor: 'rgba(251,191,36,0.2)', color: '#fbbf24' }}>
+            <Terminal size={14} /> Workbench
           </button>
 
           {/* Model Stack Selector — Lean / Core / Titan */}

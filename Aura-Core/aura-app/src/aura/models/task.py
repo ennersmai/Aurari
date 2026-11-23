@@ -70,6 +70,10 @@ class TaskStepRecord(BaseModel):
         default=None,
         description="File path that was active/written at this step",
     )
+    emotion: dict[str, Any] | None = Field(
+        default=None,
+        description="Top 3 emotion dimensions and values when the step was persisted (G4-02)",
+    )
 
 
 class Task(BaseModel):

@@ -127,11 +127,11 @@ export default function SchoolPage() {
             School
           </button>
           <button
-            onClick={() => router.push('/ide')}
+            onClick={() => router.push('/workbench')}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-mono text-gray-500 hover:text-gray-300 hover:bg-white/5 transition-colors"
           >
             <Terminal size={13} />
-            IDE
+            Workbench
           </button>
 
           <div className="flex-1" />

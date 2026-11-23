@@ -48,6 +48,7 @@ OPENCODE_CLIENT_ENDPOINTS: list[tuple[str, str]] = [
     ("POST", "/api/session/{sessionID}/interrupt"),
     ("GET", "/api/session/{sessionID}/diff"),
     ("GET", "/api/session/{sessionID}/message"),
+    ("GET", "/api/session/active"),
 ]
 
 
@@ -431,6 +432,23 @@ class OpenCodeClient:
 
         if response.status_code >= 400:
             await self._handle_error(response)
+
+    async def session_running(self, session_id: str) -> bool:
+        """True if the session is in the server's active list (GET /api/session/active).
+
+        Sessions absent from that list are inactive (openapi-v2.3.2.json).
+        """
+        await self.ensure_running()
+        client = await self._get_client()
+        try:
+            response = await client.get("/api/session/active")
+        except httpx.ConnectError as e:
+            raise OpenCodeUnavailable(f"Connection failed: {e}") from e
+        if response.status_code >= 400:
+            await self._handle_error(response)
+        active = response.json().get("data", {})
+        entry = active.get(session_id) if isinstance(active, dict) else None
+        return isinstance(entry, dict) and entry.get("type") == "running"
 
     async def result(self, session_id: str) -> WorkResult:
         """

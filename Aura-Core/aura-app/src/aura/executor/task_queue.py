@@ -460,6 +460,15 @@ class TaskQueueService:
     # RESUME ON STARTUP
     # =========================================================================
 
+    async def _try_reattach(self, task: Task) -> bool:
+        """Re-attach a delegation monitor if the OpenCode session is still running (G4-02)."""
+        try:
+            from aura.executor.delegation import try_reattach
+            return await try_reattach(task)
+        except Exception as e:
+            logger.warning(f"Re-attach check failed for {task.task_id}: {e}")
+            return False
+
     async def recover_interrupted_tasks(self) -> list[Task]:
         """Find tasks that were running when the system went down and pause them."""
         try:
@@ -476,6 +485,8 @@ class TaskQueueService:
             for row in rows:
                 try:
                     task = Task(**row)
+                    if task.delegated and await self._try_reattach(task):
+                        continue
                     await self.db.merge(task.task_id, {
                         "status": TaskStatus.PAUSED.value,
                         "blocker": "System restart — task was interrupted",

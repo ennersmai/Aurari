@@ -8,6 +8,7 @@ and task lifecycle management.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -118,6 +119,16 @@ class DelegationRunner:
         self._monitor_task: Optional[asyncio.Task] = None
         self._tokens_used = 0
         self._start_time: Optional[datetime] = None
+        self._brief: str = ""
+        # G4-02 monitor state
+        self._fired: set[str] = set()  # blocker kinds already raised
+        self._error_streak = 0
+        self._repeat_counts: dict[tuple[str, str], int] = {}
+        self._last_summary = ""
+        self._last_beat: Optional[datetime] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._bg_tasks: set[asyncio.Task] = set()  # strong refs to suggestion calls
+        self._blocker_data: Optional[dict[str, Any]] = None
 
     # -- controls (G4-01) ---------------------------------------------------
 
@@ -182,9 +193,38 @@ class DelegationRunner:
         if self._client is None or not self._session_id or self._task is None:
             raise RuntimeError("delegation is not running")
         await self._client.send(self._session_id, text)
-        step = guidance_step(len(self._task.steps) + 1, text)
-        await get_task_queue().persist_step(self._task.task_id, step)
-        self._task.steps.append(step)
+        await self._record_step(guidance_step(len(self._task.steps) + 1, text))
+
+    @classmethod
+    def reattach(cls, task: Task, client: OpenCodeClient) -> "DelegationRunner":
+        """Bind a runner to an existing delegated task and its live session.
+
+        Used at startup when the OpenCode session outlived the app. The runner
+        is registered and its monitor started. Time and token budgets count
+        from the re-attach (the earlier usage is not recorded).
+        """
+        config = DelegationConfig(
+            goal=task.goal,
+            workspace=task.workspace_path,
+            agent="",
+            success_criteria="",
+            tokens=settings.delegation_default_tokens,
+            minutes=settings.delegation_default_minutes,
+        )
+        runner = cls(config)
+        runner._task = task
+        runner._session_id = task.session_id
+        runner._client = client
+        runner._start_time = get_clock().now()
+        _RUNNERS[task.task_id] = runner
+        try:
+            from aura.main import avatar_state_machine
+            if avatar_state_machine is not None:
+                avatar_state_machine.delegation_running(True)
+        except Exception:
+            pass
+        runner._monitor_task = asyncio.create_task(runner._monitor())
+        return runner
 
     async def run(self) -> str:
         """Start the delegation and return the task ID."""
@@ -198,6 +238,7 @@ class DelegationRunner:
 
         # 1. Build the brief
         brief = await self._build_brief()
+        self._brief = brief
 
         # 2. Create task record
         task_queue = get_task_queue()
@@ -320,6 +361,9 @@ class DelegationRunner:
         task_queue = get_task_queue()
         decision_service = get_decision_service()
 
+        self._last_beat = get_clock().now()
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
         try:
             async for event in self._client.events(self._session_id):
                 # Track elapsed time
@@ -328,6 +372,15 @@ class DelegationRunner:
                     if elapsed.total_seconds() > self.config.minutes * 60:
                         await self._handle_budget_exceeded(task_queue, task_id, "time")
                         return
+                    if elapsed.total_seconds() >= self.config.minutes * 60 * settings.delegation_budget_warn_fraction:
+                        pct = int(settings.delegation_budget_warn_fraction * 100)
+                        await self._raise_blocker(
+                            "budget_time",
+                            "step_limit",
+                            f"{pct}% of the time budget used "
+                            f"({int(elapsed.total_seconds() // 60)} of {self.config.minutes} minutes)",
+                        )
+                await self._maybe_heartbeat()
 
                 # Handle specific event kinds first
                 if event.kind == "permission":
@@ -342,6 +395,14 @@ class DelegationRunner:
                         if self._tokens_used > self.config.tokens:
                             await self._handle_budget_exceeded(task_queue, task_id, "tokens")
                             return
+                        if self._tokens_used >= self.config.tokens * settings.delegation_budget_warn_fraction:
+                            pct = int(settings.delegation_budget_warn_fraction * 100)
+                            await self._raise_blocker(
+                                "budget_tokens",
+                                "step_limit",
+                                f"{pct}% of the token budget used ({self._tokens_used} of {self.config.tokens})",
+                            )
+                    await self._observe_tool(event)
 
                 elif event.kind == "succeeded":
                     # Session succeeded - now handle review and close task
@@ -368,6 +429,7 @@ class DelegationRunner:
             await task_queue.fail_task(task_id, reason=f"Monitor error: {e}")
         finally:
             self._unregister()
+            await self._stop_background()
             # Emit delegation_running(false) event for avatar state machine
             try:
                 from aura.main import avatar_state_machine
@@ -375,6 +437,180 @@ class DelegationRunner:
                     avatar_state_machine.delegation_running(False)
             except Exception:
                 pass
+
+    # -- blocker monitor, heartbeat, suggestion (G4-02) ---------------------
+
+    async def _stop_background(self) -> None:
+        """Cancel the heartbeat timer and any in-flight suggestion calls."""
+        pending = [t for t in (self._heartbeat_task, *self._bg_tasks) if t is not None and not t.done()]
+        for t in pending:
+            t.cancel()
+        for t in pending:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._heartbeat_task = None
+
+    async def _heartbeat_loop(self) -> None:
+        """Wake every heartbeat interval so a silent session still beats."""
+        while True:
+            await self._heartbeat_wait()
+            try:
+                await self._maybe_heartbeat()
+            except Exception as e:
+                logger.warning(f"Heartbeat failed for {self.task_id}: {e}")
+
+    async def _heartbeat_wait(self) -> None:
+        await asyncio.sleep(settings.delegation_heartbeat_seconds)
+
+    async def _maybe_heartbeat(self) -> None:
+        """Add a 'still working' status step if the interval has passed. No model call."""
+        if self._task is None or self._last_beat is None or self._start_time is None:
+            return
+        now = get_clock().now()
+        if (now - self._last_beat).total_seconds() < settings.delegation_heartbeat_seconds:
+            return
+        self._last_beat = now
+        minutes = int((now - self._start_time).total_seconds() // 60)
+        n_steps = len(self._task.steps)
+        last = self._last_summary or "no steps yet"
+        await self._record_step(TaskStepRecord(
+            step_number=n_steps + 1,
+            step_type="status",
+            title=f"still working: {last}, {n_steps} steps, {minutes} min",
+        ))
+
+    async def _emotion_snapshot(self) -> Optional[dict[str, float]]:
+        """Top 3 emotion dimensions now. Any failure gives None, never blocks a step."""
+        try:
+            engine = _get_emotion_engine()
+            if engine is None:
+                return None
+            state = await engine.get_current_state()
+            return {name: round(float(v), 4) for name, v in state.vector.get_top_n(3)}
+        except Exception as e:
+            logger.debug(f"Emotion snapshot unavailable: {e}")
+            return None
+
+    async def _record_step(self, step: TaskStepRecord) -> None:
+        """Number, stamp with emotion, append locally and persist a step."""
+        if self._task is None:
+            return
+        step.emotion = await self._emotion_snapshot()
+        step.step_number = len(self._task.steps) + 1
+        self._task.steps.append(step)
+        await get_task_queue().persist_step(self._task.task_id, step)
+
+    async def _observe_tool(self, event: WorkEvent) -> None:
+        """Track failed-tool streaks and repeated identical calls."""
+        data = event.data or {}
+        # A tool event fails when its type is session.tool.failed (WorkEvent.type is
+        # the raw OpenCode type, opencode_client.py:299-312; kind "tool" comes from the
+        # "session.tool." prefix, opencode_client.py:320-321). That event's data carries
+        # a required `error` (openapi-v2.3.2.json, schema session.tool.failed), so a
+        # non-empty `error` counts too.
+        failed = event.type.endswith(".failed") or bool(data.get("error"))
+        if failed:
+            self._error_streak += 1
+            if self._error_streak >= settings.delegation_error_streak:
+                await self._raise_blocker(
+                    "error_streak",
+                    "repeated_failure",
+                    f"{self._error_streak} failed tool calls in a row",
+                    attempts=self._error_streak,
+                    last_error=str(data.get("error", ""))[:300],
+                )
+        elif event.type.endswith(".success"):
+            self._error_streak = 0
+
+        if event.type.endswith(".called"):
+            name = str(data.get("tool") or data.get("name") or "")
+            args = data.get("arguments", data.get("input"))
+            key = (name, json.dumps(args, sort_keys=True, default=str))
+            count = self._repeat_counts.get(key, 0) + 1
+            self._repeat_counts[key] = count
+            if count >= settings.delegation_repeat_limit:
+                await self._raise_blocker(
+                    "repeat_loop",
+                    "reasoning_loop",
+                    f"the same tool call ({name or 'unnamed'}) ran {count} times with the same arguments",
+                    tool=name or None,
+                    attempts=count,
+                )
+
+    async def _raise_blocker(
+        self,
+        kind: str,
+        info_type: str,
+        reason: str,
+        tool: Optional[str] = None,
+        attempts: int = 0,
+        last_error: str = "",
+    ) -> None:
+        """Record a blocker once per kind: blocker info, a needs_decision item, a suggestion."""
+        if self._task is None or kind in self._fired:
+            return
+        self._fired.add(kind)
+        task_id = self._task.task_id
+        recent = [s.title for s in self._task.steps[-settings.delegation_blocker_recent_steps:]]
+        data: dict[str, Any] = {
+            "type": info_type,
+            "tool": tool,
+            "attempts": attempts,
+            "last_error": last_error or reason,
+            "last_reasoning": reason,
+            "suggested_action": "",
+        }
+        self._blocker_data = data
+        await get_task_queue().set_blocker_info(task_id, data)
+        message = f"{reason}. Last steps: " + ("; ".join(recent) if recent else "(none)")
+        try:
+            await get_decision_service().create(
+                kind="needs_decision",
+                session_id=self._session_id or "",
+                request_id=f"blocker:{task_id}:{kind}",
+                action=f"blocker_{kind}",
+                resources=[],
+                risk="blocker",
+                workspace=self.config.workspace,
+                message=message,
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.warning(f"Could not create blocker decision for {task_id}: {e}")
+        logger.info(f"Delegation blocker ({kind}) on {task_id}: {reason}")
+        bg = asyncio.create_task(self._suggest(task_id, data, reason, recent))
+        self._bg_tasks.add(bg)
+        bg.add_done_callback(self._bg_tasks.discard)
+
+    async def _suggest(self, task_id: str, data: dict[str, Any], reason: str, recent: list[str]) -> None:
+        """One L2 call drafting a next action; stored on the blocker info. Failures are logged."""
+        try:
+            client = _get_llm_client()
+            prompt = (
+                "A delegated coding agent is blocked.\n\n"
+                f"Brief:\n{self._brief or self.config.goal}\n\n"
+                f"Blocker: {reason}\n\n"
+                "Last steps:\n" + "\n".join(f"- {t}" for t in recent) + "\n\n"
+                "Suggest one next action for the owner in one paragraph."
+            )
+            reply = await client.complete(
+                [{"role": "user", "content": prompt}],
+                model=settings.active_l2_model,
+                temperature=0.3,
+                max_tokens=300,
+            )
+            text = (reply or "").strip()
+            if not text:
+                return
+            data["suggested_action"] = text
+            if self._blocker_data is data:  # a newer blocker owns the info otherwise
+                await get_task_queue().set_blocker_info(task_id, data)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"Blocker suggestion failed for {task_id}: {e}")
 
     async def _handle_session_success(self, task_queue: Any, task_id: str) -> None:
         """Handle a successful session completion with optional review."""
@@ -600,12 +836,15 @@ class DelegationRunner:
             logger.warning(f"Failed to write delegation memory for {task_id}: {e}")
 
     async def _emit_appraisal(self, outcome: str) -> None:
-        """Emit an appraisal event for the delegation outcome."""
+        """Emit an appraisal event for the delegation outcome (E2/E3 flag only)."""
+        if not settings.emotion_appraisal_enabled:
+            return
         try:
             from aura.engines.emotion.system_events import tool_succeeded, tool_failed
-            from aura.engines.emotion.engine import get_emotion_engine
 
-            engine = get_emotion_engine()
+            engine = _get_emotion_engine()
+            if engine is None:
+                return
             if outcome == "succeeded":
                 event = tool_succeeded("delegation")
             else:
@@ -635,11 +874,8 @@ class DelegationRunner:
             duration_ms=0,  # Not available from event stream
         )
 
-        await task_queue.persist_step(task_id, step)
-
-        # Update local task steps for step numbering
-        if self._task:
-            self._task.steps.append(step)
+        self._last_summary = summary
+        await self._record_step(step)
 
     def _summarize_event(self, event: WorkEvent) -> str:
         """Create a one-line summary from an event."""
@@ -733,6 +969,40 @@ class DelegationRunner:
         reason = f"budget exceeded: {budget_type} ({self._tokens_used} tokens used, {self.config.tokens} limit)" if budget_type == "tokens" else f"budget exceeded: time ({self.config.minutes} minutes limit)"
         await task_queue.fail_task(task_id, reason=reason)
         logger.info(f"Delegation budget exceeded: {task_id} — {reason}")
+
+
+def _get_emotion_engine() -> Any:
+    """The running emotion engine (aura.main), or None. Patched in tests."""
+    from aura.main import emotion_engine
+    return emotion_engine
+
+
+def _get_llm_client() -> Any:
+    """The LLM client behind the app's layers. Patched in tests."""
+    from aura.api.routes.school import get_llm_layers
+    return get_llm_layers().client
+
+
+async def try_reattach(task: Task) -> bool:
+    """At startup: attach a monitor to a delegated task whose session still runs.
+
+    Returns True when re-attached. Any error or a session that is not running
+    returns False, so the caller keeps its interrupted handling.
+    """
+    if not task.delegated or not task.session_id or task.session_id == "main":
+        return False
+    try:
+        client = OpenCodeClient(OpenCodeProcess())
+        if not await client.session_running(task.session_id):
+            await client.close()
+            return False
+        get_decision_service()._client = client
+        DelegationRunner.reattach(task, client)
+        logger.info(f"Re-attached delegation monitor: {task.task_id} (session {task.session_id})")
+        return True
+    except Exception as e:
+        logger.warning(f"Re-attach failed for {task.task_id}: {e}")
+        return False
 
 
 async def start_delegation(

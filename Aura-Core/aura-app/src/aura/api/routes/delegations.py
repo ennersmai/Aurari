@@ -33,6 +33,19 @@ def _is_delegated(task: Task) -> bool:
     return bool(task.delegated) and bool(task.session_id) and task.session_id != "main"
 
 
+def _blocker(task: Task) -> dict[str, Any] | str | None:
+    """The blocker in the Workbench shape: {kind, reason, suggestion} from G4-02's
+    BlockerInfo, else the plain blocker text."""
+    info = task.blocker_info
+    if info is not None:
+        return {
+            "kind": info.type,
+            "reason": info.last_reasoning or info.last_error or (task.blocker or ""),
+            "suggestion": info.suggested_action or None,
+        }
+    return task.blocker
+
+
 def _summary(task: Task, pending_ids: list[str], steps: int | None) -> dict[str, Any]:
     runner = delegation.get_runner(task.task_id)
     shown = task.steps if steps is None else task.steps[-steps:]
@@ -45,7 +58,7 @@ def _summary(task: Task, pending_ids: list[str], steps: int | None) -> dict[str,
         "budget": runner.budget_snapshot() if runner else None,
         "steps": [s.model_dump(mode="json") for s in shown],
         "step_count": len(task.steps),
-        "blocker": task.blocker,
+        "blocker": _blocker(task),
         "pending_decision_ids": pending_ids,
         "created_at": task.created_at.isoformat(),
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,

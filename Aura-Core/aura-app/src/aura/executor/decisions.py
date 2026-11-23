@@ -124,6 +124,11 @@ class DecisionService:
         await self._db.merge(decision_id, update_data)
 
         # Then call the OpenCode client to answer the permission
+        if decision.get("kind") == "needs_decision":
+            # A blocker item (G4-02) has no OpenCode permission request to answer.
+            updated = await self._db.select(decision_id)
+            return updated[0] if updated else {**decision, **update_data}
+
         if self._client is None:
             raise RuntimeError("No OpenCode client configured for answering permissions")
         

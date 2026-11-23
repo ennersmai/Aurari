@@ -1482,6 +1482,38 @@ class Settings(BaseSettings):
         description="How many recent steps GET /delegations shows per task.",
         ge=1,
     )
+    # G4-02: blocker monitor, heartbeat, re-attach
+    delegation_error_streak: int = Field(
+        default=3,
+        validation_alias="AURA_DELEGATION_ERROR_STREAK",
+        description="Failed tool events in a row that raise a blocker.",
+        ge=1,
+    )
+    delegation_repeat_limit: int = Field(
+        default=4,
+        validation_alias="AURA_DELEGATION_REPEAT_LIMIT",
+        description="Times the same tool with the same arguments may run in one task before a blocker.",
+        ge=2,
+    )
+    delegation_budget_warn_fraction: float = Field(
+        default=0.8,
+        validation_alias="AURA_DELEGATION_BUDGET_WARN_FRACTION",
+        description="Fraction of the time or token budget at which a blocker is raised (the 100% stop is separate).",
+        gt=0.0,
+        le=1.0,
+    )
+    delegation_heartbeat_seconds: float = Field(
+        default=60.0,
+        validation_alias="AURA_DELEGATION_HEARTBEAT_SECONDS",
+        description="Seconds between 'still working' status steps while a delegation runs.",
+        gt=0.0,
+    )
+    delegation_blocker_recent_steps: int = Field(
+        default=5,
+        validation_alias="AURA_DELEGATION_BLOCKER_RECENT_STEPS",
+        description="Recent step summaries included in a blocker decision and in the suggestion prompt.",
+        ge=1,
+    )
     policy_table: dict[str, dict[str, str]] = Field(
         default_factory=lambda: {
             "owner": {"read": "allow", "write": "allow", "execute": "ask", "send": "ask"},
