@@ -31,6 +31,7 @@ from aura.api.routes import tasks as task_routes
 from aura.api.routes import workspace as workspace_routes
 from aura.api.routes import cognition as cognition_routes
 from aura.api.routes import inference_config as inference_config_routes
+from aura.api.routes import tiers as tiers_routes
 from aura.api.routes import discord as discord_routes
 from aura.discord.bot import bot_instance as discord_bot
 from aura.executor.task_queue import get_task_queue
@@ -508,6 +509,7 @@ app.include_router(session_routes.router, tags=["sessions"])
 app.include_router(school_routes.router, prefix="/school", tags=["school"])
 app.include_router(cognition_routes.router, tags=["cognition"])
 app.include_router(inference_config_routes.router, prefix="/system", tags=["inference-config"])
+app.include_router(tiers_routes.router, prefix="/system", tags=["tiers"])
 app.include_router(discord_routes.router, tags=["discord"])
 app.include_router(decisions_routes.router, tags=["decisions"])
 

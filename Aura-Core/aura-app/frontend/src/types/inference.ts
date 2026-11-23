@@ -73,3 +73,44 @@ export function getVRAMRisk(ctx: number): VRAMRisk {
 export function formatContextK(tokens: number): string {
   return `${Math.round(tokens / 1024)}k`;
 }
+
+/** Tier profile (P2-03/P2-04): mirrors aura.tiers.TierProfile. */
+export interface TierProfile {
+  name: string;
+  l3_reasoning: "never" | "think" | "think_or_stakes";
+  l3_stakes_threshold: number;
+  l2_post_analysis: "off" | "on" | "on_with_reasoning";
+  turn_budget_seconds: number;
+  turn_budget_usd: number;
+  tools_offered_max: number;
+  context_budget_tokens: number;
+  history_floor_exchanges: number;
+  allow_delegate: boolean;
+  allow_task_graph: boolean;
+  task_graph_max_nodes: number;
+  task_budget_usd: number;
+  task_budget_minutes: number;
+  consult_swift_per_turn: number;
+  consult_sage_per_turn: number;
+  afterthought: "off" | "think_high_stakes";
+  afterthought_min_stakes: number;
+  full_tools_max: number;
+  stub_tools_max: number;
+  autonomy_max_level: number;
+}
+
+export interface TierInfo {
+  index: number;
+  name: string;
+  /** Effective: defaults merged with overrides. */
+  profile: TierProfile;
+  /** Only the overridden keys. */
+  overrides: Partial<TierProfile>;
+  models: { l1: string; l2: string; l3: string; l4: string; l5: string };
+}
+
+/** GET /system/tiers, and the response of POST /system/tiers/{index}[/reset]. */
+export interface TiersResponse {
+  active_index: number;
+  tiers: TierInfo[];
+}

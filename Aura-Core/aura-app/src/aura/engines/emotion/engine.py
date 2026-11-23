@@ -82,6 +82,10 @@ class EmotionEngine(BaseEngine):
         self._guest_window: deque[tuple[datetime, float]] = deque()
         self._guest_window_loaded = False
 
+        # P2-05: appraisals run one at a time. Two overlapping turns must not
+        # interleave the relationship read-modify-write or the guest window.
+        self._appraise_lock = asyncio.Lock()
+
         # Timing
         self._last_tick_time = get_clock().now()
         self._last_persistence_time = get_clock().now()
@@ -537,6 +541,11 @@ class EmotionEngine(BaseEngine):
         return await self.get_current_state()
 
     async def appraise(self, event: AppraisalEvent) -> EmotionState:
+        """Serialise appraisals (P2-05); see :meth:`_appraise_unlocked`."""
+        async with self._appraise_lock:
+            return await self._appraise_unlocked(event)
+
+    async def _appraise_unlocked(self, event: AppraisalEvent) -> EmotionState:
         """
         Appraise an event and update emotional state accordingly.
 

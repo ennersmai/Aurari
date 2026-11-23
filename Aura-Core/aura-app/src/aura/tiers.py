@@ -132,6 +132,16 @@ def reset_tier_cache() -> None:
     _warned = False
 
 
+def invalidate_cache() -> None:
+    """Drop the cached profiles so the next read reloads the file (P2-04 writes).
+
+    Keeps the one-warning latch, so a bad file does not warn again per write.
+    """
+    global _cache_key, _cache_profiles
+    _cache_key = None
+    _cache_profiles = DEFAULT_PROFILES
+
+
 def _warn_once(message: str) -> None:
     global _warned
     if not _warned:
@@ -142,6 +152,24 @@ def _warn_once(message: str) -> None:
 def _overrides_path() -> Path:
     path = Path(settings.tier_overrides_path)
     return path if path.is_absolute() else APP_DIR / path
+
+
+# D3: only Titan (index 2) may delegate or plan task graphs; overrides cannot
+# grant these elsewhere. The tier name is fixed.
+TITAN_ONLY_KNOBS = ("allow_delegate", "allow_task_graph")
+TITAN_INDEX = 2
+
+
+def build_profile(index: int, patch: dict[str, Any]) -> TierProfile:
+    """Defaults for ``index`` merged with ``patch``; raises ValueError or
+    ValidationError for anything the overrides may not change (D3, name)."""
+    if "name" in patch:
+        raise ValueError("the tier name cannot be overridden")
+    if index != TITAN_INDEX:
+        granted = [k for k in TITAN_ONLY_KNOBS if patch.get(k)]
+        if granted:
+            raise ValueError(f"{granted} are Titan only (D3)")
+    return TierProfile(**{**DEFAULT_PROFILES[index].model_dump(), **patch})
 
 
 def _load_profiles(path: Path) -> dict[int, TierProfile]:
@@ -158,7 +186,7 @@ def _load_profiles(path: Path) -> dict[int, TierProfile]:
             patch = raw.get(str(index), {})
             if not isinstance(patch, dict):
                 raise ValueError(f"tier {index} overrides must be an object")
-            merged[index] = TierProfile(**{**default.model_dump(), **patch})
+            merged[index] = build_profile(index, patch)
         return merged
     except (OSError, ValueError, ValidationError) as exc:
         # json.JSONDecodeError is a ValueError.

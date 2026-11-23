@@ -496,6 +496,16 @@ class Settings(BaseSettings):
         suffix = {1: "1", 2: "2"}.get(self.model_stack_index, "")
         return getattr(self, f"{layer}_model{suffix}")
 
+    def models_for_stack(self, index: int) -> dict[str, str]:
+        """Return {"l1".."l5": model} for stack ``index`` (0, 1 or 2)."""
+        if index not in (0, 1, 2):
+            raise ValueError(f"Unknown stack {index!r}; expected 0..2")
+        suffix = {1: "1", 2: "2"}.get(index, "")
+        return {
+            layer: getattr(self, f"{layer}_model{suffix}")
+            for layer in ("l1", "l2", "l3", "l4", "l5")
+        }
+
     def fallback_for(self, layer: str) -> str | None:
         """Return the fallback model of ``layer`` for the active stack.
 
@@ -1062,6 +1072,25 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         """Parse CORS origins string into list."""
         return [origin.strip() for origin in self.cors_origins.split(",")]
+
+    # =========================================================================
+    # PARALLEL APPRAISAL (P2-05)
+    # =========================================================================
+    appraisal_parallel_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_APPRAISAL_PARALLEL_ENABLED",
+        description="When true (and emotion_appraisal_enabled and layer_l4_enabled), L4 appraisal "
+                    "starts at turn start, in parallel with L1, and the post-response chain no "
+                    "longer appraises. Off means appraisal runs in the post-response chain.",
+    )
+    appraisal_turn_deadline_ms: int = Field(
+        default=1200,
+        ge=0,
+        validation_alias="AURA_APPRAISAL_TURN_DEADLINE_MS",
+        description="How long the turn waits for the parallel appraisal before building the "
+                    "synthesis context. If it is not done it finishes in the background and "
+                    "applies to the next turn.",
+    )
 
     # =========================================================================
     # EMOTION APPRAISAL (W3-20)

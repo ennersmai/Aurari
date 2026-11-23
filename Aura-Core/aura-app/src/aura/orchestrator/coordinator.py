@@ -107,6 +107,14 @@ class SystemState(str, Enum):
     SLEEPING = "SLEEPING"
 
 
+class _AppraisalHandle:
+    """Per-turn state for the parallel appraisal (P2-05)."""
+
+    def __init__(self) -> None:
+        self.task: "asyncio.Task | None" = None
+        self.handed_off = False
+
+
 class Orchestrator:
     """
     Meta-cognitive orchestrator coordinating all cognitive engines.
@@ -1055,6 +1063,7 @@ Constraints:
         venue: str = "app",
         speaker: str = "owner",
         packet: ContextPacket | None = None,
+        appraisal_task: "asyncio.Task | None" = None,
     ) -> None:
         """Schedule the post-response chain in the background (never awaited here)."""
         asyncio.create_task(self._post_response_chain(
@@ -1072,7 +1081,30 @@ Constraints:
             venue=venue,
             speaker=speaker,
             packet=packet,
+            # Only passed when a parallel appraisal exists; flag off is unchanged.
+            **({"appraisal_task": appraisal_task} if appraisal_task is not None else {}),
         ))
+
+    def _parallel_appraisal_active(self) -> bool:
+        return bool(
+            settings.appraisal_parallel_enabled
+            and settings.emotion_appraisal_enabled
+            and settings.layer_l4_enabled
+        )
+
+    def _start_background_appraisal(self, **kwargs: Any) -> "asyncio.Task":
+        """Start one appraisal task and keep a strong reference until it ends (P2-05)."""
+        tasks = self.__dict__.setdefault("_appraisal_tasks", set())
+        task = asyncio.create_task(self._appraise_message(**kwargs))
+        tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                self.logger.warning(f"Parallel appraisal task failed: {t.exception()}")
+
+        task.add_done_callback(_done)
+        return task
 
     async def _gather_turn_context(
         self,
@@ -1595,7 +1627,25 @@ Constraints:
         except Exception:
             pass
 
-    async def _turn_pipeline(
+    async def _turn_pipeline(self, *args, **kwargs):
+        """Drive :meth:`_turn_stages` and clean up a parallel appraisal (P2-05).
+
+        The appraisal task is started inside the stages, after the pre-intent
+        reply. Any exit that did not hand it to the post-response chain (the
+        teaching reply, an exception, the consumer closing the stream) cancels
+        it, so a turn that never reaches the chain never appraises.
+        """
+        handle = _AppraisalHandle()
+        stages = self._turn_stages(*args, appraisal=handle, **kwargs)
+        try:
+            async for ev in stages:
+                yield ev
+        finally:
+            if handle.task is not None and not handle.handed_off:
+                handle.task.cancel()
+            await stages.aclose()
+
+    async def _turn_stages(
         self,
         user_input: str,
         user_id: str,
@@ -1611,6 +1661,7 @@ Constraints:
         context_mode: str,
         requester_role: str,
         venue: str = "app",
+        appraisal: "_AppraisalHandle | None" = None,
     ):
         """Run one turn end-to-end and yield :class:`TurnEvent` items (W2-10).
 
@@ -1659,6 +1710,18 @@ Constraints:
                 yield TurnEvent("done", reply)
             return
 
+        # P2-05: start the L4 appraisal now, in parallel with L1. It needs only the
+        # message, the history, the venue and the speaker (never Aura's reply).
+        # Started after the pre-intent reply so that path never appraises.
+        speaker = speaker_key(user_id, requester_role)
+        if appraisal is not None and self._parallel_appraisal_active():
+            appraisal.task = self._start_background_appraisal(
+                user_input=user_input,
+                conversation_history=conversation_history,
+                venue=venue,
+                speaker=speaker,
+            )
+
         # Stage 4: L1 intent classification, telemetry, teaching lane.
         intent_data, intent, teaching_reply = await self._classify_intent(
             user_input, user_id, stream=stream
@@ -1690,6 +1753,16 @@ Constraints:
                 "tier_name": profile.name,
                 **profile.model_dump(),
             })
+        if appraisal is not None and appraisal.task is not None:
+            # Wait for the appraisal up to the deadline, before any emotion state is
+            # read for this turn. If it is not done it is NOT cancelled: it finishes
+            # in the background and applies to the next turn.
+            await asyncio.wait(
+                {appraisal.task}, timeout=settings.appraisal_turn_deadline_ms / 1000
+            )
+            self._publish_trace("L4", "appraisal_timing", {
+                "appraisal": "this_turn" if appraisal.task.done() else "next_turn",
+            })
         ctx = await self._gather_turn_context(
             user_input,
             user_id,
@@ -1700,7 +1773,7 @@ Constraints:
         )
         ctx.tier_profile = profile
         # Record who is speaking and where this turn happens (W3-10).
-        ctx.speaker = speaker_key(user_id, requester_role)
+        ctx.speaker = speaker
         ctx.venue = venue
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
@@ -1762,7 +1835,10 @@ Constraints:
             venue=ctx.venue,
             speaker=ctx.speaker,
             packet=ctx.packet,
+            appraisal_task=appraisal.task if appraisal is not None else None,
         )
+        if appraisal is not None:
+            appraisal.handed_off = True
 
         # Stage 10: yield the final done event with the accumulated response.
         yield TurnEvent("done", response)
@@ -2068,6 +2144,7 @@ Constraints:
         venue: str = "app",
         speaker: str = "owner",
         packet: ContextPacket | None = None,
+        appraisal_task: "asyncio.Task | None" = None,
     ) -> None:
         """
         Execute post-response tasks in correct dependency order.
@@ -2083,7 +2160,12 @@ Constraints:
         # Respects layer_l4_enabled toggle from inference cockpit.
         # Appraisal is an L4 model call, so it must respect the L4 switch:
         # call _appraise_message only when both flags are true.
-        if settings.emotion_appraisal_enabled and settings.layer_l4_enabled:
+        if appraisal_task is not None:
+            # P2-05: already started at turn start; never appraise the message again.
+            # Wait for it (if the deadline passed it is still running) so the
+            # experience log and L2 below see the fresh state, as they do today.
+            await asyncio.wait({appraisal_task})
+        elif settings.emotion_appraisal_enabled and settings.layer_l4_enabled:
             await self._appraise_message(
                 user_input=user_input,
                 conversation_history=conversation_history,
