@@ -36,7 +36,9 @@ TOOL_DEFINITION = {
                     "properties": {
                         "id": {"type": "string", "description": "Unique id inside this graph, e.g. 'r1'."},
                         "kind": {"type": "string", "enum": list(NODE_KINDS)},
-                        "brief": {"type": "string", "description": "What this node must do."},
+                        "brief": {"type": "string", "description": (
+                            "What this node must do. A code node must include a line "
+                            "'workspace: <name>' naming a registered workspace.")},
                         "success_criteria": {
                             "type": "string",
                             "description": "How to judge that this node succeeded (not empty).",

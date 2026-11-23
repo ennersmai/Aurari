@@ -138,6 +138,25 @@ class DecisionService:
         updated = await self._db.select(decision_id)
         return updated[0] if updated else {**decision, **update_data}
 
+    async def get(self, decision_id: Any) -> dict[str, Any] | None:
+        """One decision record, or None (P2-10: a code node polls its merge decision)."""
+        rows = await self._db.select(decision_id)
+        if not rows:
+            return None
+        return rows[0] if isinstance(rows, list) else rows
+
+    async def reopen(self, decision_id: Any, message: str) -> None:
+        """Put an answered decision back to pending with a new message (P2-10).
+
+        Used when an approved merge cannot run yet (main tree not clean).
+        """
+        await self._db.merge(decision_id, {
+            "status": "pending",
+            "decided_at": None,
+            "decided_by": None,
+            "message": message,
+        })
+
     async def expire_for_session(self, session_id: str) -> int:
         """Mark all pending decisions for a session as expired.
 

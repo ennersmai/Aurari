@@ -99,3 +99,59 @@ Confidence: medium-high (schema-based; not seen live).
    session per build node, at most N active (N = 3), with the per-worktree location as isolation". If D4
    must stay strict, nodes run sequentially (one session, one worktree at a time) and subagents (read-only
    explore/review in the same directory) are the only parallelism. This is a decision for Mai.
+
+## As built (P2-10)
+
+Code: `src/aura/executor/code_node.py` (`CodeNodeRunner`), wired from
+`TaskGraphScheduler._run_code_node`. Behind `AURA_TASK_GRAPHS_ENABLED` and
+`AURA_TASK_CODE_NODES_ENABLED` (default off; off keeps the P2-09 placeholder failure).
+
+Aura orchestrates, because v2.3.2 has no task tool (Q1):
+
+1. Workspace. The node brief (or the graph goal) has a line `workspace: <name>`; the name must be
+   registered in `AURA_WORKSPACES` (`policy.workspace_path`). Aura's own repository works only if
+   registered explicitly (D16; a warning is logged). The workspace must be the top of a git
+   repository and its main tree on a branch.
+2. Worktree (D7, one per code node). `git worktree add -b aura/task-<graph>-<node> <path> <HEAD>`
+   from the main tree, `<path>` = `<task_worktree_root>/<ws>-task-<graph>-<node>`, root default
+   `<workspace>/../.aura-worktrees`. Refused if the path would be inside the main tree, if it exists,
+   or if the branch exists. Uncommitted changes in the main tree are allowed (logged); the worktree
+   does not touch them.
+3. Lead. `POST /api/session {agent: "aura-lead", location: {directory: <worktree>}}`. The lead
+   (mode primary, read-only permissions, model `opencode_lead_model`) first replies with a JSON plan
+   `{"subtasks": [{"agent": "explore"|"build"|"review", "brief": ...}]}`, at most 3.
+4. Children. For each subtask Aura calls `POST /api/session {parentID: <lead>, agent: "aura-..."}`
+   (no `location`: the spec places a child at its parent's location) and prompts it. Build children
+   run one at a time; consecutive explore/review children run together (at most 3, the plan size).
+   Children use `opencode_worker_model`. Each child's report is passed to later children as data.
+5. Final report. All child reports go back into the lead in one prompt; the lead answers starting
+   with `FINAL REPORT` (what changed, tests run, results, open issues). Aura waits for a round whose
+   last message has that marker (up to 3 extra rounds, see the inbox note below).
+6. Commit and review. Aura commits the worktree (`git add -A`, `git commit` as Aura), then runs a
+   review child (agent aura-review, parent = lead) that runs the tests named in the success criteria
+   and ends with `VERDICT: PASS` or `VERDICT: FAIL: <reason>` (`delegation.parse_verdict`). FAIL or
+   no verdict: the node fails with the review text; the branch keeps the work; the worktree goes.
+7. Merge. PASS: node `ready_to_merge`, an owner decision (`needs_decision`, action `merge`,
+   resources [branch], message with `git diff --shortstat`). Allowed: if the main tree is clean and
+   on the same branch, `git merge --no-ff --no-edit` from the main tree, then `git worktree remove`
+   and `git branch -d`. Not clean: escalation (blackboard entry kind `escalation`) and the decision is
+   put back to pending. Conflict: `git merge --abort`, node failed "merge conflict", escalation,
+   branch kept. Denied: node failed "merge rejected by owner", worktree removed, branch kept. The
+   wait for the decision does not count against the graph's time budget.
+
+Permissions from the lead or any child are decided with `policy.decide` (role owner) for the
+registered workspace, except that a write outside the worktree is denied; "ask" creates a
+`permission` decision on that session's id (Q6).
+
+Git: argument lists only, an allowlist of subcommands (no push, fetch, pull, remote or clone),
+explicit cwd, `AURA_TASK_GIT_TIMEOUT_SECONDS` (60) per call, run with `asyncio.to_thread`.
+
+Unverified until the live check (FOR_MAI section 3):
+- A child created with `parentID` sends a `<subagent>` report to the lead's inbox and wakes it.
+  The lead may therefore run extra rounds while children work; Aura ignores those and uses the
+  `FINAL REPORT` marker. If the wake turns out to be disruptive, the fallback is to create the
+  children as root sessions with `location` = the worktree.
+- aura-build is `mode: primary` (unchanged, G3 uses it as a root session). If OpenCode refuses a
+  primary agent as a child, aura-build needs `mode: all`.
+- Whether the event stream is opened early enough: as in G3, Aura sends the prompt and then reads
+  `GET /api/event`; a session that finishes in between would be missed and the node times out.

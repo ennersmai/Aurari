@@ -156,17 +156,22 @@ class OpenCodeClient:
 
     async def create_session(
         self,
-        workspace: Path,
+        workspace: Path | None,
         agent: str,
         title: str,
+        *,
+        parent_id: str | None = None,
     ) -> str:
         """
         Create a new OpenCode session.
 
         Args:
-            workspace: The workspace directory to bind the session to.
+            workspace: The workspace directory to bind the session to. Ignored for a
+                child session (parent_id set), which the spec places at its parent's
+                location (openapi-v2.3.2.json, POST /api/session, parentID).
             agent: The agent ID to use.
             title: The session title.
+            parent_id: Create a linked child (subagent) session of this session (P2-10).
 
         Returns:
             The session ID.
@@ -178,14 +183,17 @@ class OpenCodeClient:
         await self.ensure_running()
         client = await self._get_client()
 
-        # Build the location object with the workspace directory
-        location = {"directory": str(workspace.absolute())}
-
-        payload = {
+        payload: dict[str, Any] = {
             "agent": agent,
             "title": title,
-            "location": location,
         }
+        if parent_id:
+            payload["parentID"] = parent_id
+        else:
+            if workspace is None:
+                raise ValueError("create_session needs a workspace unless parent_id is set")
+            # Build the location object with the workspace directory
+            payload["location"] = {"directory": str(workspace.absolute())}
 
         try:
             response = await client.post("/api/session", json=payload)
@@ -520,6 +528,28 @@ class OpenCodeClient:
             additions=additions,
             deletions=deletions,
         )
+
+    async def last_text(self, session_id: str) -> str:
+        """The full text of the session's last assistant message, or "" (P2-10).
+
+        Same request as the summary in result(), without the 500-character cut.
+        """
+        await self.ensure_running()
+        client = await self._get_client()
+        try:
+            response = await client.get(
+                f"/api/session/{session_id}/message",
+                params={"limit": "1", "order": "desc", "type": "assistant"},
+            )
+        except httpx.ConnectError as e:
+            raise OpenCodeUnavailable(f"Connection failed: {e}") from e
+        if response.status_code >= 400:
+            await self._handle_error(response)
+        messages = response.json().get("data", [])
+        if not messages:
+            return ""
+        content = messages[0].get("content", "")
+        return content if isinstance(content, str) else ""
 
     async def _handle_error(self, response: httpx.Response) -> None:
         """Handle an error response from the API."""

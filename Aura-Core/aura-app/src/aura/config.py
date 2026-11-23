@@ -1306,6 +1306,48 @@ class Settings(BaseSettings):
         ge=1,
         le=16,
     )
+    task_code_nodes_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_TASK_CODE_NODES_ENABLED",
+        description="P2-10: run code nodes (aura-lead in a git worktree, review, owner-approved "
+                    "merge). Needs task_graphs_enabled. Off means code nodes fail with the "
+                    "P2-09 placeholder reason.",
+    )
+    task_worktree_root: str = Field(
+        default="",
+        validation_alias="AURA_TASK_WORKTREE_ROOT",
+        description="Directory for code-node git worktrees. Empty means <workspace>/../.aura-worktrees. "
+                    "Must not be inside the workspace.",
+    )
+    task_git_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias="AURA_TASK_GIT_TIMEOUT_SECONDS",
+        description="Timeout for each git command a code node runs.",
+        gt=0.0,
+    )
+    task_code_node_default_minutes: int = Field(
+        default=30,
+        validation_alias="AURA_TASK_CODE_NODE_DEFAULT_MINUTES",
+        description="Time limit for a code node's sessions (lead, subagents, review) when the "
+                    "graph has no time budget. The wait for the merge approval is not limited.",
+        ge=1,
+    )
+    task_merge_poll_seconds: float = Field(
+        default=5.0,
+        validation_alias="AURA_TASK_MERGE_POLL_SECONDS",
+        description="How often a ready_to_merge code node checks its merge decision.",
+        gt=0.0,
+    )
+    task_git_author_name: str = Field(
+        default="Aura",
+        validation_alias="AURA_TASK_GIT_AUTHOR_NAME",
+        description="Author and committer name of the commit Aura makes in a code node's worktree.",
+    )
+    task_git_author_email: str = Field(
+        default="aura@localhost",
+        validation_alias="AURA_TASK_GIT_AUTHOR_EMAIL",
+        description="Author and committer email of the commit Aura makes in a code node's worktree.",
+    )
     task_research_model: str = Field(
         default="",
         validation_alias="AURA_TASK_RESEARCH_MODEL",
@@ -1435,6 +1477,16 @@ class Settings(BaseSettings):
         default="sluice/coder",
         validation_alias="AURA_OPENCODE_AGENT_MODEL",
         description="Model to use for OpenCode agents (the router's coder pool through the sluice provider).",
+    )
+    opencode_lead_model: str = Field(
+        default="",
+        validation_alias="AURA_OPENCODE_LEAD_MODEL",
+        description="Model for the aura-lead agent of code nodes (P2-10). Empty means opencode_agent_model.",
+    )
+    opencode_worker_model: str = Field(
+        default="",
+        validation_alias="AURA_OPENCODE_WORKER_MODEL",
+        description="Model for aura-explore, aura-build and aura-review (P2-10). Empty means opencode_agent_model.",
     )
     opencode_config_dir: str = Field(
         default="",

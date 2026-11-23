@@ -24,6 +24,7 @@ import pytest
 # Add the project root to the path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from aura.config import settings
 from aura.connections.opencode_agents import agent_definitions, validate_agent_definitions, write_config
 from aura.connections.opencode_process import OpenCodeAgentError, OpenCodeProcess, OpenCodeStartError
 
@@ -31,10 +32,10 @@ from aura.connections.opencode_process import OpenCodeAgentError, OpenCodeProces
 class TestAgentDefinitions:
     """Tests for the agent_definitions function."""
 
-    def test_returns_three_agents(self) -> None:
-        """Test that exactly three agents are defined."""
+    def test_returns_four_agents(self) -> None:
+        """Test that exactly four agents are defined (aura-lead since P2-10)."""
         definitions = agent_definitions()
-        assert set(definitions.keys()) == {"aura-explore", "aura-build", "aura-review"}
+        assert set(definitions.keys()) == {"aura-explore", "aura-build", "aura-review", "aura-lead"}
 
     def test_each_agent_has_required_fields(self) -> None:
         """Test that each agent has all required Config.AgentEncoded fields."""
@@ -127,7 +128,23 @@ class TestAgentDefinitions:
         definitions = agent_definitions()
 
         for agent_id, agent in definitions.items():
-            assert agent["model"] == "{{opencode_agent_model}}", f"{agent_id} model should be placeholder"
+            expected = "{{opencode_lead_model}}" if agent_id == "aura-lead" else "{{opencode_agent_model}}"
+            assert agent["model"] == expected, f"{agent_id} model should be placeholder"
+
+    def test_lead_and_worker_models(self, monkeypatch, tmp_path) -> None:
+        """P2-10: the lead and the workers take their own model settings; empty means agent model."""
+        monkeypatch.setattr(settings, "opencode_agent_model", "sluice/coder")
+        monkeypatch.setattr(settings, "opencode_lead_model", "")
+        monkeypatch.setattr(settings, "opencode_worker_model", "")
+        agents = json.loads(write_config(tmp_path / "a").read_text(encoding="utf-8"))["agents"]
+        assert {a["model"] for a in agents.values()} == {"sluice/coder"}
+        monkeypatch.setattr(settings, "opencode_lead_model", "sluice/lead")
+        monkeypatch.setattr(settings, "opencode_worker_model", "sluice/worker")
+        agents = json.loads(write_config(tmp_path / "b").read_text(encoding="utf-8"))["agents"]
+        assert agents["aura-lead"]["model"] == "sluice/lead"
+        assert agents["aura-lead"]["mode"] == "primary"
+        for name in ("aura-explore", "aura-build", "aura-review"):
+            assert agents[name]["model"] == "sluice/worker"
 
 
 class TestAgentValidation:
@@ -229,7 +246,7 @@ class TestWriteConfig:
 
             # Check agents
             agents = config["agents"]
-            assert set(agents.keys()) == {"aura-explore", "aura-build", "aura-review"}
+            assert set(agents.keys()) == {"aura-explore", "aura-build", "aura-review", "aura-lead"}
 
             for agent_id, agent in agents.items():
                 assert "model" in agent

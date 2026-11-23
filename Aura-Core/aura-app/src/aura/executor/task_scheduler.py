@@ -2,8 +2,9 @@
 
 One asyncio task per graph. Started by ``plan_task`` right after creation, only
 with ``task_graphs_enabled``. Every state change goes through the store before
-the scheduler acts on it. Code nodes are P2-10: until then they fail with a
-fixed reason, which skips their dependants and ends the graph "partial".
+the scheduler acts on it. Code nodes (P2-10, executor/code_node.py) run only with
+``task_code_nodes_enabled``; otherwise they fail with a fixed reason, which skips
+their dependants and ends the graph "partial".
 
 Notes:
 - research nodes use ``run_tool_loop`` with a fixed research tool set
@@ -13,6 +14,10 @@ Notes:
   define no output schema, so the output is free text.
 - A node's full transcript is stored on the node record. Only the capped
   report reaches the blackboard, dependants and L3.
+- At most one code node runs at a time across all graphs (D4). While a code node
+  is ready_to_merge and waits for the owner, the graph's time budget is paused
+  (the wait is added up and subtracted from the elapsed time); the cost budget
+  still applies.
 """
 
 import asyncio
@@ -36,6 +41,8 @@ CODE_NODE_REASON = "code nodes arrive in P2-10"
 TRUNCATION_MARKER = "\n[report truncated]"
 RESEARCH_TOOLS = ("web_search", "recall", "timeline", "evidence", "what_changed")
 _MAX_CODE_NODES = 1
+# "<graph>/<node>" of every running code node, across graphs (D4: one at a time).
+_ACTIVE_CODE_NODES: set[str] = set()
 _POLL_SECONDS = 1.0
 _URL_RE = re.compile(r"^URL:\s*(\S+)", re.MULTILINE)
 
@@ -133,12 +140,18 @@ class TaskGraphScheduler:
         store: TaskGraphStore | None = None,
         llm_client: Any = None,
         executor: Any = None,
+        opencode_client: Any = None,
+        decisions: Any = None,
     ) -> None:
         self._store = store
         self._llm = llm_client
         self._executor = executor
+        self._opencode = opencode_client
+        self._decisions = decisions
         # Strong references to the per-graph tasks; removed on completion.
         self._tasks: dict[str, asyncio.Task] = {}
+        # Merge waits per graph (P2-10): {"since": datetime | None, "total": seconds}.
+        self._merge_wait: dict[str, dict[str, Any]] = {}
 
     # -- wiring -----------------------------------------------------------------
 
@@ -152,6 +165,32 @@ class TaskGraphScheduler:
 
             self._llm = UnifiedLLMClient()
         return self._llm
+
+    def _decision_service(self) -> Any:
+        if self._decisions is None:
+            from aura.executor.decisions import get_decision_service
+
+            return get_decision_service()
+        return self._decisions
+
+    def _opencode_client(self) -> Any:
+        if self._opencode is None:
+            from aura.connections.opencode_client import OpenCodeClient
+            from aura.connections.opencode_process import OpenCodeProcess
+
+            self._opencode = OpenCodeClient(OpenCodeProcess())
+            # Owner answers to "ask" permissions go back through this client (as in G3).
+            self._decision_service()._client = self._opencode
+        return self._opencode
+
+    def _merge_paused_seconds(self, graph_id: str) -> float:
+        wait = self._merge_wait.get(graph_id)
+        if not wait:
+            return 0.0
+        total = float(wait["total"])
+        if wait["since"] is not None:
+            total += (get_clock().now() - wait["since"]).total_seconds()
+        return total
 
     def _tool_executor(self) -> Any:
         if self._executor is None:
@@ -172,6 +211,7 @@ class TaskGraphScheduler:
             return existing
         task = asyncio.create_task(self._run_graph(graph_id), name=f"task_graph:{graph_id}")
         self._tasks[graph_id] = task
+        task.add_done_callback(lambda t, g=graph_id: self._merge_wait.pop(g, None) if self._tasks.get(g) in (t, None) else None)
         task.add_done_callback(lambda t, g=graph_id: self._tasks.pop(g, None) if self._tasks.get(g) is t else None)
         return task
 
@@ -216,6 +256,7 @@ class TaskGraphScheduler:
 
         started = get_clock().now()
         spent = graph.spent_usd
+        self._merge_wait[graph_id] = {"since": None, "total": 0.0}
         wake = asyncio.Event()
         running: dict[str, asyncio.Task] = {}  # node id -> task
 
@@ -225,7 +266,9 @@ class TaskGraphScheduler:
             wake.set()
 
         def over_budget() -> bool:
-            elapsed_min = (get_clock().now() - started).total_seconds() / 60.0
+            # A code node's wait for the owner's merge decision does not count (P2-10).
+            elapsed_s = (get_clock().now() - started).total_seconds() - self._merge_paused_seconds(graph_id)
+            elapsed_min = elapsed_s / 60.0
             if graph.budget_usd > 0 and spent >= graph.budget_usd:
                 return True
             return graph.budget_minutes > 0 and elapsed_min >= graph.budget_minutes
@@ -257,13 +300,18 @@ class TaskGraphScheduler:
                 # Start what is ready, within the limits.
                 n_std = sum(1 for i in running if nodes[i].kind != "code")
                 n_code = sum(1 for i in running if nodes[i].kind == "code")
+                code_blocked = False  # a ready code node waits for another graph's (D4)
                 for n in nodes.values():
                     if n.status != NodeStatus.PENDING.value:
                         continue
                     if any(nodes[d].status != NodeStatus.DONE.value for d in n.depends_on):
                         continue
                     if n.kind == "code":
+                        # D4: one code node at a time, in this graph and across graphs.
                         if n_code >= _MAX_CODE_NODES:
+                            continue
+                        if _ACTIVE_CODE_NODES:
+                            code_blocked = True
                             continue
                         n_code += 1
                     else:
@@ -275,9 +323,16 @@ class TaskGraphScheduler:
                     deps = {d: (nodes[d].report or "") for d in n.depends_on}
                     running[n.id] = asyncio.create_task(
                         self._run_node(graph, n, deps, add_spend), name=f"task_node:{graph_id}:{n.id}")
+                    if n.kind == "code":
+                        key = f"{graph_id}/{n.id}"
+                        _ACTIVE_CODE_NODES.add(key)
+                        running[n.id].add_done_callback(lambda _t, k=key: _ACTIVE_CODE_NODES.discard(k))
 
                 if not running:
-                    break
+                    if not code_blocked:
+                        break
+                    await asyncio.sleep(_POLL_SECONDS)
+                    continue
 
                 wake.clear()
                 waiter = asyncio.create_task(wake.wait())
@@ -305,7 +360,7 @@ class TaskGraphScheduler:
                 task.cancel()
             await asyncio.gather(*running.values(), return_exceptions=True)
             for node in await store.list_nodes(graph_id):
-                if node.status == NodeStatus.RUNNING.value:
+                if node.status in (NodeStatus.RUNNING.value, NodeStatus.READY_TO_MERGE.value):
                     await store.update_node_status(graph_id, node.id, NodeStatus.INTERRUPTED)
             await store.update_graph(graph_id, status=GraphStatus.INTERRUPTED, spent_usd=spent)
             raise
@@ -315,7 +370,7 @@ class TaskGraphScheduler:
                 task.cancel()
             await asyncio.gather(*running.values(), return_exceptions=True)
             for node in await store.list_nodes(graph_id):
-                if node.status == NodeStatus.RUNNING.value:
+                if node.status in (NodeStatus.RUNNING.value, NodeStatus.READY_TO_MERGE.value):
                     await store.update_node_status(graph_id, node.id, NodeStatus.INTERRUPTED)
             await store.update_graph(graph_id, status=GraphStatus.INTERRUPTED, spent_usd=spent)
 
@@ -372,8 +427,37 @@ class TaskGraphScheduler:
             return NodeOutcome(ok=False, report=f"failed: {exc}")
 
     async def _run_code_node(self, graph: TaskGraph, node: TaskNode, dep_reports: dict[str, str]) -> NodeOutcome:
-        """Placeholder until P2-10."""
-        return NodeOutcome(ok=False, report=f"failed: {CODE_NODE_REASON}")
+        """P2-10: aura-lead in a git worktree, review, owner-approved merge (executor/code_node.py)."""
+        if not settings.task_code_nodes_enabled:
+            return NodeOutcome(ok=False, report=f"failed: {CODE_NODE_REASON}")
+        from aura.executor import code_node
+
+        store = self.store
+        wait = self._merge_wait.setdefault(graph.id, {"since": None, "total": 0.0})
+
+        async def set_status(status: str, report: str) -> None:
+            await store.update_node_status(graph.id, node.id, NodeStatus(status), report=report)
+
+        async def escalate(text: str) -> None:
+            logger.warning("task graph %s node %s escalation: %s", graph.id, node.id, text)
+            await store.write_blackboard(graph.id, "escalation", text, node_id=node.id)
+
+        def wait_started() -> None:
+            wait["since"] = get_clock().now()
+
+        def wait_ended() -> None:
+            if wait["since"] is not None:
+                wait["total"] += (get_clock().now() - wait["since"]).total_seconds()
+                wait["since"] = None
+
+        runner = code_node.CodeNodeRunner(
+            graph, node, dep_reports,
+            client=self._opencode_client(),
+            decisions=self._decision_service(),
+            hooks=code_node.CodeNodeHooks(set_status, escalate, wait_started, wait_ended),
+        )
+        out = await runner.run()
+        return NodeOutcome(ok=out.ok, report=out.report, transcript=out.transcript, refs=out.refs)
 
     async def _run_think(
         self, node: TaskNode, dep_reports: dict[str, str], add_spend: Callable[[float], None]

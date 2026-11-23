@@ -84,6 +84,28 @@ def guidance_step(step_number: int, text: str) -> TaskStepRecord:
     )
 
 
+def parse_verdict(summary: str) -> tuple[str, str]:
+    """Parse a review verdict: ("PASS" | "FAIL" | "needs_owner", reason).
+
+    Shared by the delegation review and the code-node review (P2-10).
+    """
+    if not summary:
+        return "needs_owner", "Empty review summary"
+
+    # Look for VERDICT: PASS or VERDICT: FAIL: <reason> anywhere in the summary
+    pass_match = re.search(r"VERDICT:\s*PASS\b", summary)
+    if pass_match:
+        return "PASS", ""
+
+    fail_match = re.search(r"VERDICT:\s*FAIL:\s*(.*)", summary)
+    if fail_match:
+        reason = fail_match.group(1).strip()
+        return "FAIL", reason if reason else "No reason provided"
+
+    # No verdict found
+    return "needs_owner", "No verdict in review summary"
+
+
 @dataclass
 class DelegationConfig:
     """Configuration for a delegation run."""
@@ -734,23 +756,7 @@ class DelegationRunner:
 
         Returns (verdict, reason) where verdict is "PASS", "FAIL", or "needs_owner".
         """
-        if not summary:
-            return "needs_owner", "Empty review summary"
-
-        # Look for VERDICT: PASS or VERDICT: FAIL: <reason> anywhere in the summary
-        import re
-        # Match VERDICT: PASS or VERDICT: FAIL: <reason>
-        pass_match = re.search(r"VERDICT:\s*PASS\b", summary)
-        if pass_match:
-            return "PASS", ""
-
-        fail_match = re.search(r"VERDICT:\s*FAIL:\s*(.*)", summary)
-        if fail_match:
-            reason = fail_match.group(1).strip()
-            return "FAIL", reason if reason else "No reason provided"
-
-        # No verdict found
-        return "needs_owner", "No verdict in review summary"
+        return parse_verdict(summary)
 
     async def _finalize_task(self, task_queue: Any, task_id: str, outcome: str, reason: str) -> None:
         """Finalize the task with outcome and write memory/appraisal if enabled."""

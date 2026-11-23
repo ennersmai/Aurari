@@ -186,11 +186,14 @@ class TaskGraphStore:
         return [_to_graph(r) for r in rows]
 
     async def recover_interrupted_graphs(self) -> list[TaskGraph]:
-        """Boot recovery (P2-09): running graphs and their running nodes become interrupted."""
+        """Boot recovery (P2-09): running graphs and their running nodes become interrupted.
+
+        A code node waiting for its merge decision (ready_to_merge, P2-10) too.
+        """
         graphs = await self.list_graphs(GraphStatus.RUNNING)
         for graph in graphs:
             for node in await self.list_nodes(graph.id):
-                if node.status == NodeStatus.RUNNING.value:
+                if node.status in (NodeStatus.RUNNING.value, NodeStatus.READY_TO_MERGE.value):
                     await self.update_node_status(graph.id, node.id, NodeStatus.INTERRUPTED)
             await self.update_graph(graph.id, status=GraphStatus.INTERRUPTED)
         return graphs
