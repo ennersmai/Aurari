@@ -144,6 +144,12 @@ class DreamingEngine(BaseEngine):
             except Exception as e:
                 self.logger.error(f"Retry extraction phase failed: {e}", exc_info=True)
 
+        if settings.dreaming_v2_enabled and settings.memory_v2_write_enabled:
+            try:
+                await self._archive_v2_rows()
+            except Exception as e:
+                self.logger.error(f"Archive phase failed: {e}", exc_info=True)
+
         # Phase 1: Tiered Pruning
         try:
             report.pruned = await self._tiered_pruning()
@@ -834,6 +840,28 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
 
         report.extracted = extracted
         self.logger.info(f"[DREAM-V2] Retry phase: retried={report.retried}, extracted={extracted}")
+
+    async def _archive_v2_rows(self) -> None:
+        """Archive old superseded facts and old ephemeral episodes (never deletes).
+
+        Pinned facts are kept. ``archived != true`` also matches rows written
+        before the field existed, which have no value for it.
+        """
+        now = get_clock().now()
+        facts = await self.db.query(
+            "UPDATE fact SET archived = true WHERE valid_to IS NOT NONE "
+            "AND valid_to < $cutoff AND archived != true AND pinned = false "
+            "RETURN id",
+            {"cutoff": now - timedelta(days=settings.dreaming_archive_superseded_days)},
+        )
+        episodes = await self.db.query(
+            "UPDATE episode SET archived = true WHERE ephemeral = true "
+            "AND recorded_at < $cutoff AND archived != true RETURN id",
+            {"cutoff": now - timedelta(days=settings.dreaming_archive_ephemeral_days)},
+        )
+        self.logger.info(
+            f"[DREAM-V2] Archive phase: facts={len(facts or [])}, episodes={len(episodes or [])}"
+        )
 
     # =========================================================================
     # HELPERS

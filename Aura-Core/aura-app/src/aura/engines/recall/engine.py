@@ -920,8 +920,8 @@ class RecallEngine:
         if time_range is not None:
             params["start"], params["end"] = time_range
             where.append("recorded_at >= $start AND recorded_at <= $end")
-        fact_where = ["visibility IN $visible", *where]
-        episode_where = list(where)
+        fact_where = ["visibility IN $visible", "archived != true", *where]
+        episode_where = ["archived != true", *where]
         if entity is not None:
             fact_where.append("id IN (SELECT VALUE in FROM about WHERE out IN $eids)")
             episode_where.append(
@@ -1033,8 +1033,8 @@ class RecallEngine:
         if not entity_ids:
             return []
         facts = await db.query(
-            "SELECT id, content, recorded_at FROM fact WHERE visibility IN $visible "
-            "AND id IN (SELECT VALUE in FROM about WHERE out IN $eids)",
+            "SELECT id, content, recorded_at, archived FROM fact "
+            "WHERE visibility IN $visible AND id IN (SELECT VALUE in FROM about WHERE out IN $eids)",
             {"visible": visible_in_venue(venue), "eids": entity_ids},
         )
         by_id = {str(f["id"]): f for f in facts or []}

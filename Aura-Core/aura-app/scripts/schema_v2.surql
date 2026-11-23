@@ -34,6 +34,7 @@ DEFINE FIELD IF NOT EXISTS embedding ON episode TYPE option<array<float, 768>>;
 DEFINE FIELD IF NOT EXISTS emotional_signature ON episode TYPE object FLEXIBLE DEFAULT {};
 DEFINE FIELD IF NOT EXISTS salience ON episode TYPE float DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS ephemeral ON episode TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS archived ON episode TYPE option<bool> DEFAULT false;
 DEFINE FIELD IF NOT EXISTS recorded_at ON episode TYPE datetime;
 DEFINE FIELD IF NOT EXISTS extraction_status ON episode TYPE string DEFAULT "pending"
     ASSERT $value IN ["pending", "done", "failed", "skipped"];
@@ -60,6 +61,7 @@ DEFINE FIELD IF NOT EXISTS recorded_at ON fact TYPE datetime;
 DEFINE FIELD IF NOT EXISTS embedding ON fact TYPE option<array<float, 768>>;
 DEFINE FIELD IF NOT EXISTS salience ON fact TYPE float DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS pinned ON fact TYPE bool DEFAULT false;
+DEFINE FIELD IF NOT EXISTS archived ON fact TYPE option<bool> DEFAULT false;
 DEFINE FIELD IF NOT EXISTS use_count ON fact TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS last_used_at ON fact TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS unused_streak ON fact TYPE int DEFAULT 0;
@@ -118,6 +120,8 @@ DEFINE INDEX IF NOT EXISTS entity_name_ft ON entity FIELDS name FULLTEXT ANALYZE
 -- Standard indexes for the filters and orderings the recall path uses.
 DEFINE INDEX IF NOT EXISTS fact_visibility ON fact FIELDS visibility;
 DEFINE INDEX IF NOT EXISTS fact_valid_to ON fact FIELDS valid_to;
+DEFINE INDEX IF NOT EXISTS fact_archived ON fact FIELDS archived;
+DEFINE INDEX IF NOT EXISTS episode_archived ON episode FIELDS archived;
 DEFINE INDEX IF NOT EXISTS fact_provenance ON fact FIELDS provenance;
 DEFINE INDEX IF NOT EXISTS fact_recorded_at ON fact FIELDS recorded_at;
 DEFINE INDEX IF NOT EXISTS entity_aliases ON entity FIELDS aliases;

@@ -94,7 +94,11 @@ async def what_changed_run(arguments: Dict[str, Any]) -> str:
     if not chains:
         return f"No changes recorded about {entity}."
     return "\n".join(
-        " -> ".join(f"{f['content']} ({_day(f['recorded_at'])})" for f in chain)
+        " -> ".join(
+            f"{f['content']} ({_day(f['recorded_at'])}"
+            f"{', archived' if f.get('archived') else ''})"
+            for f in chain
+        )
         for chain in chains
     )
 

@@ -149,7 +149,7 @@ def _fact_filter_clause(venue: str, params: dict[str, Any]) -> str:
     no ``user_id`` filter: visibility replaces it.
     """
     params["visible"] = visible_in_venue(venue)
-    return "visibility IN $visible AND valid_to IS NONE"
+    return "visibility IN $visible AND valid_to IS NONE AND archived != true"
 
 
 async def fact_dense_channel(
@@ -314,7 +314,7 @@ async def fact_temporal_channel(
 
     # Filter: visibility IN $visible AND (valid_from BETWEEN $start AND $end OR recorded_at BETWEEN $start AND $end)
     # Note: superseded facts (valid_to set) are included intentionally.
-    where = "visibility IN $visible AND ((valid_from IS NOT NONE AND valid_from >= $start AND valid_from <= $end) OR (recorded_at >= $start AND recorded_at <= $end))"
+    where = "visibility IN $visible AND archived != true AND ((valid_from IS NOT NONE AND valid_from >= $start AND valid_from <= $end) OR (recorded_at >= $start AND recorded_at <= $end))"
 
     rows = await db.query(
         f"""
@@ -394,7 +394,8 @@ async def _load_graph(
         new_facts = [node for node in found if node.startswith("fact:")]
         if new_facts:
             readable = await db.query(
-                "SELECT VALUE id FROM fact WHERE id IN $ids AND visibility IN $visible",
+                "SELECT VALUE id FROM fact "
+                "WHERE id IN $ids AND visibility IN $visible AND archived != true",
                 {"ids": [_rid(node) for node in new_facts], "visible": visible},
             )
             readable_ids = {str(rid) for rid in readable}

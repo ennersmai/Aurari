@@ -586,6 +586,19 @@ class Settings(BaseSettings):
         ge=1,
         le=1440,
     )
+    dreaming_archive_superseded_days: int = Field(
+        default=90,
+        validation_alias="AURA_DREAMING_ARCHIVE_SUPERSEDED_DAYS",
+        description="Days after a fact was superseded before the dream cycle archives it "
+                    "(pinned facts are never archived). Archived rows are kept, not read.",
+        ge=1,
+    )
+    dreaming_archive_ephemeral_days: int = Field(
+        default=7,
+        validation_alias="AURA_DREAMING_ARCHIVE_EPHEMERAL_DAYS",
+        description="Days after which the dream cycle archives an ephemeral episode.",
+        ge=1,
+    )
 
     # Memory v2 entity resolution (W3-14)
     memory_entity_match_threshold: float = Field(

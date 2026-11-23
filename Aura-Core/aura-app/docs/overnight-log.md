@@ -2410,3 +2410,15 @@
   - `tests/scenarios/test_dreaming_v2_retry_embedded.py` (new) - five tests (six cases) on the embedded DB with a scripted fake client and FakeClock; state is set only through `store_episode` and `run_extraction`: old pending extracted with one fact written, fresh and failed left alone, attempts 1/2/3 then failed and then ignored, batch cap with oldest first, ablation for each flag.
 - **Client:** `self._llm_layers.client`, the same client the coordinator passes to `schedule_extraction` (`llm_layers.client`); `main.py` gives the dreaming engine that same `LLMLayers` object via `set_dependencies`. No client: the phase logs and skips.
 - **Test result:** new tests 6 passed; tests/unit 594 passed, 2 skipped.
+
+## W4-09: Archive, do not delete
+- **Status:** DONE
+- **Files changed:**
+  - `scripts/schema_v2.surql` - `archived` (`option<bool> DEFAULT false`) on `fact` and `episode`, an index on each. `option<bool>` rather than `bool`: SurrealDB 3.0 refuses to define a field whose type does not accept NONE on a table that already has rows (it asks for a migration), which would stop the schema loading on an existing database. New rows still get `false`.
+  - `src/aura/config.py` - `dreaming_archive_superseded_days` (90), `dreaming_archive_ephemeral_days` (7)
+  - `src/aura/engines/dreaming/engine.py` - `_archive_v2_rows`, run in `enter_rem_sleep` right after the retry phase under the same two flags: superseded facts with `valid_to` before the cutoff and not pinned, and ephemeral episodes recorded before the cutoff, get `archived = true`. Nothing is deleted.
+  - `src/aura/engines/recall/channels.py` - `_fact_filter_clause` (dense, lexical, entity, graph results), the temporal channel and the graph loader's fact visibility check (archived facts are hidden, so they are not traversed)
+  - `src/aura/engines/recall/engine.py` - `timeline` (facts and episodes) and `what_changed` (keeps the chain, selects `archived`); `src/aura/tools/recall_tools.py` renders an archived link as `(date, archived)`. `evidence` is unchanged: an archived episode is still returned. `set_pinned`, recall feedback and `_build_fact_memories` read by id from channel results, so they need no change.
+  - `tests/scenarios/test_dreaming_v2_archive_embedded.py` (new) - seven tests: 91 vs 89 days and pinned; ephemeral episodes by age and nothing deleted; rows without the field; ablation; an archived superseded fact absent from the recall trace and the temporal channel; an archived current fact hidden from all five channels (hit before, not after); `what_changed` marks the link.
+- **Archived condition:** `archived != true` everywhere (reads and the UPDATEs). Verified on the embedded engine: defining the field later does not backfill existing rows, so they hold NONE and `archived = false` matches none of them, while `archived != true` matches both those and `false` rows.
+- **Test result:** see the supervisor run.
