@@ -115,3 +115,23 @@ def test_random_vectors_render_cleanly():
         for name in FIELDS:
             for lvl in LEVELS:
                 assert f"{lvl} {name}" not in out
+
+
+@pytest.mark.parametrize(
+    "kw, expected",
+    [
+        (dict(curiosity=0.55, joy=0.40),
+         "Bright curiosity pulls at your attention, threaded with bright joy."),
+        (dict(curiosity=0.55, joy=0.25),
+         "Bright curiosity pulls at your attention, with a trace of quiet gladness."),
+        (dict(curiosity=0.55, joy=0.40, doubt=0.31),
+         "Bright curiosity pulls at your attention, threaded with bright joy, "
+         "and underneath it, faint doubt."),
+        (dict(anger=0.70, doubt=0.50),
+         "Hot anger burns close to the surface, threaded with nagging doubt."),
+    ],
+)
+def test_fx02_plan_examples(kw, expected):
+    zero = {f: 0.0 for f in FIELDS}
+    zero.update(kw)
+    assert EmotionTranslator().translate(EmotionVector(**zero)) == expected
