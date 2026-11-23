@@ -704,7 +704,11 @@ class RecallEngine:
             lexical_hits = channels["lexical"]
             dense_hits = channels["dense"]
             best_dense = max((hit.score for hit in dense_hits), default=None)
-            abstain = not lexical_hits and (
+            # An entity named in the input or a time expression is evidence of
+            # its own; the graph channel only spreads from the other hits, so
+            # it does not count.
+            matched = bool(channels.get("entity") or channels.get("temporal"))
+            abstain = not matched and not lexical_hits and (
                 best_dense is None
                 or best_dense < settings.recall_abstain_min_similarity
             )

@@ -17,6 +17,7 @@
 - **Wave 3, G3 done** (W3-29..W3-33 plus W3-31a and W3-31b): workspaces and policy, owner decisions, the three agents on Aura's own OpenCode server (loaded through an Aura-owned `XDG_CONFIG_HOME`, verified against the real v2.3.2 binary), `delegate_work`, review and closing into memory (provenance `external`).
 - **Wave 3, V1 (without MetaHuman) to V4 done** (W3-34..W3-38): frontend test runner, avatar controller with six layers and ownership, affect layer for all 27 dimensions, backend `avatar_state` with cognitive states, the stage with a placeholder head behind `NEXT_PUBLIC_AVATAR_STAGE=1`.
 - **Wave 3 complete** (2026-11-20). Review in docs/metrics/wave-3.md. Python suite 655 passed; frontend 67 tests and build pass. **Everything waiting on Mai is in docs/FOR_MAI.md.**
+- **Wave 4, M5 done** (W4-01..W4-07, 2026-11-23): entity, temporal and graph channels, rerank, recall tools, feedback; probes multi-hop 5/5 and temporal 5/5 (docs/metrics/m5.md). Suite 718 passed.
 - **Unexpected session:** while W3-05 ran, a second OpenCode session (an old W2-30 one, probably resumed from the app) worked in the same tree and committed only a log note (d106d17). Nothing else changed.
 - **Follow-ups noted:** remaining direct time reads (DreamingEngine.tick, parts of manager.py); the native-tools streaming fallback can repeat already streamed text (fix before enabling `AURA_L3_NATIVE_TOOLS`).
 - **Probe set:** placeholder at docs/metrics/probes/README.md (needs Mai's real usage).
@@ -2389,3 +2390,12 @@
 - **Files:** new `src/aura/engines/recall/feedback.py` (a kept `memories` fact counts as used when 30% of its content words are in the reply or the reply's embedding is within 0.6 cosine; one transaction: used facts `use_count += 1`, `last_used_at`, `unused_streak = 0`, `co_used` created or `weight += 1` per used pair in a canonical direction; unused facts `unused_streak += 1`; failures only logged; nothing from the reply stored); `coordinator.py` (`ctx.packet` passed into `_post_response_chain`, step 3b, already off the reply path); `rerank.py` / `engine.py` (`x 0.9` when `unused_streak >= 5`); `schema_v2.surql` (`unused_streak`); `config.py`.
 - **Supervisor change:** unique index on `co_used (in, out)`, so two turns finishing together cannot create twin edges that split the weight (the losing transaction fails and is logged).
 - **Tests:** one of three facts quoted marks only that one used; `co_used` weight 1 then 2; flag off changes nothing; coordinator calls it only with the flag on; failure only logged; penalty at the threshold. Suite: 716 passed, 3 skipped.
+
+---
+
+## W4-07: M5 probes (multi-hop and temporal)
+- **Status:** DONE (OpenCode attempt scored 0/5 everywhere from a broken harness and was discarded; rebuilt by a Sonnet agent, reviewed by the supervisor)
+- **Files:** new `tests/scenarios/test_memory_m5_embedded.py` (five multi-hop chains through an entity with distractors, five temporal questions with the clock moved per turn; target facts share no content word with the questions); `docs/metrics/m5.md`.
+- **Bug found by the probes, fixed by the supervisor:** abstention on the fact path looked only at dense and lexical, so "what did I say yesterday?" abstained even when the temporal channel had the answer (temporal 0/5). Entity and temporal hits now prevent abstention; graph hits do not (they only spread from the other channels).
+- **Result:** multi-hop 2/5 without M5, 5/5 with; temporal 0/5 without, 5/5 with. Suite: 718 passed, 3 skipped.
+
