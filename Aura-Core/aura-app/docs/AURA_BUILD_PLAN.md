@@ -2541,6 +2541,91 @@ Written by the supervisor on 2026-11-23 against the code after M6. The emotion e
 ---
 
 
+### Wave 5 (Phase 2 order): cards for G4 (Workbench, blocker monitor, then removal of the agent loop and the IDE)
+
+Written 2026-11-23 against commit 85996ab. Agency PRD 4.1 (removal and parity table), 4.5, 4.6, tests T15 to T17. G4 runs before Phase 2 Part 4 (P2-08 to P2-11), which builds on what it leaves. Order: G4-01, G4-02, G4-03, then G4-04 (parity), then G4-05 (removal) last.
+
+**G4-01 Delegation registry and controls API**
+- **PRD:** agency 4.1 parity rows "Abort, pause all, abort all" and "Guidance injected mid-task", 4.6
+- **Tier:** bulk
+- **Files:** `src/aura/executor/delegation.py`, new `src/aura/api/routes/delegations.py`, `src/aura/main.py` (router), `src/aura/config.py`, new `tests/unit/test_delegation_controls.py`
+- **Change:**
+  1. A module-level registry in `delegation.py`: `task_id -> DelegationRunner` for running runners, added in `run()` and removed in a `finally`. No unbounded growth.
+  2. `pause_all` state: a module flag that makes `delegate_work` refuse new delegations with a clear error ("delegations are paused") while running sessions continue. OpenCode has no session pause, so this is the honest meaning of "pause all". Say so in the docstring.
+  3. Routes under `/delegations`:
+     - `GET /delegations`: delegated tasks (running and the last 50 closed) with state, brief, session id, workspace, budget use, the last 20 steps and any pending decision ids.
+     - `GET /delegations/{task_id}`: one task with all its steps.
+     - `POST /delegations/{task_id}/abort`: `OpenCodeClient.abort(session_id)`, then the task fails with reason "aborted by owner".
+     - `POST /delegations/abort-all`, `POST /delegations/pause-all` and `POST /delegations/resume-all`.
+     - `POST /delegations/{task_id}/guidance` `{text}`: `OpenCodeClient.send(session_id, text)` into the running session. The text is recorded as a task step, kind "guidance".
+     - `GET /delegations/{task_id}/diff`: the diff from `OpenCodeClient.result` or the session diff endpoint, never from local files.
+     - `GET /delegations/opencode-url`: the managed server's base URL (no auth in the response), for the "open in OpenCode" link.
+  4. Every route checks that the task is a delegated task (it has a session id). They are unauthenticated like the rest of the API; the FOR_MAI item already covers that.
+- **Tests:** registry add and remove (including on failure); abort calls the client and fails the task; guidance reaches `send` and is recorded; pause-all refuses `delegate_work` while a running runner continues; abort-all reaches every running runner; the diff comes from the client fake. Fake `OpenCodeClient` only.
+- **Done when:** the new tests pass and the full suite passes.
+
+**G4-02 Blocker monitor, heartbeat, emotion per step, re-attach**
+- **PRD:** agency 4.1 parity rows "Blocker detection", "Suggested next action", "Heartbeat", "Emotional snapshot per step", "Step persistence and resume after restart"
+- **Tier:** frontier
+- **Depends on:** G4-01
+- **Files:** `src/aura/executor/delegation.py` (`_monitor`, `_persist_step_from_event`), `src/aura/executor/task_queue.py`, `src/aura/main.py` (startup recovery), `src/aura/config.py`, new `tests/unit/test_delegation_monitor.py`
+- **Change:**
+  1. Blocker monitor in `_monitor`. These fire a blocker:
+     - an error streak of `delegation_error_streak` (default 3) failed tool events in a row;
+     - a loop of the same tool with the same normalised arguments `delegation_repeat_limit` times (default 4);
+     - 80% of the time or token budget used.
+
+     On a blocker: `set_blocker_info` on the task, and a `needs_decision` item through the decisions service with the reason and the last 5 steps. Fire once per blocker kind per task.
+  2. Suggested next action: when a blocker fires, one background L2 call (`settings.active_l2_model`, never awaited inside the event loop of `_monitor`) drafts a one-paragraph suggestion from the brief and the last steps. It is stored on the blocker info. If the call fails, the blocker stands without a suggestion.
+  3. Heartbeat: every `delegation_heartbeat_seconds` (default 60) while running, a status step "still working: <last step summary>, <n> steps, <minutes> min". No model call.
+  4. Emotion per step: each persisted step stores `emotion` (the top 3 dimensions and values from `EmotionEngine.get_current_state()`). A failure to read the state never blocks the step.
+  5. Re-attach after restart: at startup, tasks interrupted by the restart that still have a session id and whose OpenCode session is still running (check the session status through the client) get a new `DelegationRunner` monitor attached instead of being marked interrupted. If OpenCode is not running or the session ended, keep today's behaviour.
+  6. All numbers in config with `AURA_` aliases. Time comes from `get_clock()`.
+- **Tests:** each blocker kind fires once and creates one decision; the suggestion is stored, and a failed call still leaves the blocker; the heartbeat appears with a FakeClock moved past the interval; the step carries an emotion snapshot; re-attach with a running session versus an ended one. Fake client, fake LLM.
+- **Done when:** the new tests pass and the full suite passes.
+
+**G4-03 Workbench page**
+- **PRD:** agency 4.6
+- **Tier:** bulk
+- **Depends on:** G4-01, G4-02 (it shows their data)
+- **Files:** new `frontend/src/pages/workbench.tsx`, new `frontend/src/components/workbench/` (TaskList, StepLog, DiffView, DecisionBar, GuidanceBox), the nav component that links to `/ide`, `frontend/src/services/` (API client)
+- **Change:**
+  1. Left: the delegated task list with state badges, filterable by running or closed.
+  2. Right, for the selected task: the brief; the live step log, polling `GET /delegations/{id}` every 2 s while running and stopping when closed (guidance, heartbeat and blocker steps styled distinctly, emotion shown as a small tag); changed files with the diff; pending decisions with approve and deny (the existing decisions API); abort; a guidance box; the blocker with its suggestion; and an "Open in OpenCode" link from `/delegations/opencode-url`.
+  3. Bulk controls: pause all, resume all and abort all, with a confirm dialog for abort all.
+  4. Replace the nav link to `/ide` with `/workbench`. The IDE page itself is removed in G4-05, not here.
+  5. Use the existing glass-panel styles; no new dependencies.
+- **Tests:** vitest render tests with fixture data: the list, step log kinds, decision buttons calling the API, the abort-all confirm, and polling stopping when the task is closed.
+- **Done when:** `npm test` and `npm run build` pass, and the full Python suite passes.
+
+**G4-04 Parity and built-in tools (T16, T17)**
+- **PRD:** agency 4.1 parity table, tests T16 and T17
+- **Tier:** bulk
+- **Depends on:** G4-01 to G4-03
+- **Files:** new `tests/unit/test_g4_parity.py`, new `docs/metrics/g4_parity.md`, `docs/FOR_MAI.md`
+- **Change:**
+  1. T16: for each row of the parity table in PRD 4.1, a test that proves it with the new path (fake OpenCode client), or a row in `g4_parity.md` saying which manual check covers it and why it can't be automated. Rows already covered by G3 or G4-01/02 tests get a reference to the existing test (file::name) instead of a duplicate.
+  2. T17: for every built-in tool in the PRD 4.1 "kept" table, the owner can call it through the executor in a temp directory, and its registered schema has no approval argument (`force_execute` or `_`-prefixed). Reuse the registry's existing schema filter in the assertion; don't re-implement it.
+  3. Add the manual acceptance from agency PRD section 9 to FOR_MAI section 3.
+- **Tests:** as above.
+- **Done when:** every parity row has a passing test or a recorded manual check, T17 passes, and the full suite passes.
+
+**G4-05 Remove the agent loop, the workspace routes, the IDE chat store and the IDE page (T15)**
+- **PRD:** agency 4.1 "Removed" table, rule 6 ("leaving no parallel old and new paths"), test T15
+- **Tier:** bulk
+- **Depends on:** G4-04 (parity proven first)
+- **Files:** delete `src/aura/executor/agent_loop.py`, `src/aura/api/routes/agent.py`, `src/aura/api/routes/workspace.py`, `frontend/src/pages/ide.tsx`, `frontend/src/components/ide/`, `frontend/src/components/agent/AgentLoopPanel.tsx`; edit `src/aura/main.py`, `src/aura/api/routes/tasks.py` (`_agent_loop_runner`), `src/aura/executor/task_queue.py` (`store_ide_chat_message`, `get_ide_chat_history`, `save_file_version`, `add_file_annotation` and their fields), `src/aura/models/session.py` and `src/aura/orchestrator/session_runtime.py` (references only), `src/aura/config.py` (`agent_loop_*` settings), `frontend/src/pages/mission-control.tsx` (the agent loop panel), any nav or service that calls `/agent/*` or `/workspace/*`
+- **Change:**
+  1. Delete the files and every caller. Grep for `agent_loop`, `AgentLoop`, `/agent/`, `/workspace/`, `ide-chat`, `file_versions` and `AuraIDE` in `src/` and `frontend/src` until nothing remains. Don't touch `/workspaces` (G3's registered workspaces) or `connections/opencode_*`.
+  2. Task model fields used only by the removed code: keep them in the schema as `option<...>` (existing rows) but stop writing them. List them in the log entry.
+  3. Mission Control: remove the agent loop panel and link to `/workbench` in its place. No other redesign (P2-14 does that).
+  4. Tests that only covered the removed modules are deleted, and listed in the log entry. Tests that covered shared behaviour through the agent loop are ported to the delegation path, or the shared behaviour is shown to be covered by G4-04.
+- **Tests:** T15, `tests/unit/test_g4_removed.py`: no module in `src/aura` imports `agent_loop` or `api.routes.workspace` or `api.routes.agent` (walk the AST, don't grep text); the FastAPI app has no route starting with `/agent/` or `/workspace/`; `frontend/src/pages/ide.tsx` does not exist. Run `npm test` and `npm run build`.
+- **Done when:** T15 passes, the frontend builds, and the full suite passes.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
