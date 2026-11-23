@@ -49,6 +49,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] The probe set needs your real usage (docs/metrics/probes/README.md).
 - [ ] Avatar asset for V8 (build plan section 6 item 5).
 - [ ] Open `/workbench` (G4-03, replaces the IDE link) and check the layout with a real delegation: task list, live steps, diff summary, approve/deny, guidance, abort.
+- [ ] Agency manual acceptance (G4-04): from the chat, ask Aura to add a small feature to a test repository. She delegates, a permission request appears in the Workbench, the change lands, the review passes, and a week later (simulated) she recalls what was done and why. Parity gaps found are in docs/metrics/g4_parity.md.
 - [ ] Run the L1 route fixture set against each stack's L1 model (command in docs/metrics/l1_routes.md).
 - [ ] Don't resume old Aura sessions in the OpenCode app while cards run: on 2026-11-20 an old W2-30 session ran in the same folder as W3-05 (it only added a log note).
 
@@ -63,6 +64,9 @@ Settings go in Aura's `.env` unless noted.
 - [ ] Novai: the 10 free calls are set to 10 per day; correct it if the period is different.
 
 ## 5. Known follow-ups (no decision needed, listed so they are not lost)
+
+- `execute_code` (G4-04 finding): for the owner it runs whenever `code_execution_enabled` is on, with no approval step (the terminal tool at least has a safe-command list). Guests can never reach it. If you want an approval step for it, say so.
+- Autonomous goal pursuit stores `tool_permissions` but does not use built-in tools or `delegate_work` yet (G4-04 parity row marked manual). Goals v3 (P2-31..33) is where this gets built.
 
 - Tier fallbacks (P2-02, P2-02b): `AURA_L1_MODEL_FALLBACK` and so on are still the shared fallback per layer. Per-tier settings now exist and are optional: `AURA_L1_MODEL_FALLBACK1`..`AURA_L5_MODEL_FALLBACK1` for Core and `AURA_L1_MODEL_FALLBACK2`..`AURA_L5_MODEL_FALLBACK2` for Titan. If one is unset, that tier uses the shared one and a warning is logged once.
 
