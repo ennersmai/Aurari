@@ -865,7 +865,12 @@ class RecallEngine:
             "FROM theme WHERE visibility IN $visible",
             {
                 "vec": embedding or None,
-                "facts": [to_record_id(c.key) for c in facts],
+                # ``str(RecordID)`` wraps ids that start with a digit in
+                # ``⟨...⟩``; strip it or the id never matches a member edge.
+                "facts": [
+                    to_record_id(c.key.replace("⟨", "").replace("⟩", ""))
+                    for c in facts
+                ],
                 "visible": visible_in_venue(venue),
             },
         )
