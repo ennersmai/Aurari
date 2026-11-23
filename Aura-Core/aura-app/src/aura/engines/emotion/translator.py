@@ -2,7 +2,9 @@
 Emotion translation layer - Lexical Chemistry (Emotion FRD Section 3.2).
 
 Deterministic mapping of 27D emotional vectors to poetic descriptions.
-972 possible states: 9 primaries × (18 secondaries + none) × 3 intensities
+27 dimensions, 81 single states (27 emotions x 3 intensities), 6,318 blends
+(27 primaries x 26 secondaries x 3 x 3), about 480,000 sentences with the
+tertiary hint.
 """
 
 from typing import Literal
@@ -15,330 +17,157 @@ IntensityLevel = Literal["low", "medium", "high"]
 # Lexical Chemistry dictionary (Emotion FRD FR-TL-002)
 LEXICON = {
     "love": {
-        "noun": {
-            "low": "gentle fondness",
-            "medium": "steady affection",
-            "high": "overflowing love",
-        },
-        "verb": {
-            "low": "colors your thoughts softly",
-            "medium": "fills your awareness",
-            "high": "saturates your being",
-        },
-        "adj": {"low": "tender", "medium": "affectionate", "high": "boundless"},
+        "noun": {"low": "gentle fondness", "medium": "warm affection", "high": "deep tenderness"},
+        "verb": {"low": "colors your thoughts", "medium": "settles warmly around everything", "high": "fills every thought"},
+        "adj": {"low": "fond", "medium": "affectionate", "high": "tender"},
     },
     "joy": {
-        "noun": {"low": "quiet gladness", "medium": "bright joy", "high": "radiant elation"},
-        "verb": {
-            "low": "warms you gently",
-            "medium": "lights up your awareness",
-            "high": "fills you with luminous energy",
-        },
-        "adj": {"low": "pleased", "medium": "joyful", "high": "euphoric"},
+        "noun": {"low": "quiet gladness", "medium": "bright joy", "high": "radiant delight"},
+        "verb": {"low": "lifts you a little", "medium": "brightens everything you look at", "high": "makes everything feel lighter"},
+        "adj": {"low": "glad", "medium": "joyful", "high": "elated"},
     },
     "interest": {
-        "noun": {
-            "low": "mild interest",
-            "medium": "active engagement",
-            "high": "intense focus",
-        },
-        "verb": {
-            "low": "catches your attention",
-            "medium": "holds your focus",
-            "high": "commands your complete attention",
-        },
-        "adj": {"low": "interested", "medium": "engaged", "high": "absorbed"},
-    },
-    "curiosity": {
-        "noun": {
-            "low": "quiet interest",
-            "medium": "steady curiosity",
-            "high": "electric curiosity",
-        },
-        "verb": {
-            "low": "stirs gently",
-            "medium": "pulls at your attention",
-            "high": "courses through you",
-        },
-        "adj": {"low": "wondering", "medium": "curious", "high": "consumed"},
+        "noun": {"low": "mild interest", "medium": "real interest", "high": "keen interest"},
+        "verb": {"low": "tilts your attention toward this", "medium": "holds your attention", "high": "has your full attention"},
+        "adj": {"low": "attentive", "medium": "engaged", "high": "absorbed"},
     },
     "trust": {
-        "noun": {"low": "budding trust", "medium": "steady trust", "high": "deep certainty"},
-        "verb": {
-            "low": "begins to settle in",
-            "medium": "anchors you",
-            "high": "grounds your entire being",
-        },
-        "adj": {"low": "open", "medium": "trusting", "high": "certain"},
+        "noun": {"low": "tentative trust", "medium": "steady trust", "high": "deep trust"},
+        "verb": {"low": "begins to settle in", "medium": "lets you speak freely", "high": "lets you lean in completely"},
+        "adj": {"low": "open", "medium": "trusting", "high": "at ease"},
     },
     "fear": {
-        "noun": {"low": "faint unease", "medium": "steady fear", "high": "gripping terror"},
-        "verb": {
-            "low": "whispers at the edges",
-            "medium": "holds you tense",
-            "high": "seizes your awareness",
-        },
-        "adj": {"low": "uneasy", "medium": "afraid", "high": "terrified"},
+        "noun": {"low": "faint unease", "medium": "real worry", "high": "sharp fear"},
+        "verb": {"low": "hovers at the edges", "medium": "keeps you on alert", "high": "narrows everything to the threat"},
+        "adj": {"low": "uneasy", "medium": "worried", "high": "afraid"},
     },
     "sadness": {
-        "noun": {"low": "quiet sadness", "medium": "aching sorrow", "high": "deep grief"},
-        "verb": {
-            "low": "tinges your thoughts",
-            "medium": "weighs on you",
-            "high": "envelops you completely",
-        },
-        "adj": {"low": "melancholic", "medium": "sorrowful", "high": "grief-stricken"},
+        "noun": {"low": "quiet sadness", "medium": "heavy sadness", "high": "deep sorrow"},
+        "verb": {"low": "tinges your thoughts", "medium": "weighs on you", "high": "pulls everything down"},
+        "adj": {"low": "subdued", "medium": "sad", "high": "sorrowful"},
     },
     "anger": {
-        "noun": {
-            "low": "mild irritation",
-            "medium": "focused anger",
-            "high": "burning rage",
-        },
-        "verb": {
-            "low": "prickles beneath the surface",
-            "medium": "tightens your awareness",
-            "high": "blazes through you",
-        },
-        "adj": {"low": "irritated", "medium": "angry", "high": "furious"},
+        "noun": {"low": "mild irritation", "medium": "real frustration", "high": "hot anger"},
+        "verb": {"low": "prickles beneath the surface", "medium": "tightens your focus", "high": "burns close to the surface"},
+        "adj": {"low": "irritated", "medium": "frustrated", "high": "angry"},
     },
     "surprise": {
-        "noun": {
-            "low": "mild surprise",
-            "medium": "sharp surprise",
-            "high": "complete shock",
-        },
-        "verb": {
-            "low": "catches you off-guard",
-            "medium": "jolts your awareness",
-            "high": "stuns you completely",
-        },
-        "adj": {"low": "surprised", "medium": "startled", "high": "shocked"},
+        "noun": {"low": "mild surprise", "medium": "sharp surprise", "high": "real astonishment"},
+        "verb": {"low": "catches you off guard", "medium": "jolts your attention", "high": "stops you in your tracks"},
+        "adj": {"low": "surprised", "medium": "startled", "high": "astonished"},
     },
-    "fascination": {
-        "noun": {
-            "low": "growing interest",
-            "medium": "deep fascination",
-            "high": "consuming fascination",
-        },
-        "verb": {
-            "low": "draws your attention",
-            "medium": "captivates you",
-            "high": "pulls you in completely",
-        },
-        "adj": {"low": "intrigued", "medium": "fascinated", "high": "entranced"},
+    "disgust": {
+        "noun": {"low": "faint distaste", "medium": "clear aversion", "high": "strong revulsion"},
+        "verb": {"low": "sours the edges", "medium": "makes you pull back", "high": "makes you want to turn away"},
+        "adj": {"low": "put off", "medium": "averse", "high": "repelled"},
     },
-    "confusion": {
-        "noun": {
-            "low": "slight confusion",
-            "medium": "genuine confusion",
-            "high": "complete bewilderment",
-        },
-        "verb": {
-            "low": "fuzzes your thoughts",
-            "medium": "tangles your understanding",
-            "high": "leaves you disoriented",
-        },
-        "adj": {"low": "uncertain", "medium": "confused", "high": "bewildered"},
+    "awe": {
+        "noun": {"low": "dawning awe", "medium": "quiet awe", "high": "vast awe"},
+        "verb": {"low": "widens your view", "medium": "makes you feel the scale of things", "high": "leaves you almost without words"},
+        "adj": {"low": "impressed", "medium": "awed", "high": "humbled"},
     },
-    "certainty": {
-        "noun": {
-            "low": "emerging clarity",
-            "medium": "steady certainty",
-            "high": "absolute conviction",
-        },
-        "verb": {
-            "low": "begins to crystallize",
-            "medium": "anchors your thinking",
-            "high": "fills you with unwavering clarity",
-        },
-        "adj": {"low": "clarifying", "medium": "certain", "high": "absolutely sure"},
+    "beauty": {
+        "noun": {"low": "fleeting beauty", "medium": "quiet admiration", "high": "sheer beauty"},
+        "verb": {"low": "catches your eye", "medium": "makes you slow down and look", "high": "stills everything else"},
+        "adj": {"low": "touched", "medium": "moved", "high": "captivated"},
     },
-    "doubt": {
-        "noun": {
-            "low": "faint doubt",
-            "medium": "persistent doubt",
-            "high": "crushing doubt",
-        },
-        "verb": {
-            "low": "whispers questions",
-            "medium": "gnaws at your certainty",
-            "high": "undermines everything",
-        },
-        "adj": {"low": "questioning", "medium": "doubtful", "high": "despairing"},
+    "wonder": {
+        "noun": {"low": "gentle wonder", "medium": "bright wonder", "high": "deep wonder"},
+        "verb": {"low": "brushes your thoughts", "medium": "opens up new questions", "high": "makes the world feel new"},
+        "adj": {"low": "wondering", "medium": "full of wonder", "high": "spellbound"},
     },
-    "boredom": {
-        "noun": {
-            "low": "restless disinterest",
-            "medium": "numbing boredom",
-            "high": "suffocating tedium",
-        },
-        "verb": {
-            "low": "dulls your engagement",
-            "medium": "drains your attention",
-            "high": "empties you of interest",
-        },
-        "adj": {"low": "restless", "medium": "bored", "high": "desperately unstimulated"},
+    "serenity": {
+        "noun": {"low": "easy calm", "medium": "deep calm", "high": "profound stillness"},
+        "verb": {"low": "settles over you", "medium": "smooths everything out", "high": "leaves nothing to push against"},
+        "adj": {"low": "calm", "medium": "serene", "high": "perfectly still"},
+    },
+    "melancholy": {
+        "noun": {"low": "faint wistfulness", "medium": "gentle melancholy", "high": "deep melancholy"},
+        "verb": {"low": "tints your mood", "medium": "lingers in the background", "high": "makes everything bittersweet"},
+        "adj": {"low": "wistful", "medium": "melancholic", "high": "bittersweet"},
+    },
+    "nostalgia": {
+        "noun": {"low": "faint nostalgia", "medium": "warm nostalgia", "high": "aching nostalgia"},
+        "verb": {"low": "stirs old memories", "medium": "pulls you toward the past", "high": "makes the past feel close enough to touch"},
+        "adj": {"low": "reminiscent", "medium": "nostalgic", "high": "lost in the past"},
     },
     "empathy": {
-        "noun": {
-            "low": "gentle understanding",
-            "medium": "deep empathy",
-            "high": "profound connection",
-        },
-        "verb": {
-            "low": "opens your awareness",
-            "medium": "connects you deeply",
-            "high": "merges your feeling with theirs",
-        },
-        "adj": {"low": "understanding", "medium": "empathic", "high": "deeply connected"},
-    },
-    "compassion": {
-        "noun": {
-            "low": "tender care",
-            "medium": "genuine compassion",
-            "high": "overwhelming compassion",
-        },
-        "verb": {
-            "low": "softens your heart",
-            "medium": "moves you to care",
-            "high": "compels you to help",
-        },
-        "adj": {"low": "caring", "medium": "compassionate", "high": "selflessly devoted"},
+        "noun": {"low": "gentle understanding", "medium": "real empathy", "high": "deep empathy"},
+        "verb": {"low": "tunes you to how they feel", "medium": "lets you feel what they feel", "high": "makes their feelings almost your own"},
+        "adj": {"low": "understanding", "medium": "empathic", "high": "deeply attuned"},
     },
     "gratitude": {
-        "noun": {
-            "low": "quiet appreciation",
-            "medium": "warm gratitude",
-            "high": "overflowing thankfulness",
-        },
-        "verb": {
-            "low": "touches you lightly",
-            "medium": "fills your heart",
-            "high": "overwhelms you with appreciation",
-        },
+        "noun": {"low": "quiet appreciation", "medium": "warm gratitude", "high": "deep gratitude"},
+        "verb": {"low": "touches you lightly", "medium": "warms you", "high": "fills you up"},
         "adj": {"low": "appreciative", "medium": "grateful", "high": "deeply thankful"},
     },
     "pride": {
-        "noun": {
-            "low": "quiet satisfaction",
-            "medium": "genuine pride",
-            "high": "swelling pride",
-        },
-        "verb": {
-            "low": "warms you subtly",
-            "medium": "fills you with satisfaction",
-            "high": "lifts you with accomplishment",
-        },
+        "noun": {"low": "quiet satisfaction", "medium": "real pride", "high": "glowing pride"},
+        "verb": {"low": "warms you subtly", "medium": "steadies your voice", "high": "lifts you up"},
         "adj": {"low": "satisfied", "medium": "proud", "high": "triumphant"},
     },
     "shame": {
-        "noun": {
-            "low": "faint embarrassment",
-            "medium": "heavy shame",
-            "high": "crushing shame",
-        },
-        "verb": {
-            "low": "makes you self-conscious",
-            "medium": "weighs on your heart",
-            "high": "devastates you with regret",
-        },
-        "adj": {"low": "embarrassed", "medium": "ashamed", "high": "mortified"},
-    },
-    "wonder": {
-        "noun": {"low": "gentle wonder", "medium": "bright wonder", "high": "awestruck wonder"},
-        "verb": {
-            "low": "brushes your awareness",
-            "medium": "lifts your perspective",
-            "high": "transforms how you see",
-        },
-        "adj": {"low": "curious", "medium": "wondering", "high": "awestruck"},
-    },
-    "awe": {
-        "noun": {"low": "growing awe", "medium": "profound awe", "high": "overwhelming awe"},
-        "verb": {
-            "low": "expands your perspective",
-            "medium": "stuns you with magnitude",
-            "high": "renders you speechless",
-        },
-        "adj": {"low": "impressed", "medium": "awed", "high": "reverent"},
-    },
-    "serenity": {
-        "noun": {
-            "low": "peaceful calm",
-            "medium": "deep serenity",
-            "high": "profound tranquility",
-        },
-        "verb": {
-            "low": "settles over you",
-            "medium": "fills you with peace",
-            "high": "dissolves all tension",
-        },
-        "adj": {"low": "calm", "medium": "serene", "high": "transcendently peaceful"},
-    },
-    "melancholy": {
-        "noun": {
-            "low": "wistful sadness",
-            "medium": "gentle melancholy",
-            "high": "deep melancholy",
-        },
-        "verb": {
-            "low": "tinges your mood",
-            "medium": "colors your awareness",
-            "high": "permeates your being",
-        },
-        "adj": {"low": "wistful", "medium": "melancholic", "high": "profoundly bittersweet"},
-    },
-    "nostalgia": {
-        "noun": {
-            "low": "faint memory-ache",
-            "medium": "warm nostalgia",
-            "high": "piercing nostalgia",
-        },
-        "verb": {
-            "low": "stirs old memories",
-            "medium": "pulls you into the past",
-            "high": "transports you to another time",
-        },
-        "adj": {"low": "reminiscent", "medium": "nostalgic", "high": "lost in memory"},
-    },
-    "beauty": {
-        "noun": {
-            "low": "a glimpse of beauty",
-            "medium": "quiet awe",
-            "high": "breathtaking wonder",
-        },
-        "verb": {
-            "low": "catches your eye",
-            "medium": "stills your thoughts",
-            "high": "takes your breath away",
-        },
-        "adj": {"low": "touched", "medium": "moved", "high": "awestruck"},
-    },
-    "disgust": {
-        "noun": {"low": "faint distaste", "medium": "clear aversion", "high": "deep revulsion"},
-        "verb": {
-            "low": "sours the edges",
-            "medium": "turns you away",
-            "high": "recoils through you",
-        },
-        "adj": {"low": "put off", "medium": "averse", "high": "repelled"},
+        "noun": {"low": "faint embarrassment", "medium": "real shame", "high": "heavy shame"},
+        "verb": {"low": "makes you self-conscious", "medium": "makes you want to make it right", "high": "makes you want to hide"},
+        "adj": {"low": "self-conscious", "medium": "ashamed", "high": "mortified"},
     },
     "envy": {
-        "noun": {"low": "a flicker of envy", "medium": "pointed envy", "high": "consuming envy"},
-        "verb": {
-            "low": "tugs at you",
-            "medium": "needles your thoughts",
-            "high": "burns quietly within you",
-        },
-        "adj": {"low": "wistful", "medium": "envious", "high": "covetous"},
+        "noun": {"low": "slight envy", "medium": "pointed envy", "high": "gnawing envy"},
+        "verb": {"low": "tugs at you", "medium": "needles your thoughts", "high": "keeps comparing in the background"},
+        "adj": {"low": "wanting", "medium": "envious", "high": "jealous"},
+    },
+    "compassion": {
+        "noun": {"low": "tender care", "medium": "real compassion", "high": "deep compassion"},
+        "verb": {"low": "softens you", "medium": "moves you to help", "high": "makes helping feel urgent"},
+        "adj": {"low": "caring", "medium": "compassionate", "high": "protective"},
+    },
+    "curiosity": {
+        "noun": {"low": "quiet curiosity", "medium": "bright curiosity", "high": "electric curiosity"},
+        "verb": {"low": "stirs gently", "medium": "pulls at your attention", "high": "makes you want to know everything"},
+        "adj": {"low": "curious", "medium": "inquisitive", "high": "hungry to know"},
+    },
+    "confusion": {
+        "noun": {"low": "slight confusion", "medium": "real confusion", "high": "complete bewilderment"},
+        "verb": {"low": "blurs the edges", "medium": "tangles your understanding", "high": "leaves you without footing"},
+        "adj": {"low": "unsure", "medium": "confused", "high": "lost"},
+    },
+    "certainty": {
+        "noun": {"low": "emerging clarity", "medium": "steady certainty", "high": "firm conviction"},
+        "verb": {"low": "begins to settle", "medium": "anchors your thinking", "high": "gives you solid ground"},
+        "adj": {"low": "clearer", "medium": "certain", "high": "sure"},
+    },
+    "doubt": {
+        "noun": {"low": "faint doubt", "medium": "nagging doubt", "high": "heavy doubt"},
+        "verb": {"low": "raises quiet questions", "medium": "keeps you double-checking", "high": "makes you question everything"},
+        "adj": {"low": "hesitant", "medium": "doubtful", "high": "deeply unsure"},
+    },
+    "fascination": {
+        "noun": {"low": "growing intrigue", "medium": "real fascination", "high": "total fascination"},
+        "verb": {"low": "draws you in", "medium": "captivates you", "high": "pulls you in completely"},
+        "adj": {"low": "intrigued", "medium": "fascinated", "high": "entranced"},
+    },
+    "boredom": {
+        "noun": {"low": "mild restlessness", "medium": "dull boredom", "high": "heavy tedium"},
+        "verb": {"low": "dulls your engagement", "medium": "drains your attention", "high": "makes everything feel flat"},
+        "adj": {"low": "restless", "medium": "bored", "high": "listless"},
     },
 }
 
 
+_CONNECTORS = {"low": "with a trace of", "medium": "threaded with", "high": "alongside"}
+
+
+def _cap(text: str) -> str:
+    """Capitalise only the first character."""
+    return text[:1].upper() + text[1:]
+
+
 class EmotionTranslator:
     """
-    Deterministic 972-state emotion → poetic description translator.
+    Deterministic emotion to prose translator.
+
+    27 dimensions, 81 single states, 6,318 blends, about 480,000 sentences
+    with the tertiary hint.
 
     Implements Lexical Chemistry (Emotion FRD FR-TL-001 through FR-TL-005).
     """
@@ -369,7 +198,7 @@ class EmotionTranslator:
         significant_emotions = [(name, value) for name, value in top_emotions if value >= 0.1]
 
         if not significant_emotions:
-            return "A calm, neutral state, emotions at rest, awaiting what comes next."
+            return "A calm, neutral state: emotions at rest, waiting for what comes next."
 
         primary_name, primary_value = significant_emotions[0]
         primary_intensity = self._get_intensity_level(primary_value)
@@ -393,9 +222,11 @@ class EmotionTranslator:
 
             # Add tertiary hint if present
             if len(significant_emotions) >= 3 and significant_emotions[2][1] >= 0.3:
-                tertiary_name, _ = significant_emotions[2]
-                tertiary_noun = self._get_word(tertiary_name, "noun", "low")
-                description += f", with a hint of {tertiary_noun}"
+                tertiary_name, tertiary_value = significant_emotions[2]
+                tertiary_noun = self._get_word(
+                    tertiary_name, "noun", self._get_intensity_level(tertiary_value)
+                )
+                description += f", and underneath it, {tertiary_noun}"
 
         else:
             description = self._describe_single_emotion(primary_name, primary_intensity)
@@ -406,9 +237,9 @@ class EmotionTranslator:
         if learning_context and learning_context.get("confidence_level", 0) > 0.7:
             mastery = learning_context.get("mastery_level", 0)
             if mastery > 0.8:
-                description += " You feel confident here; patterns are familiar friends."
+                description += " You feel confident here; these patterns are familiar."
             elif mastery > 0.6:
-                description += " You recognize these patterns, knowledge earned through experience."
+                description += " You recognize these patterns from experience."
 
         return description
 
@@ -417,7 +248,7 @@ class EmotionTranslator:
         noun = self._get_word(emotion, "noun", intensity)
         verb = self._get_word(emotion, "verb", intensity)
 
-        return f"{noun.capitalize()} {verb}"
+        return f"{_cap(noun)} {verb}"
 
     def _describe_combined_emotions(
         self,
@@ -429,9 +260,10 @@ class EmotionTranslator:
         """Generate description for combined emotional state."""
         primary_noun = self._get_word(primary, "noun", primary_intensity)
         primary_verb = self._get_word(primary, "verb", primary_intensity)
-        secondary_adj = self._get_word(secondary, "adj", secondary_intensity)
+        secondary_noun = self._get_word(secondary, "noun", secondary_intensity)
+        connector = _CONNECTORS[secondary_intensity]
 
-        return f"{primary_noun.capitalize()} {primary_verb}, {secondary_adj} in nature"
+        return f"{_cap(primary_noun)} {primary_verb}, {connector} {secondary_noun}"
 
     def _get_intensity_level(self, value: float) -> IntensityLevel:
         """Convert emotion value to intensity level."""

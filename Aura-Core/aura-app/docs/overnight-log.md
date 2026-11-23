@@ -2493,3 +2493,15 @@
   - `tests/unit/test_emotion_translator.py` (new), `tests/unit/test_emotion_prompt_cause.py` (updated, plus an L3 prompt no-em-dash test).
 - **layers.py:** `_build_l3_system_prompt` has no em dash inside any string literal (the only ones in its range are in comments), so nothing was edited there. The rendered prompt for a fixture context contains none.
 - **Tests:** translator, cause and prompt tests pass; unit suite run once.
+
+---
+
+## FX-01 v2: Emotion translator rewrite
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/engines/emotion/translator.py` - LEXICON replaced (all 27 dimensions); blend reads "{Noun} {verb}, {connector} {secondary noun}" with connector by the secondary's intensity (low "with a trace of", medium "threaded with", high "alongside"); tertiary clause ", and underneath it, {noun at its own intensity}"; neutral and mastery lines reworded; only the first character is capitalised; module and class docstrings corrected (27 dimensions, 81 single states, 6,318 blends, about 480,000 sentences). Selection logic, thresholds and `get_state_hash` untouched.
+  - `tests/unit/test_emotion_translator.py` (rewritten).
+- **describe.py / layers.py:** `cause_phrase` already matched every template and the age rules, so unchanged. `_build_l3_system_prompt` has no em dash in any string literal (only in comments); unchanged. `test_emotion_prompt_cause.py` already covers one case per kind, "a moment ago", days and the no-em-dash prompt test (checked: it fails with a dash put back).
+- **Note:** the card's blend example "threaded with quiet gladness" cannot come from the rule (quiet gladness is joy low, which gets "with a trace of"). The rule was followed; tests assert what the lexicon produces.
+
+**Supervisor (2026-11-23), FX-01 v2:** Reviewed the diff; the lexicon was checked against the card in code (27 entries, keys equal to the EmotionVector fields), and the templates and connectors match the card. Full suite: 877 passed, 3 skipped, 1 failed. The failure was `test_recall_themes_embedded.py::test_broad_question_gets_the_theme_line_first`, which passes in isolation both with and without this change, so it is an ordering flake in the full suite and not caused by FX-01. It needs a look.
