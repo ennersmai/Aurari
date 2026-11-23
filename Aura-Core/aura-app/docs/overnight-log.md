@@ -2440,3 +2440,16 @@
 - **Model path:** `self._llm_layers.client.complete` (plain text), the same client as the retry phase.
 - **Tests:** theme created once then updated; no theme mixes visibilities; entity summary ignores guild and private facts; caps hold and the rest follow next cycle; empty reply skips and long reply is trimmed; ablation; label propagation, replay ordering.
 - **Supervisor (2026-11-23), W4-10:** after a restart (`last_dream_cycle` is in memory only) the first cycle replayed every current fact, uncapped; now it replays only the top batch, and "recorded since the last cycle" is capped at the newest `dreaming_replay_batch`. A changed community replaced the theme's whole `member_of` set, so members outside the cycle's replay and neighbours fell out of long topics; they now stay while current and unarchived, and only facts the cycle placed in another community leave. No dedicated test for member retention yet (W4-12's 90-day run covers theme stability). Suite: 743 passed, 3 skipped.
+
+---
+
+## W4-11: Theme recall
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/config.py` - `recall_themes_enabled` (False), `recall_theme_min_similarity` (0.55), `recall_theme_min_members` (2), `recall_theme_k` (1).
+  - `src/aura/engines/recall/engine.py` - `_theme_candidates`, called in `_build_fact_memories` after the fact candidates are built (so after abstention, fusion and rerank) when the flag is on. `recall_facts` keeps only `recall.facts` candidates, so a theme is never returned as a fact row.
+  - `tests/scenarios/test_recall_themes_embedded.py` (new) - five tests on the embedded DB; themes are made by the real dream path (`enter_rem_sleep` with a scripted client).
+- **Qualification:** one query over `theme WHERE visibility IN $visible` (`visible_in_venue(venue)`), selecting cosine similarity between `embedding` and the query embedding already computed on this path (`vector::similarity::cosine`; there is no index on `theme.embedding`, and themes are few, so no KNN) and `array::len(array::intersect(<-member_of.in, $facts))` for the member count among the final fact candidates. A theme qualifies on either condition; ordered by members, then similarity; top `recall_theme_k` kept. No model call. Archived facts are never candidates, so never counted.
+- **Budget, trace, rendering:** the theme is a `Candidate` in the memories block (`source="recall.themes"`, rank below every fact, dedup keys `theme:<id>` and the normalised text), so `assemble` budgets, dedupes and traces it with the facts. Over budget, facts drop first (last in rank); the theme goes only when nothing else fits. The memories renderer writes `<theme updated="N days ago">summary</theme>` (age from `updated_at`) for theme payloads, first in the block.
+- **Abstention:** unchanged; the abstain path returns before themes are considered. Flag off: path identical to before.
+- **Tests:** broad question gets the theme line first with five fact lines and a kept trace item; guild venue gets no owner theme; budget holds (theme kept while facts go over budget, then theme over_budget at budget 1); abstention adds no theme; ablation.

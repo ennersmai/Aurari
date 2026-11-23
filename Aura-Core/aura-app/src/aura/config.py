@@ -871,6 +871,28 @@ class Settings(BaseSettings):
         description="When true, the graph channel runs in the recall engine: "
                     "Personalised PageRank from the dense, lexical and entity hits.",
     )
+    recall_themes_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_THEMES_ENABLED",
+        description="When true, the fact path adds the best qualifying dream theme "
+                    "as a <theme> line at the top of the memories block.",
+    )
+    recall_theme_min_similarity: float = Field(
+        default=0.55,
+        validation_alias="AURA_RECALL_THEME_MIN_SIMILARITY",
+        description="Cosine similarity between query and theme embedding at which "
+                    "a theme qualifies.",
+    )
+    recall_theme_min_members: int = Field(
+        default=2,
+        validation_alias="AURA_RECALL_THEME_MIN_MEMBERS",
+        description="Fused facts that are members of a theme at which it qualifies.",
+    )
+    recall_theme_k: int = Field(
+        default=1,
+        validation_alias="AURA_RECALL_THEME_K",
+        description="Most themes rendered in the memories block.",
+    )
     recall_graph_k: int = Field(
         default=20,
         validation_alias="AURA_RECALL_GRAPH_K",

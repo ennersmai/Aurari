@@ -813,12 +813,23 @@ class RecallEngine:
         if not candidates:
             return [], None, {}, False
 
+        if settings.recall_themes_enabled:
+            candidates = await self._theme_candidates(
+                memory_manager.db, request.venue, embedding, candidates
+            ) + candidates
+
         def _renderer(payloads: list[Any]) -> str:
             if not payloads:
                 return ""
             now = get_clock().now()
             lines = ["<memories>"]
             for fact in payloads:
+                if str(fact["id"]).startswith("theme:"):
+                    days = max(0, (now - (fact["updated_at"] or fact["recorded_at"])).days)
+                    lines.append(
+                        f'  <theme updated="{days} days ago">{fact["content"]}</theme>'
+                    )
+                    continue
                 age_days = max(0, (now - fact["recorded_at"]).days)
                 lines.append(
                     f'  <fact age="{age_days}d" '
@@ -830,6 +841,56 @@ class RecallEngine:
             return "\n".join(lines)
 
         return candidates, _renderer, {}, False
+
+    async def _theme_candidates(
+        self,
+        db: Any,
+        venue: str,
+        embedding: list[float] | None,
+        facts: list[Candidate],
+    ) -> list[Candidate]:
+        """Up to ``recall_theme_k`` themes visible in ``venue`` that qualify (W4-11).
+
+        One query: a theme qualifies when its embedding is at least
+        ``recall_theme_min_similarity`` close to the query embedding, or at
+        least ``recall_theme_min_members`` of the fused ``facts`` are
+        ``member_of`` it. Themes are few and have no vector index, so cosine is
+        computed in the query. They rank before every fact.
+        """
+        rows = await db.query(
+            "SELECT id, content, recorded_at, updated_at, "
+            "IF embedding != NONE AND $vec != NONE "
+            "THEN vector::similarity::cosine(embedding, $vec) ELSE 0 END AS similarity, "
+            "array::len(array::intersect(<-member_of.in, $facts)) AS members "
+            "FROM theme WHERE visibility IN $visible",
+            {
+                "vec": embedding or None,
+                "facts": [to_record_id(c.key) for c in facts],
+                "visible": visible_in_venue(venue),
+            },
+        )
+        qualified = sorted(
+            (
+                r for r in rows or []
+                if r["similarity"] >= settings.recall_theme_min_similarity
+                or r["members"] >= settings.recall_theme_min_members
+            ),
+            key=lambda r: (-r["members"], -r["similarity"], str(r["id"])),
+        )[: int(settings.recall_theme_k)]
+        return [
+            Candidate(
+                block="memories",
+                key=str(row["id"]),
+                dedup_keys=(
+                    "theme:" + str(row["id"]),
+                    "text:" + normalise_text(row["content"]),
+                ),
+                payload=row,
+                rank=rank - len(qualified),
+                source="recall.themes",
+            )
+            for rank, row in enumerate(qualified)
+        ]
 
     # ------------------------------------------------------------------
     # Gate cache (W3-06)
@@ -1018,7 +1079,7 @@ class RecallEngine:
             user_id="owner", user_input=query, limit=limit, venue=venue
         )
         candidates, _, _, _ = await self._build_fact_memories(request)
-        rows = [c.payload for c in candidates]
+        rows = [c.payload for c in candidates if c.source == "recall.facts"]
         for key in ("kind", "provenance"):
             if (filters or {}).get(key):
                 rows = [r for r in rows if r.get(key) == filters[key]]
