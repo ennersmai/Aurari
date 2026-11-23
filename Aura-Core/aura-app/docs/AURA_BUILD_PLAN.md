@@ -2656,6 +2656,199 @@ Written 2026-11-23 against commit 85996ab. Agency PRD 4.1 (removal and parity ta
 ---
 
 
+### Wave 5 (Phase 2 order): cards for G5 and G6 (skills v2, attribution, distillation)
+
+What exists today. The `skill` table (`scripts/init_schema.surql`, SCHEMAFULL) is a graph node with `name`, `domain`, `mastery_level`, `skill_type` (`abstract`, `mcp_tool`, `local_function`, `python_script`), `execution_config` and `description_embedding`; tool records are built from its `mcp_tool` and `local_function` rows by `executor/tool_registry.py` (`records_from_skill_rows`), and `tool_executor._get_skill_by_name` looks tools up in it. `engines/learning/skills.py` (`SkillTreeManager`) creates tree nodes and derives mastery from attached insights, not from outcomes (PRD L3). `engines/learning/engine.py` has the teaching fast lane (`_check_pattern_extraction`, `_process_direct_instruction`, `_compile_new_skill`), trigger phrase generation (`_generate_triggers_background`, W2-38) and `update_insight_confidence` (the smoothed rate, kept). There is no skill document, no version, no state, no per-skill attempts or successes, and no skill selection. Outcomes are hard-coded: `coordinator._log_interaction_experience` writes `{"success": True}` (L1). `ToolRegistry.record_call` keeps in-memory `ToolStats` (calls, successes, latencies) that are lost on restart. Recall feedback (`engines/recall/feedback.py::record_feedback`, W4-06, flag `recall_feedback_enabled`) runs in `_post_response_chain` and already knows which facts a turn used from `packet.trace`. Delegation accepts a free-text `skill` string in `DelegationConfig` (`executor/delegation.py`) and finalises tasks in `_finalize_task`; owner approvals go through `executor/decisions.py::DecisionService` (`create`, `get`, `reopen`, `answer`) with `kind="needs_decision"` items that have no OpenCode request to answer (G4-02, code nodes). Dreaming v2 runs from `DreamingEngine.enter_rem_sleep`, each phase gated by `dreaming_v2_enabled` and wrapped in its own try/except. P2-20 (skills at JIT presence levels), P2-24 and P2-26 (Striatum labels and warm-up) and P2-34/P2-35 (library cards, reviewer skills) build on the record these cards leave: a skill with `name`, a one-line `when_to_use`, `tags`, a `body`, and per-version usage and outcome statistics, read only through `engines/learning/skill_store.py` and `skill_index.py`.
+
+Choices made where the PRD is open (the build agent must not reopen them):
+- Skill documents go in new tables (`skill_doc`, `skill_version`, `skill_use`). The old `skill` table is not changed except for one optional link field, so tool lookup keeps working. PRD 6.1 "tool-as-skill nodes become plain tool records" is not done here.
+- "Becomes active only after owner approval." A version is live only when it has `approved_at`. A `candidate` with no approval is inert (stored, shown on the agenda, never offered). An approved candidate is on trial: selectable, and it becomes `trusted` after `skill_promote_successes` (5) successes or on an explicit owner "trusted" approval (PRD 6.4). Without this reading a candidate could never gather the five successes.
+- PRD 6.2 "Taught: a `trusted` skill, version 1" is the one exception, and only because the owner's own instruction is the approval. Taught by a guest, or from a guest conversation, is a `candidate` that needs a decision like any other.
+- Automatic rollback (PRD 6.4) restores a version the owner already approved, so it needs no new approval, but it is flagged on the agenda.
+- T11 is listed under G5 and distillation under G6. G5 delivers the proposal path (`propose_skill`, candidate linked to a task, body kept out of the default context); G6-01 adds the background drafting that calls it.
+
+---
+
+**G5-01 Skill model v2: schema, models, store and flags**
+- **PRD:** agency 6.1, L3
+- **Tier:** bulk
+- **Depends on:** none
+- **Files:** `scripts/schema_v2.surql` (or a new `scripts/schema_skills.surql` applied the same way; read how `schema_v2.surql` is loaded first), `src/aura/models/learning.py`, new `src/aura/engines/learning/skill_store.py`, `src/aura/config.py`, new `tests/unit/test_skill_store.py`
+- **Exists today:** `skill` is SCHEMAFULL with tree and tool fields and a 768-dim HNSW `description_embedding`; `models/learning.py` has `Skill` (name, domain, mastery_level). No document, version or statistics.
+- **Change:**
+  1. Tables, all `DEFINE TABLE IF NOT EXISTS ... SCHEMAFULL`:
+     - `skill_doc`: `name` (string, unique index), `when_to_use` (string, one or two sentences), `tags` (array<string> DEFAULT []), `state` (`candidate`, `trusted`, `retired`), `active_version` (option<int>), `previous_version` (option<int>), `origin_speaker` (string, `owner` or `guest`), `workspace` (option<string>), `node` (option<record<skill>>), `when_embedding` (option<array<float, 768>>), `created_at`, `updated_at`, `last_used_at` (option<datetime>), `retired_at` (option<datetime>), `flagged` (option<string>).
+     - `skill_version`: `skill` (record<skill_doc>), `version` (int), `body` (string), `tools` (array<string>), `examples` (array<string>, task and episode ids), `pitfalls` (array<string>), `source` (`taught`, `distilled`, `corrected`, `imported`), `source_task` (option<string>), `change_note` (option<string>), `approved_at` (option<datetime>), `approved_by` (option<string>), `rejected` (bool DEFAULT false), `attempts` (int DEFAULT 0), `successes` (int DEFAULT 0), `practice_attempts` (int DEFAULT 0), `practice_successes` (int DEFAULT 0), `created_at`. Unique index on (`skill`, `version`). Old versions are never deleted.
+     - `skill_use`: `skill` (record<skill_doc>), `version` (int), `turn_id` (option<string>), `task_id` (option<string>), `requester_role` (string), `tools` (array<string>), `fact_ids` (array<string>), `outcome` (option<string>: `positive`, `negative`, `unknown`), `counted` (bool DEFAULT false), `practice` (bool DEFAULT false), `created_at`. Index on `turn_id` and on `task_id`.
+  2. Pydantic models `SkillDoc`, `SkillVersion`, `SkillUse` in `models/learning.py`.
+  3. `skill_store.py` with an async class `SkillStore(db)`: `create_doc`, `add_version` (next integer, never reuses a number, never edits an old row), `get_doc(name)`, `get_version(skill, version)`, `list_docs(state=None, include_unapproved=False)`, `set_state`, `set_active(skill, version)`, `touch_used`. Every query uses `$params`; record ids go through `to_record_id` from `aura.db.query_utils`.
+  4. Config: `skills_v2_enabled` (False, `AURA_SKILLS_V2_ENABLED`), the parent flag every later skill card checks. No other behaviour changes in this card.
+  5. Time comes from `get_clock()`.
+- **Tests:** create a doc and three versions (numbers 1 to 3, old bodies intact); a duplicate `name` is refused; `list_docs` hides unapproved candidates unless asked; the schema statements parse and every new field on the old `skill` table (if any) is `option<...>`; the existing tool lookup tests still pass. Use the runner's `EmbeddedSurrealDB` with the real schema for the store tests (that is the only way to catch fields a SCHEMAFULL table drops); never copy the schema into a test.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** change `SkillTreeManager`, `records_from_skill_rows` or `_get_skill_by_name`. Do not put skill documents in the `skill` table.
+- **Known pitfalls:** SCHEMAFULL silently drops undeclared fields, so every field a test writes must be declared, and the embedded tests must read each field back.
+- **Guest and privacy:** `origin_speaker` and `skill_use.requester_role` are stored so later cards can keep guest-learned skills inert.
+
+---
+
+**G5-02 Proposals, versions, near-duplicate merge and owner approval (T12)**
+- **PRD:** agency 6.2 ("Before creating, compare against existing skills by `when_to_use`"), 6.4, test T12
+- **Tier:** frontier
+- **Depends on:** G5-01
+- **Files:** `src/aura/engines/learning/skill_store.py`, new `src/aura/engines/learning/skill_proposals.py`, `src/aura/executor/decisions.py` (a post-answer hook only), new `src/aura/api/routes/skills.py`, `src/aura/main.py` (router), `src/aura/config.py`, new `tests/unit/test_skill_proposals.py`
+- **Exists today:** `DecisionService.create(kind, session_id, request_id, action, resources, risk, workspace, message, task_id)` and `answer(decision_id, allow, decided_by)`; for `kind="needs_decision"` `answer` only records the status. Code nodes (`executor/code_node.py`) wait on such a decision and read it back with `get`. `engines/learning/engine.py::_compile_new_skill` creates tool nodes directly; nothing compares skills by meaning.
+- **Change:**
+  1. `propose_skill(store, embeddings, draft, source, source_task, origin_speaker)` in `skill_proposals.py`. `draft` has `name`, `when_to_use`, `tags`, `body`, `tools`, `pitfalls`. Steps: embed `when_to_use` with the embeddings client; find the nearest non-retired doc by cosine of `when_embedding`; if the similarity is at least `skill_dup_similarity` (default 0.85, `AURA_SKILL_DUP_SIMILARITY`) add a new `skill_version` to that doc (T12: no second doc), else create a `candidate` doc with version 1. Either way the new version has no `approved_at`. The currently active version stays active until approval. Returns `(doc, version, merged)`.
+  2. Approval through the decisions service: after the proposal, `DecisionService.create(kind="needs_decision", action="skill_activate", risk="write", message=<name, one-line change note, first 300 chars of the body change>, session_id="skill", request_id=<skill name and version>)`, one item per (skill, version), never a second while one is pending. The decision resource is `["skill:<name>:v<version>"]`.
+  3. A post-answer hook in `DecisionService.answer`: when the decision `action` is `skill_activate` and the answer is allow, call `SkillStore.approve(skill, version, by)`, which sets `approved_at`, sets `active_version` (moving the old one to `previous_version`), and keeps state `candidate` (on trial), or `trusted` if the owner chose "trusted" in the API body. A deny sets `rejected = true` on the version and it is never offered again. The hook stays inside the `needs_decision` branch and never touches the OpenCode client path. Gate it on `skills_v2_enabled`.
+  4. Visibility: a proposal with `origin_speaker == "guest"` goes through the same decision, and the message says "learned from a guest conversation". A guest cannot call any route in this card, and `propose_skill` never approves anything itself.
+  5. Routes in `api/routes/skills.py` (same unauthenticated posture as the other routes): `GET /skills` (docs with active version summary, state, stats), `GET /skills/{name}` (all versions), `POST /skills/{name}/versions/{n}/approve` and `/reject` (both go through `DecisionService.answer` on the pending decision, so there is one approval path).
+  6. Config: `skill_dup_similarity`.
+- **Tests (T12):** a proposal near an existing skill adds version 2 and creates no second doc, with a fake embedding client returning controlled vectors; a dissimilar one creates a new candidate; neither is live before the decision; allowing the decision sets `approved_at` and `active_version`; denying leaves the old active version; a second proposal while one is pending adds no second decision; with `skills_v2_enabled` off the hook does nothing (ablation) and `answer` behaves as before for `needs_decision` merges (existing code node tests unchanged).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** make any model call here. Do not activate a version from `propose_skill`. Do not copy the approval logic into the routes.
+- **Known pitfalls:** `DecisionService.answer` raises when no OpenCode client is set, except for `needs_decision`; keep the hook inside that branch. Use a `FakeClock` for `approved_at`. Monkeypatch `settings.skills_v2_enabled` in each test. No real embeddings model.
+
+---
+
+**G5-03 Real per-turn outcome signal (T14)**
+- **PRD:** agency 7 step 1 and L1; behavior PRD section 11; test T14
+- **Tier:** frontier
+- **Depends on:** G5-01 (flag); otherwise independent
+- **Files:** new `src/aura/engines/learning/outcomes.py`, `src/aura/orchestrator/coordinator.py` (`_post_response_chain`, `_log_interaction_experience`), `src/aura/engines/learning/engine.py` (add `set_experience_outcome` only), `src/aura/config.py`, new `tests/unit/test_turn_outcomes.py`
+- **Exists today:** `_log_interaction_experience` writes `outcome: {"success": True}` for every turn. `_post_response_chain` runs after the reply, already embeds text for recall feedback (`get_embeddings_client`) and knows `speaker` and `venue`. `Experience.outcome` is a free dict. Mai's corrections are not detected anywhere; the teaching fast lane only detects instructions.
+- **Change:**
+  1. `outcomes.py`: `classify_outcome(previous_turn, current_turn, embeddings) -> "positive" | "negative" | "unknown"` with no model call. Negative: the owner's current message rephrases their previous message within `outcome_rephrase_turns` (2, `AURA_OUTCOME_REPHRASE_TURNS`) turns, meaning cosine of the two message embeddings at least `outcome_rephrase_similarity` (0.8) or content-word overlap at least `outcome_rephrase_overlap` (0.6), or the message starts with a correction marker from a small list in the module ("no,", "that's not", "I meant", "wrong"). Explicit feedback from a thumbs control, if the app sends it, overrides. Positive: only explicit positive feedback, or a delegated task's tests passing (G5-04 passes that in). Everything else is `unknown`, not positive.
+  2. A small in-memory ring of the last `outcome_rephrase_turns` owner turns per conversation (`conversation_id`, experience id, text, embedding). Bounded; no persistence.
+  3. When a later owner turn is classified, patch the earlier experience: `outcome = {"signal": ..., "success": <True|False|None>, "source": ...}` through `LearningEngine.set_experience_outcome(experience_id, outcome)` using a parameterised merge. Behind the flag the hard-coded `{"success": True}` is replaced by `{"signal": "unknown", "success": None}` at log time.
+  4. Only owner turns classify and are classified. Guest turns (`speaker != "owner"`) are written as `unknown` and never patched, and a guest rephrase never changes an owner turn's outcome.
+  5. Runs in `_post_response_chain` after the reply, wrapped so a failure never affects the turn (follow `record_feedback`).
+  6. Config: `outcome_signals_enabled` (False, `AURA_OUTCOME_SIGNALS_ENABLED`), plus the numbers above. With the flag off the old hard-coded success is written unchanged (ablation).
+- **Tests (T14):** the owner asks, then rephrases within two turns: the first turn's outcome is `negative`; a different follow-up leaves it `unknown`; a rephrase three turns later does not patch it; a correction marker marks `negative`; a guest rephrase changes nothing; flag off writes `success: True` as before; the classifier never calls an LLM (the fake LLM client received zero calls). Fake embeddings returning fixed vectors.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** treat silence as positive. Do not add a model call. Do not change `update_insight_confidence`.
+- **Known pitfalls:** existing tests assert `{"success": True}`; they run with the flag off and must stay unchanged. Monkeypatch settings per test.
+
+---
+
+**G5-04 Attribution and outcome updates (statistics per skill version)**
+- **PRD:** agency 7 steps 2 and 3, 6.4 ("Mastery is the measured success rate with its uncertainty"), T4's "skill statistics updated"
+- **Tier:** frontier
+- **Depends on:** G5-01, G5-02, G5-03
+- **Files:** new `src/aura/engines/learning/skill_stats.py`, `src/aura/orchestrator/coordinator.py` (`_post_response_chain`), `src/aura/orchestrator/tool_loop.py` (read how tool calls are collected before editing), `src/aura/executor/delegation.py` (`_finalize_task`, brief assembly), `src/aura/tools/delegate.py`, `src/aura/engines/recall/feedback.py` (return the used ids only), `src/aura/config.py`, new `tests/unit/test_skill_attribution.py`
+- **Exists today:** `ToolRegistry.record_call` counts in memory only. `record_feedback` computes used facts but returns nothing. `DelegationConfig.skill` is a text blob put in the brief; nothing records which skill produced which task. `Skill.mastery_level` is derived from insights.
+- **Change:**
+  1. Attribution: `record_skill_use(store, skill, version, turn_id, task_id, requester_role, tools, fact_ids, practice=False)` writes one `skill_use` row. The turn path calls it from `_post_response_chain` for every skill G5-05 chose; tools come from the tool loop's calls for that turn (names only), fact ids from `record_feedback` (make it return the used ids; behaviour unchanged). Delegation: `delegate_work` accepts a skill name, resolves it to a live version, puts the body in the brief, and records the use with the task id.
+  2. `apply_outcome(store, use, outcome)` in `skill_stats.py`: once a use has an outcome (`positive` or `negative`, never `unknown`) and `counted` is false and `requester_role == "owner"` and it is not practice, add one attempt to the version (`attempts += 1`, `successes += 1` on positive) in one parameterised update and set `counted = true` so it cannot double count. `unknown` is left uncounted, not a failure.
+  3. Triggers: (a) G5-03 patches a turn outcome, which calls `apply_outcome` for that turn's uses; (b) `_finalize_task` outcome `succeeded` with the review (tests) passing counts positive, `failed` counts negative, `needs_owner` and aborted by owner count nothing.
+  4. Inferred-fact confidence: the facts relied on get the existing smoothed update, reusing the formula in `update_insight_confidence` by import, not copy, for `inferred` facts only, on positive and negative outcomes.
+  5. Pure helpers: `beta_params(attempts, successes) -> (1 + successes, 1 + attempts - successes)` and `mastery(attempts, successes) -> (mean, lower_bound)` where the lower bound is the `skill_mastery_quantile` (0.2, `AURA_SKILL_MASTERY_QUANTILE`) of the Beta, so two uses and two hundred uses at the same rate are not equal. Persisting `ToolStats` is out of scope; the tool names on `skill_use` are the attribution.
+  6. Config: `skill_attribution_enabled` (False, `AURA_SKILL_ATTRIBUTION_ENABLED`) and `skill_mastery_quantile`. Both also need `skills_v2_enabled`.
+- **Tests:** a turn using skill A v2 with a negative owner outcome gives v2 `attempts` 1, `successes` 0; positive adds a success; `unknown` adds nothing; a second patch does not double count; a guest turn's use is recorded but not counted; practice rows go to `practice_*` only; a succeeded delegation with a passing review counts positive and a failed one negative (fake OpenCode client); the lower bound is lower for 2 of 2 than for 200 of 200; flag off writes no `skill_use` (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** count `unknown` as failure. Do not make a model call on the reply path. Do not read the system clock; use `get_clock()`.
+- **Known pitfalls:** increment in the query (`attempts += 1`), not read-modify-write. Existing delegation tests use a fake task queue; add the attribution call behind the flag so they are unchanged.
+- **Guest and privacy:** guest turns and guest-requested tasks never move owner skill statistics, so a guest cannot push a skill to `trusted` or into a rollback.
+
+---
+
+**G5-05 Skill index, selection and default context (T11)**
+- **PRD:** agency 6.1 ("Only `name` and `when_to_use` are ever placed in context by default"), 6.3, test T11
+- **Tier:** frontier
+- **Depends on:** G5-01, G5-02, G5-04
+- **Files:** new `src/aura/engines/learning/skill_index.py`, `src/aura/llm/layers.py` (the system prompt assembly; read first), `src/aura/orchestrator/coordinator.py` (one call before the model call, no model use), `src/aura/config.py`, new `tests/unit/test_skill_selection.py`
+- **Exists today:** nothing selects skills. `get_learning_context` returns insights. `select_tools` in `tool_registry.py` selects tools by relevance (mirror its floor style, do not reuse or change it). P2-20 later gives skills `full`, `stub` and `absent` presence levels from a shared budget with tools.
+- **Change:**
+  1. `skill_index.py` exposes the hooks P2-20, P2-24 and P2-26 will use: `SkillStub(name, one_line, tags, version, mastery)`, `render_index(stubs) -> str` (one line each, `name: when_to_use`), `load_body(name, version) -> str`, `candidates(request_embedding) -> list[...]`. Live means: state `candidate` or `trusted`, the version has `approved_at` and is not `rejected`, and the doc is not retired. Unapproved candidates never appear.
+  2. Selection (PRD 6.3), pure and seedable: retrieve live skills by cosine between the request embedding and `when_embedding`; keep those at or above `skill_relevance_floor` (0.55, `AURA_SKILL_RELEVANCE_FLOOR`), at most `skill_candidates_max` (8); sample one value per arm from `Beta(1 + successes, 1 + failures)` with an injected `random.Random` and choose the highest draw. Arms are the active version and, while the active version has fewer than `skill_trial_attempts` (10) attempts, the previous version, so a new version is measured against the old one and still gets tried. Return nothing when no skill passes the floor.
+  3. Context: the index for the top `skill_index_max` (50) live skills by relevance goes into the prompt as stubs only; the chosen skill's body is added for the chosen skill only.
+  4. Record the choice with `record_skill_use` (G5-04) on the turn. Reuse the request embedding the turn already computes for recall; if none exists, one embeddings call (not an LLM call) before the model call, with a timeout that falls back to no skill.
+  5. Owner turns only: for a guest requester no skill body and no index line is added. A skill with `origin_speaker == "guest"` is selectable only because the owner approved it.
+  6. Config: `skill_selection_enabled` (False, `AURA_SKILL_SELECTION_ENABLED`), `skill_relevance_floor`, `skill_candidates_max`, `skill_trial_attempts`, `skill_index_max`.
+- **Tests (T11 and selection):** a candidate created by `propose_skill` with `source_task` has that task id in `examples`, and its body is absent from the assembled prompt until it is approved and chosen; with 50 skills the default prompt holds 50 one-liners and no body; a seeded sampler picks a high-success skill most of the time over 1000 draws and picks a fresh version some of the time; below the floor returns none; unapproved and rejected versions are never selected; a guest turn gets no skill text; flag off leaves the prompt byte-identical (ablation); no LLM call occurs.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** put a body in context except for the chosen skill. Do not call the model to rank skills. Do not change `select_tools`.
+- **Known pitfalls:** pass the random generator in; never call the global `random`. Prompt assembly tests may compare exact strings; run them with the flag off to confirm they are unchanged.
+
+---
+
+**G6-01 Skill distillation in dreaming**
+- **PRD:** agency 6.2 "Distilled", 7 step 4, test T11
+- **Tier:** frontier
+- **Depends on:** G5-02, G5-04, G5-05
+- **Files:** new `src/aura/engines/learning/skill_distill.py`, `src/aura/engines/dreaming/engine.py` (a new phase in `enter_rem_sleep`), `src/aura/executor/task_queue.py` (read how task records and steps are stored), `src/aura/config.py`, new `tests/unit/test_skill_distill.py`
+- **Exists today:** delegated tasks are stored with steps and a final status (`delegation._finalize_task`), and `_write_delegation_memory` writes an episode and fact. `DreamingEngine.enter_rem_sleep` runs phases each gated by flags and its own try/except; the engine has an LLM through `set_dependencies`. Nothing reads finished tasks to learn a procedure.
+- **Change:**
+  1. `find_distillable_tasks(db, since)`: tasks with status complete, at least `skill_distill_min_steps` (3, `AURA_SKILL_DISTILL_MIN_STEPS`) steps, review passed, requested by the owner (not a guest), not already distilled (a `skill_distill_log` table with `task_id`, or an `option<datetime>` `distilled_at` on the task). "Nothing similar exists" is decided by `propose_skill`, which merges near matches into a new version.
+  2. `draft_skill(llm, task)`: one call to the model the dreaming engine already uses (read how it reaches the LLM), from the task brief and the step titles (not raw tool output; pass text through the existing log sanitiser), returning JSON `{name, when_to_use, tags, body, tools, pitfalls}`. Invalid JSON, an empty body or a body over `skill_body_max_chars` (6000, `AURA_SKILL_BODY_MAX_CHARS`) is dropped and logged.
+  3. A new dreaming phase `_distill_skills` after the themes phase, gated on `skills_v2_enabled` and `skill_distill_enabled` (False, `AURA_SKILL_DISTILL_ENABLED`), at most `skill_distill_max_per_cycle` (2) tasks per cycle, in its own try/except. Each draft goes to `propose_skill(source="distilled", source_task=<task id>)`, so it becomes an unapproved candidate (or a new version of a near match) with the approval decision from G5-02. Nothing is live.
+  4. No model call on the chat hot path; this phase is the only place the draft call happens.
+- **Tests (T11 end to end):** a planted successful delegated task produces exactly one candidate with `source_task` set and `examples` containing the task id, the body absent from the default prompt, and one pending decision; a second cycle does not distil the same task again; a guest-requested task is skipped; a near-duplicate draft becomes version 2 of the existing skill (T12 through this path); invalid model output creates nothing; flag off makes no model call (ablation); the per-cycle cap holds. Fake LLM returning canned JSON.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** activate anything. Do not read raw file contents or tool output into the prompt. Do not call the model outside the dreaming phase.
+- **Known pitfalls:** a failing phase must not stop later dreaming phases (copy the try/except pattern). Use `FakeClock` for the `since` window. The fake LLM must fail the test if called with the flag off.
+- **Guest and privacy:** only owner-requested tasks are distilled; a guest conversation can never become a skill through this path.
+
+---
+
+**G6-02 Taught and imported skills**
+- **PRD:** agency 6.2 "Taught" and "Imported"
+- **Tier:** bulk
+- **Depends on:** G5-02, G5-05
+- **Files:** `src/aura/engines/learning/engine.py` (`_process_direct_instruction` and the fast lane; leave `_check_pattern_extraction` routing alone), `src/aura/engines/learning/skill_proposals.py`, `src/aura/api/routes/skills.py`, `src/aura/config.py`, new `tests/unit/test_skill_taught_imported.py`
+- **Exists today:** the fast lane queues experiences whose `task_type == "instruction"` or `metadata.intent == "teaching"` for `_process_direct_instruction`, which today creates insights and tool skill nodes. No import path exists.
+- **Change:**
+  1. Taught: when the fast lane fires for an owner turn, `skills_v2_enabled` and `skill_taught_enabled` (False, `AURA_SKILL_TAUGHT_ENABLED`) are on, and the instruction describes a procedure (a list, or at least two sentences; a plain preference stays an insight), build the draft from the owner's text with no new model call (reuse what instruction processing already produced; otherwise the owner's words are the body and the first sentence is `when_to_use`). `propose_skill(source="taught", origin_speaker="owner")` creates version 1 with `approved_at` set at once, state `trusted`, `approved_by="owner-taught"` (PRD: taught is trusted). A near match becomes a new version, also pre-approved because the owner wrote it.
+  2. A teaching turn from a guest is proposed with `origin_speaker="guest"` as an unapproved candidate and a decision, as in G5-02, never as trusted.
+  3. Imported: `POST /skills/import` `{name?, text}` accepts a skill file the owner provides (markdown with an optional front matter of `name`, `when_to_use`, `tags`). Parsed without a model, limited to `skill_body_max_chars`, and sent through `propose_skill(source="imported")` as an unapproved candidate with a decision. A workspace scan is not part of this card.
+- **Tests:** an owner teaching creates a trusted live v1; the same teaching again makes v2, not a second skill; a guest teaching makes an inert candidate and a decision; a plain preference makes no skill; an import creates an inert candidate and one decision; oversize and malformed imports are refused; flag off leaves the fast lane exactly as today (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** let `trusted` be set from any non-owner path. Do not alter trigger phrase generation (W2-38).
+- **Known pitfalls:** how `speaker` reaches the learning engine is not obvious; read the `log_experience` call and pass the speaker through `Experience.metadata` rather than inferring it from `user_id`.
+
+---
+
+**G6-03 Correction: new versions from failures and owner corrections**
+- **PRD:** agency 6.2 "Corrected", 7 step 4 ("Reflection with consequences") and step 5 ("Lessons are scoped")
+- **Tier:** frontier
+- **Depends on:** G5-03, G5-04, G6-01
+- **Files:** new `src/aura/engines/learning/skill_correct.py`, `src/aura/engines/dreaming/engine.py` (a phase after distillation), `src/aura/config.py`, new `tests/unit/test_skill_correction.py`
+- **Exists today:** G5-04 counts negative outcomes per version and records each `skill_use` with its turn or task. The dreaming engine hosts background reflection-style work; nothing yet turns failures into skill proposals. Owner corrections arrive as the negative signal from G5-03.
+- **Change:**
+  1. `find_correction_candidates(db, since)`: counted owner `skill_use` rows with outcome `negative`, grouped by (skill, version); a candidate needs at least `skill_correct_min_negatives` (2, `AURA_SKILL_CORRECT_MIN_NEGATIVES`) negatives since the last correction, or one explicit owner correction message.
+  2. `draft_lesson(llm, skill_version, evidence)`: one background model call from the skill's body and the evidence (the failed task's step titles, or the owner's correcting message), returning one lesson sentence for the pitfalls list. The body is not edited; only pitfalls grow, capped at `skill_pitfalls_max` (10, `AURA_SKILL_PITFALLS_MAX`, oldest dropped).
+  3. The result goes to `propose_skill(source="corrected")` as a new version of the same skill with extended `pitfalls` and a `change_note` quoting the evidence ids, unapproved, with the G5-02 decision. The active version keeps serving until the owner approves.
+  4. Scoping (PRD 7.5): a lesson from a task in workspace W is stored as `workspace:<W>: ...` in the pitfalls; it becomes an unscoped line only when the same lesson (embedding similarity at `skill_dup_similarity`) recurs from a second workspace.
+  5. Phase gated on `skills_v2_enabled` and `skill_correction_enabled` (False, `AURA_SKILL_CORRECTION_ENABLED`), cap `skill_correct_max_per_cycle` (2). Guest evidence is excluded by construction (G5-04 never counts it).
+- **Tests:** two counted negatives produce one corrected version with a longer pitfalls list, an unchanged body and a pending decision; a single negative without an explicit correction produces nothing; a lesson from workspace A stays scoped and becomes unscoped only after workspace B repeats it; the cap holds; pitfalls never exceed the cap; flag off makes no model call (ablation). Fake LLM only.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** apply a corrected version without approval. Do not rewrite the body. Do not run on the reply path.
+- **Known pitfalls:** the same negatives must not feed a second correction; keep a `corrected_at` watermark on the version or a log row.
+
+---
+
+**G6-04 Trial comparison, automatic rollback, promotion and retirement (T13)**
+- **PRD:** agency 6.4, test T13
+- **Tier:** frontier
+- **Depends on:** G5-04, G5-05, G6-03
+- **Files:** new `src/aura/engines/learning/skill_lifecycle.py`, `src/aura/engines/learning/skill_store.py`, `src/aura/engines/dreaming/engine.py`, `src/aura/api/routes/skills.py`, `src/aura/config.py`, new `tests/unit/test_skill_lifecycle.py`
+- **Exists today:** G5-04 keeps `attempts` and `successes` per version and `previous_version` on the doc; G5-02 `approve` moves the old active version to `previous_version`; G5-05 samples between the two while the new one is on trial. Owner-facing items go through `DecisionService`; dreaming writes a report at the end of each cycle.
+- **Change:**
+  1. `evaluate_skill(doc)`, pure over the two versions' counts: roll back when the active version has at least `skill_rollback_min_attempts` (8, `AURA_SKILL_ROLLBACK_MIN_ATTEMPTS`) attempts, the previous version has at least as many, and the active mean success rate is below the previous mean by more than `skill_rollback_margin` (0.15, `AURA_SKILL_ROLLBACK_MARGIN`). "Clearly below" is that margin on the Beta means, not a hypothesis test. Practice results (G8) are excluded.
+  2. `rollback(doc)`: set `active_version` back to `previous_version`, set `previous_version` to none, set `flagged = "rolled back from v<n>: <rates>"`, mark the bad version `rejected`, and create an informational `needs_decision` item (`action="skill_rolled_back"`; answering only acknowledges). The bad version stays stored; a later correction creates a new number. No new approval is needed because the restored version was approved earlier (say so in the docstring).
+  3. Promotion: a `candidate` with `approved_at` becomes `trusted` once its active version has `skill_promote_successes` (5, `AURA_SKILL_PROMOTE_SUCCESSES`) successes.
+  4. Retirement: a skill with no `last_used_at` for `skill_retire_days` (90, `AURA_SKILL_RETIRE_DAYS`) days that is also superseded (a newer doc covers the same `when_to_use` by the G5-02 similarity test) becomes `retired`: never deleted, never offered, still listed by `GET /skills?state=retired`.
+  5. A dreaming phase `_skill_lifecycle` runs evaluation, promotion and retirement for all docs in its own try/except; the same check runs for the affected doc after each `apply_outcome` (cheap, no model). Gated on `skills_v2_enabled` and `skill_rollback_enabled` (False, `AURA_SKILL_ROLLBACK_ENABLED`).
+  6. `GET /skills` shows `flagged`, the Beta mean and lower bound per version and the rollback reason.
+- **Tests (T13):** a new version with 8 attempts at 25 percent against a previous at 80 percent rolls back, `active_version` returns to the previous, the doc is flagged and one decision item exists; 70 percent against 75 percent does not; fewer than the minimum attempts does not; the rolled back version is never selected (G5-05 sampler); a candidate with five successes becomes trusted; a stale superseded skill is retired and not deleted; flag off changes nothing (ablation). Use a `FakeClock` moved past the retirement window.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** delete any version or doc. Do not roll back on practice results. Do not roll back to a version that was never approved.
+- **Known pitfalls:** rollback and a concurrent approval can race; do the state change in one parameterised transaction and re-read the doc inside it. Monkeypatch the numbers through `settings`, not by editing constants.
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
