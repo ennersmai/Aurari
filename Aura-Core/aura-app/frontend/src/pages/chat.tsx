@@ -29,6 +29,8 @@ import {
 } from '@mui/material';
 import ChatInput from '@/components/chat/ChatInput';
 import ChatMessage from '@/components/chat/ChatMessage';
+import { ProgressGroup, groupTaskReports } from '@/components/chat/TaskReports';
+import { createTaskReportPoller } from '@/services/taskReportService';
 import { TierChip } from '@/components/chat/TurnMarkers';
 import { useActiveTier } from '@/hooks/useActiveTier';
 import NeuralSidebar from '@/components/neural/NeuralSidebar';
@@ -1240,6 +1242,29 @@ export default function ChatPage() {
       chatMessageUnsubscribe();
     };
   }, [dispatch, conversationId, messages]);
+
+  // P2-11: task graph reports. There is no server push to the chat, so poll
+  // GET /chat/task-reports every 5 s while a graph of this conversation runs. A poll
+  // runs when the conversation opens and after each turn (a graph may have started
+  // in it); it stops by itself when the server says nothing is running.
+  const taskReportPollerRef = useRef<ReturnType<typeof createTaskReportPoller> | null>(null);
+  useEffect(() => {
+    if (!conversationId) return;
+    const poller = createTaskReportPoller({
+      conversationId,
+      onMessages: (reports) => reports.forEach((r) => dispatch(addMessage(r))),
+    });
+    taskReportPollerRef.current = poller;
+    poller.start();
+    return () => {
+      poller.stop();
+      taskReportPollerRef.current = null;
+    };
+  }, [conversationId, dispatch]);
+  const messageCount = Array.isArray(messages) ? messages.length : 0;
+  useEffect(() => {
+    taskReportPollerRef.current?.start();
+  }, [messageCount]);
 
   // Subscribe to avatar_state socket events to drive the cognitive layer
   useEffect(() => {
@@ -2504,13 +2529,17 @@ export default function ChatPage() {
                 ) : (
                   // Messages list (all providers)
                   <>
-                      {messages.map((message, index) => (
-                        <ChatMessage
-                          key={`${message.id}-${index}`}
-                          message={message}
-                          isLastMessage={index === messages.length - 1}
-                          onViewChart={(config) => setChartDialogConfig(config)}
-                        />
+                      {groupTaskReports(messages as any[]).map((item, index) => (
+                        item.type === 'progress' ? (
+                          <ProgressGroup key={`progress-${item.messages[0].id}`} messages={item.messages} />
+                        ) : (
+                          <ChatMessage
+                            key={`${item.message.id}-${index}`}
+                            message={item.message as any}
+                            isLastMessage={item.message === messages[messages.length - 1]}
+                            onViewChart={(config) => setChartDialogConfig(config)}
+                          />
+                        )
                       ))}
                       
                       {streamingResponse && (

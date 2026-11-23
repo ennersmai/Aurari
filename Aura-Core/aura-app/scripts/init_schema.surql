@@ -118,6 +118,7 @@ DEFINE FIELD conversation_id ON message TYPE string;
 DEFINE FIELD content ON message TYPE string;
 DEFINE FIELD role ON message TYPE string DEFAULT "user";
 DEFINE FIELD timestamp ON message TYPE string;
+DEFINE FIELD meta ON message TYPE option<object> FLEXIBLE;
 DEFINE INDEX message_conversation_idx ON message FIELDS conversation_id;
 
 -- ============================================================================

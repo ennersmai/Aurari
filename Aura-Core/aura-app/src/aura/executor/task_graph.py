@@ -73,6 +73,7 @@ class TaskGraphStore:
         budget_usd: float,
         budget_minutes: int,
         created_by_turn: str | None = None,
+        conversation_id: str | None = None,
     ) -> TaskGraph:
         """Store a planned graph and its nodes; returns the graph with its id."""
         now = get_clock().now()
@@ -88,6 +89,8 @@ class TaskGraphStore:
                     "budget_minutes": int(budget_minutes),
                     "spent_usd": 0.0,
                     "created_by_turn": created_by_turn,
+                    "conversation_id": conversation_id,
+                    "final_reported_at": None,
                     "created_at": now,
                     "updated_at": now,
                 },
@@ -175,6 +178,16 @@ class TaskGraphStore:
             sets.append("spent_usd = $spent")
             params["spent"] = float(spent_usd)
         await self.db.query(f"UPDATE $rid SET {', '.join(sets)}", params)
+
+    async def claim_final_report(self, graph_id: str) -> bool:
+        """Atomically mark the final summary as reported; False when it already was (P2-11)."""
+        rows = extract_rows(
+            await self.db.query(
+                "UPDATE $rid SET final_reported_at = $now WHERE final_reported_at = NONE RETURN AFTER",
+                {"rid": _rid(graph_id), "now": get_clock().now()},
+            )
+        )
+        return bool(rows)
 
     async def list_graphs(self, status: GraphStatus) -> list[TaskGraph]:
         rows = extract_rows(

@@ -147,6 +147,7 @@ class ToolExecutor:
         approved: bool = False,
         venue: str = "app",
         session: Any = None,
+        conversation_id: str | None = None,
     ) -> Dict[str, Any]:
         """
         Execute a single tool call.
@@ -208,6 +209,9 @@ class ToolExecutor:
             # tool gets it: other tools, MCP included, never see the object.
             if session is not None and tool_name == "delegate_work":
                 arguments["_session"] = session
+            # plan_task reports into this conversation (P2-11); same reserved-key rule.
+            if conversation_id and tool_name == "plan_task":
+                arguments["_conversation_id"] = conversation_id
 
         
         if not tool_name:
@@ -923,6 +927,7 @@ class ToolExecutor:
         requester_role: Literal["owner", "trusted", "guest"],
         venue: str = "app",
         session: Any = None,
+        conversation_id: str | None = None,
     ) -> str:
         """
         Execute multiple tool calls and format results for L3 feedback.
@@ -944,7 +949,8 @@ class ToolExecutor:
         for tool_call in tool_calls:
             self.logger.info(f"🔧 Executing tool call: {tool_call.get('tool', 'unknown')} with args: {tool_call.get('arguments', {})}")
             result = await self.execute_tool_call(
-                tool_call, requester_role=requester_role, venue=venue, session=session
+                tool_call, requester_role=requester_role, venue=venue, session=session,
+                **({"conversation_id": conversation_id} if conversation_id else {}),
             )
             self.logger.info(f"🔧 Tool execution result - success: {result.get('success')}, result length: {len(str(result.get('result', '')))}, error: {result.get('error')}")
             results.append(result)

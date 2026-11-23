@@ -81,9 +81,11 @@ class CodeNodeHooks:
     """What the scheduler gives a code node."""
 
     set_status: Callable[[str, str], Awaitable[None]]  # (node status, report)
-    escalate: Callable[[str], Awaitable[None]]
+    escalate: Callable[..., Awaitable[None]]  # (text, decision_id=None)
     wait_started: Callable[[], None]  # the merge wait starts (graph time budget pauses)
     wait_ended: Callable[[], None]
+    # (decision id, text): an owner decision is waiting; reported to the chat (P2-11).
+    decision_pending: Callable[[str, str], Awaitable[None]] | None = None
 
 
 @dataclass
@@ -439,10 +441,15 @@ class CodeNodeRunner:
         elif decision == "deny":
             await self.client.answer_permission(sid, request_id, False)
         else:
-            await self.decisions.create(
+            record = await self.decisions.create(
                 kind="permission", session_id=sid, request_id=request_id, action=action,
                 resources=resources, risk=risk, workspace=self.ws_name,
                 message=data.get("message", ""), task_id=self.graph.id)
+            pid = (record or {}).get("id") if isinstance(record, dict) else None
+            if pid:
+                await self._decision_pending(
+                    str(pid), f"Permission needed for {action} ({risk}): "
+                              f"{data.get('message') or ', '.join(resources) or 'no details'}")
 
     async def _child(self, agent: str, brief: str) -> str:
         sid = await self.client.create_session(
@@ -629,6 +636,9 @@ class CodeNodeRunner:
             decision_id = (record or {}).get("id")
             if decision_id is None:
                 raise CodeNodeError("the merge decision could not be created")
+            await self._decision_pending(
+                str(decision_id), f"Ready to merge branch {self.branch} into {self.main_branch} "
+                                  f"({stats}). The review passed. Approve to merge.")
             while True:
                 await asyncio.sleep(settings.task_merge_poll_seconds)
                 current = await self.decisions.get(decision_id)
@@ -640,7 +650,8 @@ class CodeNodeRunner:
                     if blocker:
                         await self.hooks.escalate(
                             f"Merge of {self.branch} approved but not done: {blocker}. "
-                            "The decision is pending again; approve it once that is fixed.")
+                            "The decision is pending again; approve it once that is fixed.",
+                            str(decision_id))
                         await self.decisions.reopen(
                             decision_id, f"{blocker}. Approve again once fixed. Merge branch "
                                          f"{self.branch} into {self.main_branch} ({stats}).")
@@ -651,6 +662,15 @@ class CodeNodeRunner:
                 raise CodeNodeError(reason)
         finally:
             self.hooks.wait_ended()
+
+    async def _decision_pending(self, decision_id: str, text: str) -> None:
+        """Tell the scheduler an owner decision waits; a report failure never stops the node."""
+        if self.hooks.decision_pending is None:
+            return
+        try:
+            await self.hooks.decision_pending(decision_id, text)
+        except Exception as exc:
+            logger.warning("could not report decision %s: %s", decision_id, exc)
 
     async def _merge_blocker(self) -> str:
         """Why the approved merge cannot run now, or ""."""

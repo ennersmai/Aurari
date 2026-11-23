@@ -120,6 +120,14 @@ def _session_kwargs(session: Any) -> dict:
     return {} if session is None else {"session": session}
 
 
+def _executor_kwargs(session: Any, conversation_id: str | None) -> dict:
+    """Session and conversation id for the executor, only when present (P2-11)."""
+    kwargs = _session_kwargs(session)
+    if conversation_id:
+        kwargs["conversation_id"] = conversation_id
+    return kwargs
+
+
 async def _run_budgeted(
     *,
     user_input: str,
@@ -129,6 +137,7 @@ async def _run_budgeted(
     requester_role: str,
     venue: str,
     session: Any,
+    conversation_id: str | None,
     breaker: int,
     seed_results: str | None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None,
@@ -207,7 +216,7 @@ async def _run_budgeted(
             break
 
         results = await tool_executor.execute_and_feedback(
-            calls, requester_role=requester_role, venue=venue, **_session_kwargs(session)
+            calls, requester_role=requester_role, venue=venue, **_executor_kwargs(session, conversation_id)
         )
         if not results:
             final_text = strip_tool_calls(round_text)
@@ -286,6 +295,7 @@ async def run_tool_loop(
     requester_role: str,
     venue: str = "app",
     session: Any = None,
+    conversation_id: str | None = None,
     max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
     seed_results: str | None = None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None,
@@ -335,6 +345,7 @@ async def run_tool_loop(
             requester_role=requester_role,
             venue=venue,
             session=session,
+            conversation_id=conversation_id,
             breaker=max_rounds if max_rounds is not None else settings.tool_loop_safety_rounds,
             seed_results=seed_results,
             on_tool_result=on_tool_result,
@@ -381,7 +392,7 @@ async def run_tool_loop(
             break
 
         results = await tool_executor.execute_and_feedback(
-            calls, requester_role=requester_role, venue=venue, **_session_kwargs(session)
+            calls, requester_role=requester_role, venue=venue, **_executor_kwargs(session, conversation_id)
         )
         if not results:
             final_text = strip_tool_calls(round_text)

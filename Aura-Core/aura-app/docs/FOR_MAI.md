@@ -57,6 +57,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] P2-10 live checks, also in docs/opencode/subagents.md "As built": whether `aura-build` must be `mode: all` to run as a child session; whether child reports wake the lead before its final report; and the timing gap where a very fast session can finish before Aura opens its event stream.
 - [ ] Run the L1 route fixture set against each stack's L1 model (command in docs/metrics/l1_routes.md).
 - [ ] Don't resume old Aura sessions in the OpenCode app while cards run: on 2026-11-20 an old W2-30 session ran in the same folder as W3-05 (it only added a log note).
+- [ ] Mission Control layout ready for approval: docs/ui/mission_control.md (P2-14 step A). Step B (the build) waits for your approval.
 
 ## 4. Sluice (separate repo)
 

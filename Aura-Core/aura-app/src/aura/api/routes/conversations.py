@@ -242,6 +242,7 @@ class MessageResponse(BaseModel):
     content: str
     role: str
     timestamp: str
+    meta: dict[str, Any] | None = None  # task graph reports (P2-11)
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageResponse])
@@ -265,6 +266,7 @@ async def get_conversation_messages(conversation_id: str) -> list[dict[str, Any]
                 "content": msg.get("content", ""),
                 "role": msg.get("role", "user"),
                 "timestamp": msg.get("timestamp", ""),
+                "meta": msg.get("meta"),
             }
         )
 

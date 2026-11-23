@@ -52,6 +52,8 @@ export interface ChatMessage {
   conversationId: string;
   /** P2-42: set on assistant messages from a live turn. */
   turnMeta?: { deep_reasoning: boolean; tier: string; route: string | null };
+  /** P2-11: set on task graph reports (plan, progress, final, escalation). */
+  meta?: { task_graph: string; kind: string; decision_id?: string } | null;
 }
 
 export interface EmotionalState {

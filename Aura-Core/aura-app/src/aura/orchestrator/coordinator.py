@@ -83,6 +83,7 @@ class TurnContext:
     speaker: str = ""
     venue: str = "app"
     session: Any = None  # SessionContext of the turn's session; None for main (G4-04a)
+    conversation_id: str | None = None  # reaches plan_task as _conversation_id (P2-11)
     tier_profile: TierProfile | None = None  # set only with tier_profiles_enabled
     route: str | None = None  # L1 route (P2-06); None with l1_routes_enabled off
     stakes: float | None = None  # L1 stakes 0..1 (P2-06)
@@ -1535,6 +1536,7 @@ Constraints:
             requester_role=requester_role,
             venue=ctx.venue,
             session=ctx.session,
+            conversation_id=ctx.conversation_id,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
@@ -1665,6 +1667,7 @@ Constraints:
             requester_role=requester_role,
             venue=ctx.venue,
             session=ctx.session,
+            conversation_id=ctx.conversation_id,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
             turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
@@ -1860,6 +1863,7 @@ Constraints:
         ctx.venue = venue
         # The session scope travels like the venue (G4-04a); None for main.
         ctx.session = turn_session
+        ctx.conversation_id = conversation_id
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
             tier_args = (

@@ -7,6 +7,7 @@ import PersonIcon from '@mui/icons-material/Person';
 import SpiralAvatar from '@/components/SpiralAvatar';
 import type { ChartJsConfig } from './ChartRenderer';
 import { DeepReasoningMarker } from './TurnMarkers';
+import { TaskGraphTag, EscalationControls } from './TaskReports';
 
 interface ChatMessageProps {
   message: ChatMessageType;
@@ -81,6 +82,7 @@ export default function ChatMessage({ message, isLastMessage = false, onViewChar
             {formattedTime}
           </Typography>
           {!isUser && <DeepReasoningMarker meta={message.turnMeta} />}
+          {!isUser && <TaskGraphTag meta={message.meta} />}
         </Box>
         
         <Paper
@@ -126,6 +128,9 @@ export default function ChatMessage({ message, isLastMessage = false, onViewChar
           }}
         >
           <MarkdownRenderer content={content} onViewChart={onViewChart} />
+          {message.meta?.kind === 'escalation' && message.meta.decision_id && (
+            <EscalationControls decisionId={message.meta.decision_id} />
+          )}
         </Paper>
         
         {isLastMessage && isUser && (

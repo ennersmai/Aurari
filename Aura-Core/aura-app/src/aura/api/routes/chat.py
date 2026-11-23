@@ -371,6 +371,40 @@ async def stream_message(request: ChatRequest) -> StreamingResponse:
     )
 
 
+@router.get("/task-reports")
+async def get_task_reports(conversation_id: str, since: str | None = None) -> dict[str, Any]:
+    """Task graph report messages of a conversation, oldest first (P2-11).
+
+    There is no server push channel to the chat, so the page polls this while
+    ``running`` is true. ``since`` is an exclusive ISO timestamp.
+    """
+    db = get_db_client()
+    sql = "SELECT * FROM message WHERE conversation_id = $conv AND meta.task_graph != NONE"
+    params: dict[str, Any] = {"conv": conversation_id}
+    if since:
+        sql += " AND timestamp > $since"
+        params["since"] = since
+    sql += " ORDER BY timestamp ASC"
+    rows = await db.query(sql, params)
+    messages = [
+        {
+            "id": str(m.get("id", "")),
+            "conversationId": conversation_id,
+            "content": m.get("content", ""),
+            "role": m.get("role", "assistant"),
+            "timestamp": m.get("timestamp", ""),
+            "meta": m.get("meta"),
+        }
+        for m in rows if isinstance(m, dict)
+    ]
+    graphs = await db.query(
+        "SELECT id FROM task_graph WHERE conversation_id = $conv AND status IN $live",
+        {"conv": conversation_id, "live": ["planned", "running"]},
+    )
+    running = any(isinstance(g, dict) for g in graphs)
+    return {"messages": messages, "running": running}
+
+
 @router.get("/debug/last_context/{user_id}")
 async def get_last_system_context(user_id: str) -> dict[str, Any]:
     """

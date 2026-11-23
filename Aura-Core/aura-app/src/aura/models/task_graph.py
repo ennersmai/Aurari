@@ -68,6 +68,8 @@ class TaskGraph(BaseModel):
     budget_minutes: int = Field(default=0, ge=0)
     spent_usd: float = Field(default=0.0, ge=0.0)
     created_by_turn: str | None = None
+    conversation_id: str | None = None  # where this graph reports (P2-11)
+    final_reported_at: datetime | None = None  # guard: the final summary is posted once
     created_at: datetime | None = None
     updated_at: datetime | None = None
 

@@ -256,10 +256,12 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     created_by_turn = None
     goal = arguments["goal"].strip()
     store = get_task_graph_store()
-    graph = await store.create_graph(goal, nodes, budget_usd, budget_minutes, created_by_turn)
+    # The conversation to report into: injected by the executor like _venue (P2-11).
+    conversation_id = arguments.get("_conversation_id")
+    extra = {"conversation_id": conversation_id} if isinstance(conversation_id, str) and conversation_id else {}
+    graph = await store.create_graph(goal, nodes, budget_usd, budget_minutes, created_by_turn, **extra)
 
-    # The "plan" event for chat. There is no conversation id in a tool call, so the
-    # event is a blackboard entry of kind "plan" (P2-11 renders it).
+    # The plan as a blackboard entry (the chat message is posted by the scheduler, P2-11).
     import json
 
     plan_event = {

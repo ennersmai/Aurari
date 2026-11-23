@@ -152,6 +152,7 @@ class TaskGraphScheduler:
         self._tasks: dict[str, asyncio.Task] = {}
         # Merge waits per graph (P2-10): {"since": datetime | None, "total": seconds}.
         self._merge_wait: dict[str, dict[str, Any]] = {}
+        self._reporter_obj: Any = None
 
     # -- wiring -----------------------------------------------------------------
 
@@ -165,6 +166,15 @@ class TaskGraphScheduler:
 
             self._llm = UnifiedLLMClient()
         return self._llm
+
+    @property
+    def reporter(self) -> Any:
+        """Reports into the graph's conversation (P2-11); never raises."""
+        if self._reporter_obj is None:
+            from aura.executor.task_reports import TaskReporter
+
+            self._reporter_obj = TaskReporter(self.store, llm_provider=self._client)
+        return self._reporter_obj
 
     def _decision_service(self) -> Any:
         if self._decisions is None:
@@ -253,6 +263,7 @@ class TaskGraphScheduler:
             logger.error("task graph %s not found", graph_id)
             return
         await store.update_graph(graph_id, status=GraphStatus.RUNNING)
+        await self.reporter.plan(graph_id)  # once per graph (a resume does not repeat it)
 
         started = get_clock().now()
         spent = graph.spent_usd
@@ -385,6 +396,7 @@ class TaskGraphScheduler:
         running.clear()
         await self.store.update_graph(graph_id, status=GraphStatus.OVER_BUDGET, spent_usd=spent)
         logger.warning("task graph %s stopped: over budget (spent $%.4f)", graph_id, spent)
+        await self.reporter.final(graph_id)
 
     async def _finish_node(self, graph_id: str, node: TaskNode, outcome: NodeOutcome) -> None:
         if outcome.ok:
@@ -396,6 +408,7 @@ class TaskGraphScheduler:
             await self.store.update_node_status(
                 graph_id, node.id, NodeStatus.FAILED, report=outcome.report, transcript=outcome.transcript or None)
         node.status = NodeStatus.DONE.value if outcome.ok else NodeStatus.FAILED.value
+        await self.reporter.progress(graph_id, node, outcome.ok, outcome.report)
 
     async def _finalise(self, graph_id: str, spent: float) -> None:
         statuses = [n.status for n in await self.store.list_nodes(graph_id)]
@@ -408,6 +421,7 @@ class TaskGraphScheduler:
             final = GraphStatus.FAILED
         await self.store.update_graph(graph_id, status=final, spent_usd=spent)
         logger.info("task graph %s finished: %s", graph_id, final.value)
+        await self.reporter.final(graph_id)
 
     # -- nodes ------------------------------------------------------------------
 
@@ -438,9 +452,14 @@ class TaskGraphScheduler:
         async def set_status(status: str, report: str) -> None:
             await store.update_node_status(graph.id, node.id, NodeStatus(status), report=report)
 
-        async def escalate(text: str) -> None:
+        async def escalate(text: str, decision_id: str | None = None) -> None:
             logger.warning("task graph %s node %s escalation: %s", graph.id, node.id, text)
             await store.write_blackboard(graph.id, "escalation", text, node_id=node.id)
+            await self.reporter.escalation(graph.id, f"Code node '{node.id}': {text}", decision_id)
+
+        async def decision_pending(decision_id: str, text: str) -> None:
+            """An owner decision (merge or permission) is waiting: tell the chat, with its id."""
+            await escalate(text, decision_id)
 
         def wait_started() -> None:
             wait["since"] = get_clock().now()
@@ -454,7 +473,7 @@ class TaskGraphScheduler:
             graph, node, dep_reports,
             client=self._opencode_client(),
             decisions=self._decision_service(),
-            hooks=code_node.CodeNodeHooks(set_status, escalate, wait_started, wait_ended),
+            hooks=code_node.CodeNodeHooks(set_status, escalate, wait_started, wait_ended, decision_pending),
         )
         out = await runner.run()
         return NodeOutcome(ok=out.ok, report=out.report, transcript=out.transcript, refs=out.refs)

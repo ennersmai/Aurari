@@ -47,6 +47,11 @@ DEFINE FIELD IF NOT EXISTS budget_usd       ON TABLE task_graph TYPE float DEFAU
 DEFINE FIELD IF NOT EXISTS budget_minutes   ON TABLE task_graph TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS spent_usd        ON TABLE task_graph TYPE float DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS created_by_turn  ON TABLE task_graph TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS conversation_id  ON TABLE task_graph TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS final_reported_at ON TABLE task_graph TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS idx_task_graph_conversation ON TABLE task_graph COLUMNS conversation_id;
+-- P2-11: task reports are assistant messages with a meta object.
+DEFINE FIELD IF NOT EXISTS meta ON TABLE message TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS created_at       ON TABLE task_graph TYPE datetime;
 DEFINE FIELD IF NOT EXISTS updated_at       ON TABLE task_graph TYPE datetime;
 
