@@ -2505,3 +2505,30 @@
 - **Note:** the card's blend example "threaded with quiet gladness" cannot come from the rule (quiet gladness is joy low, which gets "with a trace of"). The rule was followed; tests assert what the lexicon produces.
 
 **Supervisor (2026-11-23), FX-01 v2 (= FX-02 in AURA_PHASE2_PLAN.md):** Reviewed the diff; the lexicon was checked against the card in code (27 entries, keys equal to the EmotionVector fields), and the templates and connectors match the card. Full suite: 877 passed, 3 skipped, 1 failed. The failure was `test_recall_themes_embedded.py::test_broad_question_gets_the_theme_line_first`, which passes in isolation both with and without this change, so it is an ordering flake in the full suite and not caused by FX-01. It needs a look. Added the four FX-02 example vectors from the phase 2 plan as exact-string tests.
+
+## P2-01: Tier audit
+- **Status:** DONE
+- **Files changed:** `tests/unit/test_tier_audit.py` (new), `docs/metrics/tier_audit.md` (new). No `src/` changes.
+- **Method:** the stack is set by calling the real `set_inference_config` route function; every layer x stack gets a distinct model name; requests are caught at `httpx.AsyncClient.post` (the call in `llm/provider.py:226`), nothing is sent.
+- **Result:** l1..l5 helpers pass on all three stacks. Memory extraction (`extraction.py:156`), dream themes (`themes.py:125`) and the latent summary (`engine.py:715`) use stack 0 models on stacks 1 and 2, and the cloud fallback map (`unified_provider.py:261`) misses stack 1 and 2 models; those are 8 strict xfails. The `system_state` route reports the active models correctly (the stack 0 lines at 130-134 are `available_stacks[0]`, correct by design). Coordinator traces, settings.tsx chips and the config.py description are recorded in the doc without tests.
+- **Tests:** audit file 22 passed, 8 xfailed; `tests/unit` 755 passed, 2 skipped, 8 xfailed.
+
+---
+
+## W4-14: Relationships on person entities
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/engines/emotion/relationship.py` (new, pure maths: starting values, baseline mapping, impulse scaling, step function).
+  - `src/aura/engines/emotion/engine.py` (`_effective_baseline` builds on the relationship baseline and keeps the mood shift; `appraise` loads the relationship, scales impulses, writes the update; `get_state(person_id)` replaces the E5 stub; helpers `_person_rid`, `_load_relationship`, `_update_relationship`).
+  - `src/aura/config.py` (new block `EMOTION RELATIONSHIPS`, flag off by default), `scripts/schema_v2.surql` (`entity.affection`, `trust`, `familiarity`, `tension` as `option<float>`, `relationship_updated_at` as `option<datetime>`).
+  - `tests/unit/test_emotion_relationship.py` (14 tests), `tests/scenarios/test_emotion_relationship_embedded.py` (4 tests, real schema).
+- **person_id:** the coordinator already sends `person_id=speaker`, the speaker key (`owner`, `discord_<id>`), which is the key `ensure_person` builds `entity:<key>` from, so no call-site change. The engine builds the RecordID `entity:<key>` itself (no second `ensure_person`, no write to resolve it). `emotion_event.person_id` stays the bare key (the prompt cause text reads it).
+- **Queries:** one read `SELECT affection, trust, familiarity, tension FROM $rid` and one `UPDATE $rid SET ... relationship_updated_at = $at` per event, all parameters, RecordID, time from the clock. NONE fields read as starting values (owner's for key `owner`).
+- **Decisions:** only `kind == "message"` events are used, because tool system events put the tool name in `person_id`. No write when the entity does not exist yet (an UPDATE would create a nameless record that fails the schema); the first turn of a brand new guest therefore does not count, as the episode (and entity) is written after the appraisal. The table's impulses are all magnitudes, so "positive" and "negative" impulses mean impulses on the positive and negative valence dimensions. Scales: love 0.1 and trust 0.2/0.7 so the owner's start gives the global baselines (love 0.05, trust 0.2). Deviation records still measure against the configured baseline.
+- **Privacy:** no prompt text added; relationship values are not exposed to any prompt.
+- **Guard checks:** with the stranger cap disabled 2 tests fail; with the person_id/kind guard removed 3 tests fail.
+- **Tests:** unit suite 769 passed, 2 skipped, 8 xfailed.
+
+**Supervisor (2026-11-23), P2-01:** Reviewed: the stack is switched through the real route function, each layer x stack gets a distinct model name, the xfails are strict, and every caller must make a request. Added a section to `tier_audit.md` that the worker missed: `LLMLayers` caches `l1_model..l5_model` at init, and `school.py:158`, `goal/engine.py:405`, `learning/engine.py:816` and `agent_loop.py:403` read that cache, so they ignore stack switches. P2-02 must cover them.
+
+**Supervisor (2026-11-23), W4-14:** Reviewed the engine and maths diffs against the card; no changes. Follow-up: the relationship read and the UPDATE are not atomic, which matters once P2-05 runs appraisal in parallel. Also, a brand-new guest's first message is not counted, because the entity is created after appraisal. Full suite with P2-01: 922 passed, 3 skipped, 8 xfailed.

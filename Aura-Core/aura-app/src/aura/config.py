@@ -1073,6 +1073,51 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # EMOTION RELATIONSHIPS (W4-14, Emotion PRD 6.3)
+    # =========================================================================
+    emotion_relationships_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_EMOTION_RELATIONSHIPS_ENABLED",
+        description="Keep a relationship (affection, trust, familiarity, tension) on each person's entity. The speaker's relationship sets the resting point of love and trust, scales the message's impulses and caps a stranger's hostility. Off by default.",
+    )
+    # Starting values: a person never seen gets the stranger values, the owner
+    # (entity key "owner") gets the owner values for affection, trust and
+    # familiarity (tension starts at the stranger value).
+    emotion_relationship_stranger_affection: float = Field(default=0.0, ge=0.0, le=1.0)
+    emotion_relationship_stranger_trust: float = Field(default=0.3, ge=0.0, le=1.0)
+    emotion_relationship_stranger_familiarity: float = Field(default=0.0, ge=0.0, le=1.0)
+    emotion_relationship_stranger_tension: float = Field(default=0.0, ge=0.0, le=1.0)
+    emotion_relationship_owner_affection: float = Field(default=0.5, ge=0.0, le=1.0)
+    emotion_relationship_owner_trust: float = Field(default=0.7, ge=0.0, le=1.0)
+    emotion_relationship_owner_familiarity: float = Field(default=0.6, ge=0.0, le=1.0)
+    # Mapping into the dimension's range: love baseline = affection * love_scale,
+    # trust baseline = trust * trust_scale. The scales are chosen so the owner's
+    # starting values give the configured global baselines (love 0.05 = 0.5 * 0.1,
+    # trust 0.2 = 0.7 * 0.2857), so turning the flag on barely moves the owner.
+    emotion_relationship_love_scale: float = Field(default=0.1, ge=0.0)
+    emotion_relationship_trust_scale: float = Field(default=0.2 / 0.7, ge=0.0)
+    emotion_relationship_warmth_gain: float = Field(
+        default=0.5, ge=0.0,
+        description="Positive-warmth impulses are multiplied by 1 + gain * (affection + familiarity) / 2.",
+    )
+    emotion_stranger_familiarity: float = Field(
+        default=0.2, ge=0.0, le=1.0,
+        description="A person with familiarity below this is a stranger for the hostility cap.",
+    )
+    emotion_stranger_hostility_cap: float = Field(
+        default=0.3, ge=0.0,
+        description="Cap on each negative-dimension impulse per event from a stranger.",
+    )
+    # Step sizes per event (each field is clamped to [0, 1]; no time decay).
+    emotion_relationship_familiarity_step: float = Field(default=0.03, ge=0.0)
+    emotion_relationship_affection_gain: float = Field(default=0.02, ge=0.0)
+    emotion_relationship_affection_loss: float = Field(default=0.005, ge=0.0)
+    emotion_relationship_tension_rise: float = Field(default=0.03, ge=0.0)
+    emotion_relationship_tension_ease: float = Field(default=0.02, ge=0.0)
+    emotion_relationship_trust_gain: float = Field(default=0.02, ge=0.0)
+    emotion_relationship_trust_loss: float = Field(default=0.03, ge=0.0)
+
+    # =========================================================================
     # SYSTEM STATE MACHINE (Sleep/Wake Cycle)
     # =========================================================================
     system_idle_after_minutes: int = Field(

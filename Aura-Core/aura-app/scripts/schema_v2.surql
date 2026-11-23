@@ -23,6 +23,12 @@ DEFINE FIELD IF NOT EXISTS summary ON entity TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS embedding ON entity TYPE option<array<float, 768>>;
 DEFINE FIELD IF NOT EXISTS created_at ON entity TYPE datetime;
 DEFINE FIELD IF NOT EXISTS summary_updated_at ON entity TYPE option<datetime>;
+-- Relationship (W4-14): NONE reads as the configured starting values.
+DEFINE FIELD IF NOT EXISTS affection ON entity TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS trust ON entity TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS familiarity ON entity TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS tension ON entity TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS relationship_updated_at ON entity TYPE option<datetime>;
 
 -- One conversational turn or event, verbatim. The evidence layer.
 DEFINE TABLE IF NOT EXISTS episode SCHEMAFULL;

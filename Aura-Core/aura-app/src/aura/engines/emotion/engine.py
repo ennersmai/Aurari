@@ -12,8 +12,10 @@ from typing import Any, TYPE_CHECKING
 from aura.config import settings
 from aura.clock import get_clock
 from aura.db.client import get_db_client
+from aura.db.query_utils import to_record_id
 from aura.engines.base import BaseEngine
 from aura.engines.emotion import mood as mood_math
+from aura.engines.emotion import relationship as rel_math
 from aura.engines.emotion.physics import EmotionPhysics
 from aura.engines.emotion.translator import EmotionTranslator
 from aura.models.emotion import (
@@ -70,6 +72,10 @@ class EmotionEngine(BaseEngine):
         # Mood (W4-13): only touched while settings.emotion_mood_enabled
         self._mood: dict[str, float] = {axis: 0.0 for axis in mood_math.AXES}
         self._mood_at = get_clock().now()
+
+        # Relationship baseline (W4-14): love and trust resting points of the last
+        # speaker; None until a person's message is appraised.
+        self._rel_baseline: dict[str, float] | None = None
 
         # Timing
         self._last_tick_time = get_clock().now()
@@ -173,17 +179,22 @@ class EmotionEngine(BaseEngine):
     def _effective_baseline(self) -> EmotionVector:
         """Resting point the physics decays toward.
 
-        The configured baseline, plus (mood flag on) a shift of the positive
-        dimensions by the mood valence. The configured baseline is never changed.
+        The configured baseline; with the relationships flag on and a speaker
+        known, love and trust come from that person's relationship instead.
+        Then (mood flag on) a shift of the positive dimensions by the mood
+        valence. The configured baseline is never changed.
         """
+        base = self.config.baseline
+        if settings.emotion_relationships_enabled and self._rel_baseline is not None:
+            base = EmotionVector(**{**base.model_dump(), **self._rel_baseline})
         if not settings.emotion_mood_enabled:
-            return self.config.baseline
+            return base
         shift = mood_math.baseline_shift(
             self._mood["valence"],
             settings.emotion_mood_baseline_gain,
             settings.emotion_mood_baseline_shift_max,
         )
-        values = self.config.baseline.model_dump()
+        values = base.model_dump()
         for dim in mood_math.POSITIVE_DIMENSIONS:
             values[dim] = max(0.0, min(1.0, values[dim] + shift))
         return EmotionVector(**values)
@@ -333,10 +344,54 @@ class EmotionEngine(BaseEngine):
         """
         Get emotional state for a person.
 
-        Per-person state is not yet implemented (E5); this returns the global state.
+        With the relationships flag on and a ``person_id``, ``love`` and ``trust``
+        are read from that person's relationship (scaled into the dimension's
+        range); every other dimension is the shared state. Otherwise the global
+        state is returned.
         """
-        # Per-person state is E5; for now return global state
-        return await self.get_current_state()
+        state = await self.get_current_state()
+        if not (settings.emotion_relationships_enabled and person_id):
+            return state
+        rel, _ = await self._load_relationship(person_id)
+        values = {**state.vector.model_dump(), **rel_math.baseline_for(rel, settings)}
+        vector = EmotionVector(**values)
+        top = vector.get_top_n(n=3)
+        return state.model_copy(update={
+            "vector": vector,
+            "dominant": vector.get_dominant(),
+            "secondary": top[1] if len(top) > 1 else None,
+            "description": self.translator.translate(vector),
+        })
+
+    @staticmethod
+    def _person_rid(person_id: str) -> Any:
+        """Entity RecordID for a speaker key (``"owner"``, ``"discord_42"``).
+
+        The same id ``ensure_person`` builds, ``entity:<key>``; no write.
+        """
+        thing = person_id if person_id.startswith("entity:") else f"entity:{person_id}"
+        return to_record_id(thing.replace("\u27e8", "").replace("\u27e9", ""))
+
+    async def _load_relationship(
+        self, person_id: str
+    ) -> tuple[dict[str, float], bool]:
+        """Read-only lookup: (relationship values, entity exists).
+
+        Missing fields, or a missing entity, read as the starting values
+        (the owner's for the key ``"owner"``).
+        """
+        row = None
+        exists = False
+        try:
+            rows = await self.db.query(
+                "SELECT affection, trust, familiarity, tension FROM $rid",
+                {"rid": self._person_rid(person_id)},
+            )
+            if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                row, exists = rows[0], True
+        except Exception as e:
+            self.logger.warning(f"Failed to read relationship for {person_id}: {e}")
+        return rel_math.resolve(row, person_id == "owner", settings), exists
 
     async def explain(self, since: datetime | None = None) -> list[EmotionCause]:
         """
@@ -453,8 +508,25 @@ class EmotionEngine(BaseEngine):
 
         impulses = impulses_for(appraisal, event.user_state)
 
+        # Relationship (W4-14): message events from a known person only. System
+        # events carry no person (tool events name the tool in person_id).
+        rel = None
+        rel_exists = False
+        if (
+            settings.emotion_relationships_enabled
+            and event.person_id
+            and event.kind == "message"
+        ):
+            rel, rel_exists = await self._load_relationship(event.person_id)
+            self._rel_baseline = rel_math.baseline_for(rel, settings)
+            if impulses:
+                impulses = rel_math.scale_impulses(
+                    impulses, rel, event.appraisal.warmth, settings
+                )
+
         # If no impulses matched, log at DEBUG and return current state
         if not impulses:
+            await self._update_relationship(event, rel, rel_exists)
             self.logger.debug(
                 f"No appraisal match for event kind={event.kind} source={event.source}; "
                 f"appraisal={event.appraisal.model_dump()}"
@@ -522,10 +594,38 @@ class EmotionEngine(BaseEngine):
             # Database failure is logged but does not undo the state change
             self.logger.error(f"Failed to write emotion_event: {e}")
 
+        await self._update_relationship(event, rel, rel_exists)
+
         # Broadcast state update
         await self._broadcast_state_update(priority=MessagePriority.URGENT)
 
         return await self.get_current_state()
+
+    async def _update_relationship(
+        self, event: AppraisalEvent, rel: dict[str, float] | None, exists: bool
+    ) -> None:
+        """Step the speaker's relationship and write it: one parameterised UPDATE.
+
+        Nothing is written without a ``person_id`` or when the person has no
+        entity yet (an UPDATE would create a nameless record; the entity is
+        created by the memory write path).
+        """
+        if rel is None or not exists or not event.person_id:
+            return
+        new = rel_math.step(rel, event.appraisal, settings)
+        try:
+            await self.db.query(
+                "UPDATE $rid SET affection = $affection, trust = $trust, "
+                "familiarity = $familiarity, tension = $tension, "
+                "relationship_updated_at = $at",
+                {
+                    "rid": self._person_rid(event.person_id),
+                    **new,
+                    "at": get_clock().now(),
+                },
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to write relationship: {e}")
 
     async def configure_physics(self, config: EmotionPhysicsConfig) -> None:
         """Update physics configuration."""
