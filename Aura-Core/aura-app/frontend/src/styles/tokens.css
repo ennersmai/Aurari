@@ -1,0 +1,44 @@
+/* Aura design tokens (P2-13, plan section 6.1). One system: the glass classes in globals.css read these. */
+:root {
+  --base: #07080c;
+
+  /* Glass */
+  --glass-fill: rgba(255, 255, 255, 0.04);
+  --glass-stroke: rgba(255, 255, 255, 0.08);
+  --glass-blur-amount: 20px;
+  --glass-saturation: 140%;
+  --glass-corner: 16px;
+  --glass-top-highlight: rgba(255, 255, 255, 0.07);
+
+  /* Text (contrast on #07080c: bright about 17:1, muted about 7.5:1) */
+  --text-bright: #f2f4f8;
+  --text-muted: #9aa1b2;
+
+  /* Spacing scale */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* One font family */
+  --font-ui: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* One accent per subsystem (each at least 7:1 on the base) */
+  --accent-memory: #4fd8ec;
+  --accent-emotion: #ff7a9c;
+  --accent-goals: #ffc15a;
+  --accent-tools: #a98bff;
+  --accent-learning: #5fdc8f;
+  --accent-decisions: #6ea8ff;
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+.text-muted-aura { color: var(--text-muted); }
+.text-bright-aura { color: var(--text-bright); }

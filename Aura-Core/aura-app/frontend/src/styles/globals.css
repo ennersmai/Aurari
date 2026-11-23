@@ -431,3 +431,51 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #166534;
 }
+
+/* ============================================================
+   P2-13 visual language, scoped to .aura-page until Mai approves
+   /design (then P2-14 applies it to the Dashboard). Existing pages
+   keep the glass values above.
+   ============================================================ */
+.aura-page {
+  --glass-bg: var(--glass-fill);
+  --glass-bg-strong: rgba(255, 255, 255, 0.07);
+  --glass-bg-light: rgba(255, 255, 255, 0.03);
+  --glass-border: var(--glass-stroke);
+  --glass-blur: var(--glass-blur-amount);
+  --glass-saturate: var(--glass-saturation);
+  --glass-radius: var(--glass-corner);
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+  background: var(--base);
+  color: var(--text-bright);
+  font-family: var(--font-ui);
+}
+
+.aura-page .glass-panel::before {
+  background: linear-gradient(180deg, var(--glass-top-highlight) 0%, rgba(255, 255, 255, 0) 38%);
+}
+
+/* Soft drifting glows behind .aura-page content. */
+.aura-page::before {
+  content: '';
+  position: fixed;
+  inset: -20vmax;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(40vmax 40vmax at 20% 25%, rgba(79, 216, 236, 0.10), transparent 70%),
+    radial-gradient(45vmax 45vmax at 80% 70%, rgba(255, 170, 90, 0.08), transparent 70%),
+    radial-gradient(35vmax 35vmax at 60% 15%, rgba(169, 139, 255, 0.07), transparent 70%);
+  animation: aura-glow-drift 60s ease-in-out infinite alternate;
+}
+
+@keyframes aura-glow-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(4vmax, -3vmax, 0) scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aura-page::before { animation: none; }
+}

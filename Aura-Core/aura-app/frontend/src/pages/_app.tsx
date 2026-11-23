@@ -14,6 +14,7 @@ import { store, persistor } from '../store';
 import { SettingsProvider } from '../contexts/SettingsContext';
 import { ServerStatusProvider } from '../contexts/ServerStatusContext';
 import ServerStatusAlert from '../components/common/ServerStatusAlert';
+import '../styles/tokens.css';
 import '../styles/globals.css';
 
 const geistSans = Geist({

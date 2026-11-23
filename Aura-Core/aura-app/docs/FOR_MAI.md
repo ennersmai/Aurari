@@ -47,6 +47,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] With `AURA_L3_NATIVE_TOOLS=true`, chat on each stack and check for repeated text; record which stack L3 models support native tools here (P2-07).
 - [ ] Open `/chat` and check the spiral shows at the bottom right (W2-25, VRM removed).
 - [ ] Review two intentional behaviour changes: W2-20 (retrieval once per turn with the real user id; cold-start and latent blocks reach the prompt) and W2-38 (keywords no longer force tool use; only learned trigger phrases do).
+- [ ] Open `/design` and check the visual language (P2-13); approve it, or note changes, before the rest of Part 6 is built.
 - [ ] Verify finding S1 on a private Discord server (build plan section 6 item 2).
 - [ ] The probe set needs your real usage (docs/metrics/probes/README.md).
 - [ ] Avatar asset for V8 (build plan section 6 item 5).
