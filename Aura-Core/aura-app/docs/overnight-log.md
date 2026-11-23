@@ -2381,3 +2381,11 @@
   - Builtin tools (all of `BUILTIN_MODULES`, including W3's `delegate_work`) were offered to the model but could only run with a row in `register_local_tools.surql`, which they do not have. The executor now falls back to the registry's builtin record.
   - `timeline` returned the oldest k items and filtered episodes by visibility after the limit; now the newest k of each kind (episodes over-fetched, then filtered), shown oldest first.
 - **Tests:** each tool on the embedded engine, `what_changed` Lisbon then Porto, guest venue sees no owner fact through any tool, guest cannot pin; builtin dispatch without a skill row with the turn's venue. Suite: 709 passed, 3 skipped.
+
+---
+
+## W4-06: Feedback on recalled facts
+- **Status:** DONE (Sonnet agent, reviewed by the supervisor)
+- **Files:** new `src/aura/engines/recall/feedback.py` (a kept `memories` fact counts as used when 30% of its content words are in the reply or the reply's embedding is within 0.6 cosine; one transaction: used facts `use_count += 1`, `last_used_at`, `unused_streak = 0`, `co_used` created or `weight += 1` per used pair in a canonical direction; unused facts `unused_streak += 1`; failures only logged; nothing from the reply stored); `coordinator.py` (`ctx.packet` passed into `_post_response_chain`, step 3b, already off the reply path); `rerank.py` / `engine.py` (`x 0.9` when `unused_streak >= 5`); `schema_v2.surql` (`unused_streak`); `config.py`.
+- **Supervisor change:** unique index on `co_used (in, out)`, so two turns finishing together cannot create twin edges that split the weight (the losing transaction fails and is logged).
+- **Tests:** one of three facts quoted marks only that one used; `co_used` weight 1 then 2; flag off changes nothing; coordinator calls it only with the flag on; failure only logged; penalty at the threshold. Suite: 716 passed, 3 skipped.

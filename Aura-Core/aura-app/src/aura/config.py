@@ -862,6 +862,32 @@ class Settings(BaseSettings):
         description="Relevance weight in maximal marginal relevance (1 = no diversity).",
     )
 
+    recall_feedback_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_FEEDBACK_ENABLED",
+        description="After a turn, record which recalled facts the reply used.",
+    )
+    recall_feedback_min_overlap: float = Field(
+        default=0.3,
+        validation_alias="AURA_RECALL_FEEDBACK_MIN_OVERLAP",
+        description="Share of a fact's content words in the reply that counts as used.",
+    )
+    recall_feedback_min_similarity: float = Field(
+        default=0.6,
+        validation_alias="AURA_RECALL_FEEDBACK_MIN_SIMILARITY",
+        description="Reply-to-fact embedding similarity that counts as used.",
+    )
+    recall_unused_penalty: float = Field(
+        default=0.9,
+        validation_alias="AURA_RECALL_UNUSED_PENALTY",
+        description="Rerank multiplier for a fact injected but unused for many turns.",
+    )
+    recall_unused_penalty_after: int = Field(
+        default=5,
+        validation_alias="AURA_RECALL_UNUSED_PENALTY_AFTER",
+        description="Unused streak at which the rerank penalty starts.",
+    )
+
     # CORS Configuration
     cors_origins: str = Field(
         default="http://localhost:3000,http://localhost:3001",

@@ -62,6 +62,7 @@ DEFINE FIELD IF NOT EXISTS salience ON fact TYPE float DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS pinned ON fact TYPE bool DEFAULT false;
 DEFINE FIELD IF NOT EXISTS use_count ON fact TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS last_used_at ON fact TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS unused_streak ON fact TYPE int DEFAULT 0;
 
 -- Something Aura does not know or has found contradictory (feeds curiosity).
 DEFINE TABLE IF NOT EXISTS question SCHEMAFULL;
@@ -96,6 +97,8 @@ DEFINE TABLE IF NOT EXISTS contradicts TYPE RELATION IN fact OUT fact SCHEMAFULL
 DEFINE TABLE IF NOT EXISTS answers TYPE RELATION IN fact OUT question SCHEMAFULL;
 DEFINE TABLE IF NOT EXISTS co_used TYPE RELATION IN fact OUT fact SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS weight ON co_used TYPE float DEFAULT 1;
+-- One edge per stored pair: feedback strengthens it rather than adding a twin.
+DEFINE INDEX IF NOT EXISTS co_used_pair ON co_used FIELDS in, out UNIQUE;
 
 -- ============================================================================
 -- MEMORY V2 INDEXES (PRD 4.5)

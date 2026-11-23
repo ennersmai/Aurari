@@ -1,5 +1,7 @@
 """Unit tests for the fact rerank maths (card W4-04)."""
 
+import pytest
+
 from datetime import datetime, timedelta, timezone
 
 from aura.engines.recall.rerank import RerankCandidate, rerank
@@ -99,3 +101,12 @@ def test_mmr_keeps_one_of_five_near_identical_in_top_three():
     top3 = _ids(_run(cands))[:3]
     assert sum(i.startswith("d") for i in top3) == 1
     assert {"x", "y"} <= set(top3)
+
+
+def test_unused_streak_penalty_applies_from_threshold():
+    from aura.config import settings
+
+    after, factor = settings.recall_unused_penalty_after, settings.recall_unused_penalty
+    below = _run([_c("a", unused_streak=after - 1)])[0].score
+    at = _run([_c("a", unused_streak=after)])[0].score
+    assert at == pytest.approx(below * factor)

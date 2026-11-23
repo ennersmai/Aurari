@@ -768,6 +768,9 @@ class RecallEngine:
                             ),
                             None,
                         ),
+                        unused_streak=int(
+                            rows_by_id[hit.memory_id].get("unused_streak") or 0
+                        ),
                     )
                     for hit in fused
                     if hit.memory_id in rows_by_id

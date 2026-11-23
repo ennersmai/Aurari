@@ -1042,6 +1042,7 @@ Constraints:
         conversation_history: list[dict[str, str]] | None = None,
         venue: str = "app",
         speaker: str = "owner",
+        packet: ContextPacket | None = None,
     ) -> None:
         """Schedule the post-response chain in the background (never awaited here)."""
         asyncio.create_task(self._post_response_chain(
@@ -1058,6 +1059,7 @@ Constraints:
             conversation_history=conversation_history,
             venue=venue,
             speaker=speaker,
+            packet=packet,
         ))
 
     async def _gather_turn_context(
@@ -1716,6 +1718,7 @@ Constraints:
             conversation_history=conversation_history,
             venue=ctx.venue,
             speaker=ctx.speaker,
+            packet=ctx.packet,
         )
 
         # Stage 10: yield the final done event with the accumulated response.
@@ -2021,6 +2024,7 @@ Constraints:
         conversation_history: list[dict[str, str]] | None = None,
         venue: str = "app",
         speaker: str = "owner",
+        packet: ContextPacket | None = None,
     ) -> None:
         """
         Execute post-response tasks in correct dependency order.
@@ -2103,6 +2107,15 @@ Constraints:
                     schedule_extraction(self.db, client, episode_id)
             except Exception as e:
                 self.logger.warning(f"Failed to store memory v2 episode: {e}")
+
+        # 3b. Feedback on the recalled facts (W4-06). Logs its own failures.
+        if settings.recall_feedback_enabled and packet is not None:
+            from aura.engines.recall.feedback import record_feedback
+            from aura.llm.embeddings import get_embeddings_client
+
+            await record_feedback(
+                self.db, get_embeddings_client(), packet, response
+            )
 
         # 4. Run L2 Analysis (if enabled AND L2 layer not bypassed via inference cockpit)
         if enable_l2 and settings.layer_l2_enabled:

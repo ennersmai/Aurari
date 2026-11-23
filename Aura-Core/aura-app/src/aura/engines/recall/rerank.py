@@ -40,6 +40,7 @@ class RerankCandidate:
     valid_to: datetime | None = None
     embedding: list[float] | None = None
     signature: dict[str, float] | None = None
+    unused_streak: int = 0
 
 
 def _cosine(a: list[float] | None, b: list[float] | None) -> float:
@@ -117,6 +118,8 @@ def rerank(
         score += settings.recall_rerank_resonance_weight * _resonance(
             c.signature, baseline, deviation
         )
+        if c.unused_streak >= settings.recall_unused_penalty_after:
+            score *= settings.recall_unused_penalty
         scored.append(
             RerankCandidate(
                 id=c.id,
@@ -128,6 +131,7 @@ def rerank(
                 valid_to=c.valid_to,
                 embedding=c.embedding,
                 signature=c.signature,
+                unused_streak=c.unused_streak,
             )
         )
 
