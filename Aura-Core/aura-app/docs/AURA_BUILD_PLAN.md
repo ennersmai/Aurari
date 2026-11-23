@@ -2610,6 +2610,36 @@ Written 2026-11-23 against commit 85996ab. Agency PRD 4.1 (removal and parity ta
 - **Tests:** as above.
 - **Done when:** every parity row has a passing test or a recorded manual check, T17 passes, and the full suite passes.
 
+**G4-04a Session allowlist, namespace and overlay on the chat and delegation paths**
+- **PRD:** agency 4.1 parity row "Per-session tool allowlist, memory namespace, identity overlay" (gap found by G4-04)
+- **Tier:** frontier
+- **Depends on:** G4-04. Must land before G4-05, because `agent_loop.py` is today the only place the allowlist is enforced.
+- **Files:** `src/aura/orchestrator/coordinator.py` (`_resolve_session`, the `select_tools` call, the `run_tool_loop` calls), `src/aura/orchestrator/tool_loop.py` (pass-through only), `src/aura/executor/tool_executor.py` (`execute_tool_call`, `execute_and_feedback`), `src/aura/executor/tool_registry.py` (`select_tools` exclude), `src/aura/tools/delegate.py`, `src/aura/executor/delegation.py` (`_build_brief`, `_write_delegation_memory`), new `tests/unit/test_session_scope_tools.py`
+- **Change:**
+  1. Chat path: the turn's `SessionContext` (from `_resolve_session`) travels with the turn the same way `venue` does: through `run_tool_loop`, `_forced_seed` and `execute_and_feedback` to `execute_tool_call`.
+     - Tools the session does not allow (`SessionContext.is_tool_allowed`) are excluded in `select_tools`.
+     - `execute_tool_call` refuses them with the session's message.
+     - The role check stays first, then the tier gate (P2-03), then the session check.
+     - The main session (no allowlist) changes nothing.
+  2. Delegation path:
+     - `delegate_work` refuses when the session does not allow it.
+     - The brief includes the session's identity overlay, when there is one, as a short labelled section.
+     - The closing memory write (`_write_delegation_memory`) uses the session's memory namespace instead of the global one.
+     - The session context reaches the tool through the reserved `_session` argument, alongside `_venue` and `_requester_role` (see W1-02); never through the model-visible schema.
+  3. Tests for `_resolve_session` itself: the namespace and overlay are set for a sub-session and None for main.
+- **Tests:**
+  - a sub-session with an allowlist offers only the allowed tools and refuses a forced call to another;
+  - main is unchanged (ablation);
+  - order of refusal: a guest is refused by role before the session check, and a Lean tier is refused by tier before the session check;
+  - `delegate_work` is refused outside the allowlist;
+  - the brief contains the overlay;
+  - the memory write uses the session namespace;
+  - `_resolve_session` cases;
+  - revert each new check temporarily and confirm a test fails.
+- **Done when:** the new tests pass, the G4-04 parity row moves from "gap" to covered in `docs/metrics/g4_parity.md`, and the full suite passes.
+
+---
+
 **G4-05 Remove the agent loop, the workspace routes, the IDE chat store and the IDE page (T15)**
 - **PRD:** agency 4.1 "Removed" table, rule 6 ("leaving no parallel old and new paths"), test T15
 - **Tier:** bulk
