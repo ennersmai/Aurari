@@ -63,3 +63,7 @@ Result: 22 passed, 8 xfailed (strict) in `tests/unit/test_tier_audit.py`. P2-02 
 | `executor/agent_loop.py:403` | `self.llm.l3_model` (G4 removes this file) |
 
 P2-02 should remove the cached attributes (or make them properties that call `model_for`) and extend the grep test to `\.l[1-5]_model\b` attribute reads outside `config.py`.
+
+## After P2-02
+
+All 8 xfails are removed; every row in the observed table now passes on stacks 0, 1 and 2 (`tests/unit/test_tier_audit.py`). Fixed: extraction, themes, latent summary, `_get_cloud_fallback` (per-call map from the active stack), `LLMLayers.lX_model` (properties of the active stack), coordinator traces, `settings.get_fallback`, `POST /system/model-stack` (same `object.__setattr__` as inference-config), `settings.tsx` chips (active models from the API). `tests/unit/test_no_stack0_model_reads.py` fails on any `settings.lN_model` read outside `config.py`. `main.py` startup log now prints the active stack.

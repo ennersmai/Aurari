@@ -765,7 +765,7 @@ Constraints:
         trace_payload: dict[str, Any] = {
             "intent": intent,
             "confidence": round(float(intent_data.get("confidence") or 0), 3),
-            "model": settings.l1_model,
+            "model": settings.active_l1_model,
         }
         if stream:
             trace_payload["mode"] = "stream"
@@ -1417,7 +1417,7 @@ Constraints:
             else:
                 round_text = round_response
             self._publish_trace("L3", "synthesis_complete", {
-                "model": settings.l3_model,
+                "model": settings.active_l3_model,
                 "round": round_idx,
                 "response_len": len(round_text or ""),
                 "reasoning": reasoning_enabled,
@@ -1540,7 +1540,7 @@ Constraints:
                 yield chunk
             # --- Telemetry: L3 synthesis complete ---
             self._publish_trace("L3", "synthesis_complete", {
-                "model": settings.l3_model,
+                "model": settings.active_l3_model,
                 "round": round_idx,
                 "response_len": len(round_response or ""),
                 "reasoning": reasoning_enabled,
@@ -2172,7 +2172,7 @@ Constraints:
             )
             # --- Telemetry: L2 post-response analysis ---
             self._publish_trace("L2", "post_analysis_complete", {
-                "model": settings.l2_model,
+                "model": settings.active_l2_model,
                 "patterns": len(analysis.get("patterns_found", [])),
                 "insights": len(analysis.get("insights", [])),
                 "has_critique": bool(analysis.get("critique")),

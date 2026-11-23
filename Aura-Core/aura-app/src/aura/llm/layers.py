@@ -95,12 +95,27 @@ class LLMLayers:
         # Context-mode router (sovereign dispatch)
         self._router = router or ContextModeRouter()
 
-        # Model configuration from settings (use active stack properties)
-        self.l1_model = settings.active_l1_model
-        self.l2_model = settings.active_l2_model
-        self.l3_model = settings.active_l3_model
-        self.l4_model = settings.active_l4_model
-        self.l5_model = settings.active_l5_model
+    # Active-stack models. Read-only so a stack switch is seen by every caller;
+    # nothing is cached at construction.
+    @property
+    def l1_model(self) -> str:
+        return settings.active_l1_model
+
+    @property
+    def l2_model(self) -> str:
+        return settings.active_l2_model
+
+    @property
+    def l3_model(self) -> str:
+        return settings.active_l3_model
+
+    @property
+    def l4_model(self) -> str:
+        return settings.active_l4_model
+
+    @property
+    def l5_model(self) -> str:
+        return settings.active_l5_model
 
     # ------------------------------------------------------------------
     # Context Mode (Sovereign Orchestrator)

@@ -122,7 +122,7 @@ async def _summarise(client: Any, instruction: str, contents: list[str]) -> str:
     try:
         reply = await client.complete(
             [{"role": "user", "content": prompt}],
-            model=settings.memory_extraction_model or settings.l2_model,
+            model=settings.memory_extraction_model or settings.active_l2_model,
             temperature=0,
         )
     except Exception as e:

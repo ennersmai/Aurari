@@ -126,29 +126,10 @@ async def get_model_stack() -> dict[str, Any]:
         },
         "available_stacks": [
             {
-                "index": 0,
-                "l1": settings.l1_model,
-                "l2": settings.l2_model,
-                "l3": settings.l3_model,
-                "l4": settings.l4_model,
-                "l5": settings.l5_model,
-            },
-            {
-                "index": 1,
-                "l1": settings.l1_model1,
-                "l2": settings.l2_model1,
-                "l3": settings.l3_model1,
-                "l4": settings.l4_model1,
-                "l5": settings.l5_model1,
-            },
-            {
-                "index": 2,
-                "l1": settings.l1_model2,
-                "l2": settings.l2_model2,
-                "l3": settings.l3_model2,
-                "l4": settings.l4_model2,
-                "l5": settings.l5_model2,
-            },
+                "index": index,
+                **{f"l{n}": getattr(settings, f"l{n}_model{suffix}") for n in range(1, 6)},
+            }
+            for index, suffix in ((0, ""), (1, "1"), (2, "2"))
         ],
     }
 
@@ -164,7 +145,7 @@ async def set_model_stack(request: ModelStackRequest) -> dict[str, Any]:
     from aura.config import settings
 
     old_index = settings.model_stack_index
-    settings.model_stack_index = request.stack_index
+    object.__setattr__(settings, "model_stack_index", request.stack_index)
 
     logger.info(
         f"🔄 Model stack switched: {old_index} → {request.stack_index} "

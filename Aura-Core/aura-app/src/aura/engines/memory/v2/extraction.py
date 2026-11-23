@@ -153,7 +153,7 @@ async def extract(
     previous: list[dict[str, Any]],
 ) -> Extraction:
     """Run one extraction call and validate its reply."""
-    model = settings.memory_extraction_model or settings.l2_model
+    model = settings.memory_extraction_model or settings.active_l2_model
     reply = await client.complete(
         build_prompt(episode, previous),
         model=model,

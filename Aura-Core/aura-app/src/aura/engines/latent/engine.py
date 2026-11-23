@@ -712,7 +712,7 @@ Write a concise summary of what I intuitively sense about this user's interests,
             from aura.config import settings
             summary = await self.llm_layers.client.complete(
                 messages=messages,
-                model=settings.l5_model,
+                model=settings.active_l5_model,
                 temperature=0.4,
                 max_tokens=150,
             )

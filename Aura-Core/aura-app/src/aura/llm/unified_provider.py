@@ -254,15 +254,20 @@ class UnifiedLLMClient:
         """
         Get the cloud fallback model for a local model.
 
-        Maps the layer's local model back to its cloud counterpart.
+        Maps the layer's local model back to its cloud counterpart. The map is
+        built per call from the ACTIVE stack's models, so a fallback is only
+        ever found for a model of the stack in use and never for another stack.
         """
-        # Check which layer this model belongs to and return the cloud version
+        defaults = {
+            "l1": "meta-llama/llama-3.1-8b-instruct",
+            "l2": "deepseek/deepseek-chat",
+            "l3": "deepseek/deepseek-chat",
+            "l4": "qwen/qwen-2.5-72b-instruct",
+            "l5": "google/gemini-2.0-flash-001",
+        }
         layer_map = {
-            settings.l1_model: settings.l1_model_fallback or "meta-llama/llama-3.1-8b-instruct",
-            settings.l2_model: settings.l2_model_fallback or "deepseek/deepseek-chat",
-            settings.l3_model: settings.l3_model_fallback or "deepseek/deepseek-chat",
-            settings.l4_model: settings.l4_model_fallback or "qwen/qwen-2.5-72b-instruct",
-            settings.l5_model: settings.l5_model_fallback or "google/gemini-2.0-flash-001",
+            settings.model_for(layer): getattr(settings, f"{layer}_model_fallback") or default
+            for layer, default in defaults.items()
         }
         return layer_map.get(local_model)
 

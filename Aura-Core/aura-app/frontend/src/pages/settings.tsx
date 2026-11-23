@@ -25,6 +25,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import Link from 'next/link';
 import { useSettings } from '@/contexts/SettingsContext';
 import DiscordPanel from '@/components/discord/DiscordPanel';
+import { useInferenceConfig } from '@/hooks/useInferenceConfig';
 
 export default function SettingsPage() {
   const { 
@@ -32,6 +33,7 @@ export default function SettingsPage() {
     updateSettings,
     resetSettings
   } = useSettings();
+  const { activeModels } = useInferenceConfig();
 
   // Local state for form
   const [localUserId, setLocalUserId] = useState(settings.commanderIdentity);
@@ -289,26 +291,25 @@ export default function SettingsPage() {
           />
           <CardContent>
             <Alert severity="info" sx={{ mb: 2 }}>
-              LLM models are configured on the backend via environment variables. 
-              Check <code>.env</code> file for model configuration.
+              Models shown are those of the active stack (LEAN / CORE / TITAN); the stack is switched from the navbar or the inference cockpit.
             </Alert>
             
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="body2" color="text.secondary">L1 Model (Instinct):</Typography>
-                <Chip label="mistralai/mistral-7b-instruct" size="small" />
+                <Chip label={activeModels?.l1 ?? "unavailable"} size="small" />
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="body2" color="text.secondary">L2 Model (Reasoning):</Typography>
-                <Chip label="anthropic/claude-3.5-sonnet" size="small" />
+                <Chip label={activeModels?.l2 ?? "unavailable"} size="small" />
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="body2" color="text.secondary">L3 Model (Synthesis):</Typography>
-                <Chip label="deepseek/deepseek-chat" size="small" />
+                <Chip label={activeModels?.l3 ?? "unavailable"} size="small" />
               </Box>
               <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <Typography variant="body2" color="text.secondary">Embeddings:</Typography>
-                <Chip label="openai/text-embedding-3-small" size="small" />
+                <Chip label={activeModels?.embeddings ?? "unavailable"} size="small" />
               </Box>
             </Box>
           </CardContent>

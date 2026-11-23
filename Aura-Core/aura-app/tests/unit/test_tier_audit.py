@@ -4,9 +4,7 @@ The stack is set with the real ``POST /system/inference-config`` route function
 (``set_inference_config``, called directly). Outgoing chat requests are caught
 at ``httpx.AsyncClient.post``, the lowest point of ``OpenRouterClient``
 (``llm/provider.py:226``); nothing is sent. The observed ``model`` must equal
-``settings.active_lX_model`` for the stack. Cases that fail because of a
-finding in AURA_PHASE2_PLAN.md are strict xfails so that P2-02 must remove
-them. This card only measures; it fixes nothing.
+``settings.active_lX_model`` for the stack. The P2-01 xfails were removed by P2-02.
 """
 
 import json
@@ -163,11 +161,7 @@ def _params():
     out = []
     for name, (_fn, _layer, finding) in CALLERS.items():
         for stack in STACKS:
-            marks = []
-            # Stack 0 reads the stack 0 field, so the finding only bites on 1 and 2.
-            if finding and stack != 0:
-                marks.append(pytest.mark.xfail(strict=True, reason=finding))
-            out.append(pytest.param(name, stack, id=f"{name}-stack{stack}", marks=marks))
+            out.append(pytest.param(name, stack, id=f"{name}-stack{stack}"))
     return out
 
 
@@ -197,17 +191,25 @@ async def test_system_state_reports_active_models(audit_env, stack):
             assert report["available_stacks"][s][f"l{layer}"] == _audit_name(s, layer)
 
 
-@pytest.mark.parametrize(
-    "stack",
-    [
-        0,
-        pytest.param(1, marks=pytest.mark.xfail(strict=True, reason="llm/unified_provider.py:261")),
-        pytest.param(2, marks=pytest.mark.xfail(strict=True, reason="llm/unified_provider.py:261")),
-    ],
-)
+@pytest.mark.parametrize("stack", STACKS)
 async def test_cloud_fallback_map_follows_active_stack(audit_env, stack):
     from aura.llm.unified_provider import UnifiedLLMClient
 
     await _switch_stack(stack)
     client = UnifiedLLMClient(openrouter_client=MagicMock(), ollama_client=MagicMock())
     assert client._get_cloud_fallback(settings.active_l1_model) is not None
+
+
+async def test_stack2_failure_falls_back_only_to_stack2_fallbacks(audit_env, monkeypatch):
+    """A stack 2 model gets its fallback; stack 0 and 1 models get none (no crossing)."""
+    from aura.llm.unified_provider import UnifiedLLMClient
+
+    for layer in range(1, 6):
+        monkeypatch.setattr(settings, f"l{layer}_model_fallback", f"fb/l{layer}")
+    await _switch_stack(2)
+    client = UnifiedLLMClient(openrouter_client=MagicMock(), ollama_client=MagicMock())
+    for layer in range(1, 6):
+        assert client._get_cloud_fallback(_audit_name(2, layer)) == f"fb/l{layer}"
+        assert client._get_cloud_fallback(_audit_name(0, layer)) is None
+        assert client._get_cloud_fallback(_audit_name(1, layer)) is None
+    assert client._get_cloud_fallback("not/a-model") is None

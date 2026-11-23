@@ -64,11 +64,11 @@ logger = logging.getLogger(__name__)
 # Log model configuration at startup
 logger.info("=" * 60)
 logger.info("MODEL CONFIGURATION (from .env / environment variables):")
-logger.info(f"  L1 Model: {settings.l1_model}")
-logger.info(f"  L2 Model: {settings.l2_model}")
-logger.info(f"  L3 Model: {settings.l3_model}")
-logger.info(f"  L4 Model: {settings.l4_model}")
-logger.info(f"  L5 Model: {settings.l5_model}")
+logger.info(f"  L1 Model: {settings.active_l1_model}")
+logger.info(f"  L2 Model: {settings.active_l2_model}")
+logger.info(f"  L3 Model: {settings.active_l3_model}")
+logger.info(f"  L4 Model: {settings.active_l4_model}")
+logger.info(f"  L5 Model: {settings.active_l5_model}")
 logger.info("=" * 60)
 
 # Global engine references
