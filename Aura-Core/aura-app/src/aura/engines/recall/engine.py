@@ -34,6 +34,7 @@ from .channels import (
     fact_dense_channel,
     fact_entity_channel,
     fact_lexical_channel,
+    fact_temporal_channel,
     lexical_channel,
 )
 from .fusion import rrf
@@ -613,6 +614,10 @@ class RecallEngine:
         When ``recall_entity_channel_enabled`` is on, the entity channel also
         runs in the same gather, finding facts about entities mentioned in the
         last two turns, and its hits are fused as channel "entity".
+
+        When ``recall_temporal_channel_enabled`` is on and a time expression is
+        parsed from the input, the temporal channel runs and its hits are fused
+        as channel "temporal".
         """
         memory_manager = await self._get_memory_manager()
         queries = build_queries(request.user_input, request.recent_turns)
@@ -638,6 +643,15 @@ class RecallEngine:
                     request.venue,
                 )
             )
+        # Temporal channel: runs when enabled and a time range was parsed
+        if settings.recall_temporal_channel_enabled and queries.time_range:
+            gather_args.append(
+                fact_temporal_channel(
+                    memory_manager.db,
+                    queries.time_range,
+                    request.venue,
+                )
+            )
 
         results = await asyncio.gather(*gather_args, return_exceptions=True)
 
@@ -645,6 +659,8 @@ class RecallEngine:
         channel_names = ["dense", "lexical"]
         if settings.recall_entity_channel_enabled:
             channel_names.append("entity")
+        if settings.recall_temporal_channel_enabled and queries.time_range:
+            channel_names.append("temporal")
         for name, result in zip(channel_names, results):
             if isinstance(result, Exception):
                 if channel_errors is not None:

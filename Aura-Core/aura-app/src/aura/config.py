@@ -780,6 +780,17 @@ class Settings(BaseSettings):
         validation_alias="AURA_RECALL_ENTITY_K",
         description="Number of candidate facts the entity channel retrieves.",
     )
+    recall_temporal_channel_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_RECALL_TEMPORAL_CHANNEL_ENABLED",
+        description="When true, the temporal channel runs in the recall engine, "
+                    "finding facts from a time range parsed from the input.",
+    )
+    recall_temporal_k: int = Field(
+        default=20,
+        validation_alias="AURA_RECALL_TEMPORAL_K",
+        description="Number of candidate facts the temporal channel retrieves.",
+    )
 
     # CORS Configuration
     cors_origins: str = Field(

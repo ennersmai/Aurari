@@ -20,8 +20,11 @@ Nothing in this module calls a model or the database.
 import re
 import string
 from dataclasses import dataclass, field
+from datetime import datetime
 
+from aura.clock import get_clock
 from aura.config import settings
+from aura.engines.recall.timeexpr import parse_range
 
 
 @dataclass
@@ -32,6 +35,7 @@ class RecallQueries:
     lexical_text: str
     joined: bool
     entity_aliases: list[str] = field(default_factory=list)
+    time_range: tuple[datetime, datetime] | None = None
 
 
 # Pronouns whose antecedent may be in the previous user turn (PRD 6.3 step 2).
@@ -216,6 +220,8 @@ def build_queries(
 
     Also builds entity_aliases: every lowercased word and adjacent word pair of
     the input and the previous user turn, minus stop words, capped at 30.
+
+    Also parses a time expression from the input (PRD 6.3 step 2).
     """
     previous = _previous_user_turn(user_input, recent_turns)
 
@@ -229,11 +235,19 @@ def build_queries(
 
     entity_aliases = _extract_entity_aliases(user_input, previous)
 
+    # A time expression in the input wins; the previous turn is read only when
+    # the two are joined ("and before that?").
+    now = get_clock().now()
+    time_range = parse_range(user_input, now)
+    if time_range is None and joined and previous:
+        time_range = parse_range(previous, now)
+
     return RecallQueries(
         dense_text=dense_text,
         lexical_text=_lexical_text(dense_text),
         joined=joined,
         entity_aliases=entity_aliases,
+        time_range=time_range,
     )
 
 

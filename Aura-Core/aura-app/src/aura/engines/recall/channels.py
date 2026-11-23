@@ -19,6 +19,7 @@ candidates.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from aura.config import settings
@@ -263,6 +264,61 @@ async def fact_entity_channel(
             WHERE out IN (SELECT VALUE id FROM entity WHERE aliases CONTAINSANY $aliases)
         )
           AND {where}
+        ORDER BY recorded_at DESC
+        LIMIT $k
+        """,
+        params,
+    )
+
+    return [
+        ChannelHit(
+            memory_id=str(row["id"]),
+            rank=rank,
+            score=1.0,
+        )
+        for rank, row in enumerate(rows or [])
+    ]
+
+
+async def fact_temporal_channel(
+    db: Any,
+    time_range: tuple[datetime, datetime],
+    venue: str,
+) -> list[ChannelHit]:
+    """Return visible facts whose ``valid_from`` or ``recorded_at`` falls in the range.
+
+    Includes superseded facts (``valid_to`` is not filtered out) because a question
+    about a time is a question about the past. Results ordered by newest
+    ``recorded_at`` first, capped by ``settings.recall_temporal_k``.
+
+    Args:
+        db: Database client.
+        time_range: Tuple of (start, end) datetimes (inclusive).
+        venue: The venue string for visibility filtering.
+
+    Returns:
+        List of ChannelHit with score 1.0, ranked by newest first.
+    """
+    if not time_range:
+        return []
+
+    start, end = time_range
+    params: dict[str, Any] = {
+        "start": start,
+        "end": end,
+        "visible": visible_in_venue(venue),
+        "k": int(settings.recall_temporal_k),
+    }
+
+    # Filter: visibility IN $visible AND (valid_from BETWEEN $start AND $end OR recorded_at BETWEEN $start AND $end)
+    # Note: superseded facts (valid_to set) are included intentionally.
+    where = "visibility IN $visible AND ((valid_from IS NOT NONE AND valid_from >= $start AND valid_from <= $end) OR (recorded_at >= $start AND recorded_at <= $end))"
+
+    rows = await db.query(
+        f"""
+        SELECT id, recorded_at
+        FROM fact
+        WHERE {where}
         ORDER BY recorded_at DESC
         LIMIT $k
         """,
