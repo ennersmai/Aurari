@@ -1320,6 +1320,14 @@ class Settings(BaseSettings):
         le=1.0,
     )
 
+    l1_routes_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_L1_ROUTES_ENABLED",
+        description="When true, L1 also returns a route (chat, tool, think, task, teach) and a "
+                    "stakes score (P2-06); intent is derived from the route. Off means the "
+                    "original L1 prompt and parsing exactly.",
+    )
+
     tool_selection_success_weight: float = Field(
         default=0.2,
         validation_alias="AURA_TOOL_SELECTION_SUCCESS_WEIGHT",

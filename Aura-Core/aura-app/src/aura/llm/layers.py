@@ -45,6 +45,7 @@ class SynthesisContext:
         packet: "ContextPacket | None" = None,
         offered_tools: list | None = None,
         venue: str = "app",
+        prompt_notes: list[str] | None = None,
     ):
         """Initialize synthesis context."""
         self.user_input = user_input
@@ -61,6 +62,42 @@ class SynthesisContext:
         self.packet = packet
         self.offered_tools = offered_tools
         self.venue = venue
+        # One-line notes the coordinator adds to the prompt (P2-06).
+        self.prompt_notes = prompt_notes or []
+
+
+L1_ROUTES = ("chat", "tool", "think", "task", "teach")
+_ROUTE_INTENT = {
+    "teach": "TEACHING",
+    "tool": "TOOL_USE",
+    "task": "TOOL_USE",
+    "chat": "CHAT",
+    "think": "CHAT",
+}
+
+
+def parse_route(data: dict) -> tuple[str, float, str]:
+    """Parse L1 JSON into ``(route, stakes, intent)`` (P2-06).
+
+    A missing, unknown or non-string route is "chat". Stakes are clamped to
+    [0, 1]; missing or invalid stakes are 0.0. The intent is derived from the
+    route, overriding whatever intent the model returned.
+    """
+    raw = data.get("route") if isinstance(data, dict) else None
+    route = raw.strip().lower() if isinstance(raw, str) else ""
+    if route not in L1_ROUTES:
+        route = "chat"
+    stakes_raw = data.get("stakes") if isinstance(data, dict) else None
+    try:
+        if isinstance(stakes_raw, bool):
+            raise TypeError
+        stakes = float(stakes_raw)
+        if stakes != stakes:  # NaN
+            raise ValueError
+    except (TypeError, ValueError):
+        stakes = 0.0
+    stakes = max(0.0, min(1.0, stakes))
+    return route, stakes, _ROUTE_INTENT[route]
 
 
 class LLMLayers:
@@ -254,13 +291,16 @@ class LLMLayers:
         # ── Layer bypass ──────────────────────────────────────────────────────
         if not settings.layer_l1_enabled:
             logger.debug("L1 disabled — routing input directly as CHAT to L3")
-            return {
+            disabled = {
                 "intent": "CHAT",
                 "confidence": 1.0,
                 "needs_agentic_rag": False,
                 "detected_tool": None,
                 "routing_method": "layer_disabled",
             }
+            if settings.l1_routes_enabled:
+                disabled.update(route="chat", stakes=0.0)
+            return disabled
 
         # =========================================================================
         # VECTOR SEARCH FALLBACK: Instant tool routing (L1 "Instinct" Brain)
@@ -322,7 +362,7 @@ class LLMLayers:
                             f"tool: {tool_name or 'unknown'})"
                         )
                         
-                        return {
+                        fast = {
                             "intent": "TOOL_USE",
                             "confidence": combined_confidence,
                             "needs_agentic_rag": True,
@@ -330,6 +370,9 @@ class LLMLayers:
                             "target_action": str(target_action) if target_action else None,
                             "routing_method": "vector_search"  # Flag for coordinator
                         }
+                        if settings.l1_routes_enabled:
+                            fast.update(route="tool", stakes=0.0)
+                        return fast
                     else:
                         logger.debug(
                             f"L1 Vector search found match but confidence too low: {combined_confidence:.2f} "
@@ -342,7 +385,31 @@ class LLMLayers:
         # =========================================================================
         # LLM FALLBACK: Standard classification via Gemini Flash
         # =========================================================================
-        prompt = f"""Analyze the user input.
+        if settings.l1_routes_enabled:
+            prompt = f"""Analyze the user input.
+INPUT: "{user_input[:2000]}"
+
+Pick one "route":
+- "chat": casual talk, feelings, simple questions. Example: "how was your day?"
+- "tool": one lookup or action with a tool (weather, search, read a file). Example: "what is the weather in Paris?"
+- "think": needs careful reasoning but no tools. Example: "is it ethical to break a promise to save a friend?"
+- "task": multi-step work that needs planning, several actions or code changes. Example: "refactor the auth module and add tests"
+- "teach": the user gives a JSON schema, code block or explicit rule to learn. Example: "from now on, always reply in French"
+
+"stakes" is 0 to 1: how costly a wrong or shallow answer would be (0 trivial, 1 money, health, legal or irreversible).
+
+OUTPUT JSON (REQUIRED FORMAT - NO OTHER TEXT):
+{{
+  "route": "chat" | "tool" | "think" | "task" | "teach",
+  "stakes": 0.2,
+  "confidence": 0.9,
+  "needs_agentic_rag": true,
+  "detected_tool": "web_search" | "read_file" | "list_directory" | "filesystem" | null,
+  "target_action": "skill_id_if_known" | null
+}}
+"""
+        else:
+            prompt = f"""Analyze the user input.
 INPUT: "{user_input[:2000]}"
 
 CLASSIFY into one of these categories:
@@ -373,6 +440,9 @@ OUTPUT JSON (REQUIRED FORMAT - NO OTHER TEXT):
         # Add routing method flag
         if result:
             result["routing_method"] = "llm_classification"
+            if settings.l1_routes_enabled:
+                route, stakes, derived = parse_route(result)
+                result.update(route=route, stakes=stakes, intent=derived)
             logger.info(f"🔍 L1 Intent Classification result: {result}")
         else:
             logger.warning(f"⚠️ L1 Intent Classification returned empty result, defaulting to CHAT")
@@ -383,6 +453,8 @@ OUTPUT JSON (REQUIRED FORMAT - NO OTHER TEXT):
                 "detected_tool": None,
                 "routing_method": "llm_classification_fallback"
             }
+            if settings.l1_routes_enabled:
+                result.update(route="chat", stakes=0.0)
         
         return result
 
@@ -1337,6 +1409,10 @@ The marker MUST use the EXACT goal_id from the suggestions above.
   <instruction>Adjust your response to address this critique.</instruction>
 </self_correction>
 """
+
+        if context.prompt_notes:
+            lines = "".join(f"  {n}\n" for n in context.prompt_notes)
+            prompt += f"<notes>\n{lines}</notes>\n"
 
         # 6.4. Tools offered to the model for this turn (W2-35)
         if include_tools and context.offered_tools:

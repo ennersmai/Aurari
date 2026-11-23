@@ -1,0 +1,127 @@
+[
+  {
+    "message": "hey, how was your day?",
+    "route": "chat",
+    "stakes": 0.0
+  },
+  {
+    "message": "I'm feeling a bit down tonight",
+    "route": "chat",
+    "stakes": 0.1
+  },
+  {
+    "message": "tell me something funny",
+    "route": "chat",
+    "stakes": 0.0
+  },
+  {
+    "message": "do you ever get bored?",
+    "route": "chat",
+    "stakes": 0.1
+  },
+  {
+    "message": "good morning!",
+    "route": "chat",
+    "stakes": 0.0
+  },
+  {
+    "message": "what's the weather in Paris right now?",
+    "route": "tool",
+    "stakes": 0.0
+  },
+  {
+    "message": "read the file notes.txt",
+    "route": "tool",
+    "stakes": 0.1
+  },
+  {
+    "message": "search the web for the latest Python release",
+    "route": "tool",
+    "stakes": 0.0
+  },
+  {
+    "message": "list the files in my downloads folder",
+    "route": "tool",
+    "stakes": 0.0
+  },
+  {
+    "message": "what is the AAPL stock price?",
+    "route": "tool",
+    "stakes": 0.1
+  },
+  {
+    "message": "is it ethical to break a promise to save a friend?",
+    "route": "think",
+    "stakes": 0.4
+  },
+  {
+    "message": "should I take out a loan to buy a house or keep renting?",
+    "route": "think",
+    "stakes": 0.8
+  },
+  {
+    "message": "walk me through whether this contract clause exposes me to liability",
+    "route": "think",
+    "stakes": 0.9
+  },
+  {
+    "message": "why does the halting problem imply no general verifier exists?",
+    "route": "think",
+    "stakes": 0.2
+  },
+  {
+    "message": "help me decide between two job offers with different risks",
+    "route": "think",
+    "stakes": 0.7
+  },
+  {
+    "message": "refactor the auth module and add tests",
+    "route": "task",
+    "stakes": 0.5
+  },
+  {
+    "message": "build a landing page, deploy it and report back",
+    "route": "task",
+    "stakes": 0.4
+  },
+  {
+    "message": "migrate the database schema and update every query",
+    "route": "task",
+    "stakes": 0.7
+  },
+  {
+    "message": "research three competitors, compare them and write a summary doc",
+    "route": "task",
+    "stakes": 0.3
+  },
+  {
+    "message": "fix the failing CI, run the suite and open a pull request",
+    "route": "task",
+    "stakes": 0.5
+  },
+  {
+    "message": "from now on, always answer in French",
+    "route": "teach",
+    "stakes": 0.0
+  },
+  {
+    "message": "remember this rule: never schedule meetings before 10am",
+    "route": "teach",
+    "stakes": 0.1
+  },
+  {
+    "message": "learn this schema: {\"name\": \"string\", \"age\": \"int\"}",
+    "route": "teach",
+    "stakes": 0.0
+  },
+  {
+    "message": "here is a code block to learn: def add(a, b): return a + b",
+    "route": "teach",
+    "stakes": 0.0
+  },
+  {
+    "message": "new rule: sign every email with 'Best, Mai'",
+    "route": "teach",
+    "stakes": 0.0
+  }
+]

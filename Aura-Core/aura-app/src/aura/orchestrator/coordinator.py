@@ -55,6 +55,9 @@ from aura.engines.emotion.system_events import tool_succeeded, tool_failed, self
 logger = logging.getLogger(__name__)
 
 
+TASK_UNAVAILABLE_NOTE = "Multi-agent work is not available on this tier."
+
+
 @dataclass
 class TurnContext:
     """Gathered context for a single turn (W2-08).
@@ -78,6 +81,9 @@ class TurnContext:
     speaker: str = ""
     venue: str = "app"
     tier_profile: TierProfile | None = None  # set only with tier_profiles_enabled
+    route: str | None = None  # L1 route (P2-06); None with l1_routes_enabled off
+    stakes: float | None = None  # L1 stakes 0..1 (P2-06)
+    prompt_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -787,6 +793,9 @@ Constraints:
             "confidence": round(float(intent_data.get("confidence") or 0), 3),
             "model": settings.active_l1_model,
         }
+        if settings.l1_routes_enabled:
+            trace_payload["route"] = intent_data.get("route", "chat")
+            trace_payload["stakes"] = intent_data.get("stakes", 0.0)
         if stream:
             trace_payload["mode"] = "stream"
         self._publish_trace("L1", "intent_classified", trace_payload)
@@ -1450,6 +1459,7 @@ Constraints:
                 packet=ctx.packet,
                 offered_tools=ctx.offered_tools,
                 venue=ctx.venue,
+                prompt_notes=ctx.prompt_notes,
             )
 
             round_response = await self.llm_layers.l3_synthesis(
@@ -1576,6 +1586,7 @@ Constraints:
                 packet=ctx.packet,
                 offered_tools=ctx.offered_tools,
                 venue=ctx.venue,
+                prompt_notes=ctx.prompt_notes,
             )
 
             round_response = ""
@@ -1735,6 +1746,12 @@ Constraints:
                 yield TurnEvent("done", teaching_reply)
             return
 
+        route: str | None = None
+        stakes: float | None = None
+        if settings.l1_routes_enabled:
+            route = intent_data.get("route", "chat")
+            stakes = intent_data.get("stakes", 0.0)
+
         # Stage 5: forced-tool resolution (tool reflex fast lane).
         use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
@@ -1745,8 +1762,8 @@ Constraints:
             # The profile is a ceiling: the client toggles are ANDed with it (P2-03).
             enable_l2 = enable_l2 and l2_analysis_allowed(profile)
             l2_reasoning_enabled = l2_reasoning_enabled and l2_reasoning_allowed(profile)
-            # No L1 route or stakes exist until P2-06, so this is False on every tier.
-            reasoning_enabled = reasoning_enabled and l3_reasoning_allowed(profile, None, None)
+            # Route and stakes are None unless l1_routes_enabled (P2-06).
+            reasoning_enabled = reasoning_enabled and l3_reasoning_allowed(profile, route, stakes)
             if conversation_history:
                 history_for_turn = trim_history(conversation_history, profile, estimate_tokens)
             self._publish_trace("TIER", "profile_applied", {
@@ -1772,6 +1789,8 @@ Constraints:
             recall_token_budget=recall_budget_tokens(profile) if profile else None,
         )
         ctx.tier_profile = profile
+        ctx.route = route
+        ctx.stakes = stakes
         # Record who is speaking and where this turn happens (W3-10).
         ctx.speaker = speaker
         ctx.venue = venue
@@ -1784,6 +1803,14 @@ Constraints:
             ctx.offered_tools = await get_tool_registry().select_tools(
                 user_input, requester_role=requester_role, **tier_args
             )
+            if route == "task" and profile is not None:
+                if profile.allow_task_graph:
+                    # Titan: offer plan_task first when it is registered and offered.
+                    tools = list(ctx.offered_tools)
+                    tools.sort(key=lambda t: getattr(t, "name", None) != "plan_task")
+                    ctx.offered_tools = tools
+                else:
+                    ctx.prompt_notes.append(TASK_UNAVAILABLE_NOTE)
         except Exception as e:
             self.logger.warning(f"Tool selection failed (non-critical): {e}")
             ctx.offered_tools = []
