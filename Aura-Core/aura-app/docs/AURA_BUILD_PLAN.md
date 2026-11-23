@@ -2849,6 +2849,440 @@ Choices made where the PRD is open (the build agent must not reopen them):
 ---
 
 
+### Wave 5 (Phase 2 order): cards for B1 to B5 (outcomes, agenda, workspace, goals v2, curiosity, interruptibility)
+
+Written 2026-11-23 against commit 3c1ec50. Behaviour PRD sections 2 to 15, tests T1 to T12 and T14 (T13 is B0, already landed as `_turn_pipeline` in `orchestrator/coordinator.py`; B6 and B7 are not carded here). Current state: initiative is still timer-based (`GoalEngine.tick`, `_consider_new_goal`, `check_boredom` in `engines/goal/engine.py`); goal progress still rises from mood and stale goals are marked complete; pursuit is still requested by the `[GOAL_PURSUIT_REQUEST:id]` text tag (`llm/layers.py` around line 1345, regex in `frontend/src/pages/chat.tsx` around line 1294); the only server push channels are `/ws/emotion`, `/v1/stream/emotions` and `/v1/stream/traces` (`main.py`, `api/websocket.py`), and the chat polls `GET /chat/task-reports` (P2-11); `_log_interaction_experience` still writes `outcome: {"success": True}`. Already in place and reused: the clock provider (`aura.clock`: `get_clock`, `FakeClock`, `set_clock`), the decisions service (`executor/decisions.py`, kind `needs_decision` from G4-02 and G4-05 code nodes), `delegation.pause_all` / abort-all (G4-01), the task graph tables and scheduler (`executor/task_scheduler.py`, `scripts/setup_tasks.surql`), the message bus (`orchestrator/message_bus.py`, which already has a `PROPOSAL` type), `question` and `prediction` tables (`scripts/schema_v2.surql`) and `write_facts` (`engines/memory/v2/facts.py`).
+
+**B-number mapping to the Phase 2 plan.** The Phase 2 plan's B numbers are loose. It says "B2/B4 change goals and the agenda" and P2-33 names "the B2 agenda and B5 interruptibility code". Mapping used here, by the behaviour PRD's milestones: the Phase 2 "B2 agenda" is behaviour B1 (agenda table, endpoints, controls) plus B2 (workspace, drives). The Phase 2 "B4 goals v2, evidence-based" (P2-31 and P2-32 read "the result of B4") is behaviour B3 (goals v2). The Phase 2 "B4" curiosity part is behaviour B4. "B5 interruptibility" is behaviour B5. **Cards Phase 2 needs:** B1-01, B1-02, B1-04, B1-05, B1-06 and B2-04 (the gate, the agenda and the push channel, for P2-11 and P2-33); B3-01 to B3-04 (P2-31 and P2-32 extend the goal schema and criteria checker); B3-05 (P2-33 pursuit gating); B5-01 and B5-02 (P2-33 item 5). Order: B1-01 to B1-08, B2-01 to B2-04, B3-01 to B3-06, B4-01 to B4-04, B5-01 to B5-04. Cards marked "Phase 2" are marked `P2-31..33` in their Tier line note.
+
+Hooks left for Phase 2 (not designed here): P2-33 owns autonomy levels 0 to 3, the daily message and Sage budgets and `may_initiate(kind)`. B1-01 builds one gate function `may_initiate(kind)` with the PRD's three levels (`silent`, `important`, `open`) and the kill switch; P2-33 replaces the level logic and adds budgets inside the same function. Nothing else may bypass it. P2-31 owns goal stages, origin, milestones and `close_reason`. B3-01 adds only `criteria`, `abandon_reason` and the `abandoned` status, with the criterion kinds chosen so P2-32's evidence kinds extend them (`test_pass`, `file_exists`, `task_node_done`, `mai_confirms`). P2-11 owns report messages. B1-04 builds the channel and its `chat_message` event so the chat can switch from polling later; B1 does not touch `chat.tsx` polling.
+
+Shared conventions for every card below. Every new mechanism has a flag in `config.py`, off by default (the owner controls and kill switch in B1 are not flagged, they are safety, and default to the safest state). Every number is a `Field(..., validation_alias="AURA_...")` in `config.py`. Time comes from `get_clock()`; tests use `FakeClock` and restore with `set_clock(Clock())`. No model call on the chat hot path and none in a timer loop (PRD rule 2). All queries use `$param`. New fields on tables with rows are `option<...>`. New tables go in a new `scripts/schema_behavior.surql` (created in B1-01 and added to the bootstrap list in `main.py`). Aura messages only the owner proactively; guests are never contacted (D6, D15). Each card's tests include an ablation test (flag off means the old behaviour exactly) unless it adds none.
+
+---
+
+**B1-01 Behaviour config, the gate, owner control state and the trace table**
+- **PRD:** 8.3, 3 (principle 5), 14 rules 5 to 7; phase 2 hook for P2-33
+- **Tier:** frontier (Phase 2 needs: `P2-31..33` via the gate)
+- **Files:** `src/aura/config.py`, new `scripts/schema_behavior.surql`, `src/aura/main.py` (bootstrap list and router include), new `src/aura/autonomy/__init__.py`, new `src/aura/autonomy/controls.py`, new `src/aura/autonomy/trace.py`, new `tests/unit/test_autonomy_controls.py`
+- **Change:**
+  1. Config fields, all with `AURA_` aliases: `autonomy_default_level` (`silent|important|open`, default `important`, PRD open item 1 recommended value), `quiet_hours_start` and `quiet_hours_end` (local `HH:MM`, default `22:00` and `08:00`, PRD open item 3), `autonomy_enabled` (master flag for any unprompted delivery, default false), `outcomes_enabled`, `workspace_enabled`, `drives_enabled`, `goals_v2_enabled`, `curiosity_enabled`, `interruptibility_model_enabled`, `dismissal_learning_enabled` (all default false). Quiet hours use `app_timezone`.
+  2. `scripts/schema_behavior.surql`: `autonomy_control` (singleton row `autonomy_control:main`: `level` string, `muted_kinds` array of strings, `killed` bool, `killed_at` option<datetime>, `updated_at` datetime) and `autonomy_trace` (`source`, `action`, `why`, `cost` object, `refs` array, `at` datetime, `allowed` bool). Both `IF NOT EXISTS`. Add the file to the list in `main.py` after `schema_v2.surql`.
+  3. `autonomy/controls.py`: `get_controls()`, `set_level()`, `mute_kind()`, `unmute_kind()`, `set_killed()` backed by the singleton row, with an in-memory cache refreshed on write. `killed` is read synchronously from the cache so hot loops never await the database.
+  4. `may_initiate(kind: str, *, now=None) -> Decision` (a small dataclass with `allowed`, `reason`). Order: killed, then `autonomy_enabled`, then the kind is not muted, then the level (`silent`: nothing; `important`: kinds `needs_decision` and `task_done` only; `open`: everything). `reminder` items the owner created by hand are an exception allowed at `important` (the owner asked for them). Every call that would start autonomous work writes an `autonomy_trace` row through `trace.record(...)`, allowed or refused. This is the single gate P2-33 extends; the docstring says so.
+  5. `quiet_hours_active(now)` in `controls.py`, using the clock and `app_timezone`; handles a window that crosses midnight.
+- **Tests:** each level allows exactly its kinds; muted kind refused; killed refuses everything including `reminder`; master flag off refuses and the trace row says why; quiet hours across midnight with a FakeClock; the singleton survives a re-read; trace rows written for allowed and refused calls.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** read wall time or `settings` inside `may_initiate` beyond the documented fields; add budgets or numeric autonomy levels (P2-33).
+
+---
+
+**B1-02 Agenda table, service and the refs rule**
+- **PRD:** 8, rule 3 (item without `refs` rejected)
+- **Tier:** bulk (Phase 2 needs: P2-32 flags orphans and conflicts "on the agenda")
+- **Depends on:** B1-01
+- **Files:** `scripts/schema_behavior.surql`, new `src/aura/autonomy/agenda.py`, `src/aura/config.py`, new `tests/unit/test_agenda.py`
+- **Change:**
+  1. `agenda_item` table: `kind` (ASSERT in `finding`, `task_done`, `needs_decision`, `question_for_you`, `reminder`, `observation`), `content`, `refs` array of strings, `priority` float, `venue` string (default `app`), `created_at`, `expires_at` option<datetime>, `state` (ASSERT in `pending`, `delivered`, `acknowledged`, `dismissed`, `expired`), `delivered_at` option<datetime>, `resolved_at` option<datetime>, `source` string, `due_at` option<datetime>. Index on `state`.
+  2. `AgendaService.create(kind, content, refs, priority, venue="app", expires_at=None, due_at=None, source)` rejects an empty `refs` with `ValueError("agenda item needs refs")` (principle 1), clamps priority to 0..1, and rejects an unknown kind.
+  3. `effective_priority(item, now)`: stored priority decayed by a per-kind rate (`agenda_decay_per_hour_<kind>` config fields, floats, defaults 0 for `needs_decision` and `reminder`, small for the rest). Pure function.
+  4. `list(states=None)`, `get(id)`, `acknowledge(id)`, `dismiss(id)`, `expire_due(now)` (moves pending or delivered items past `expires_at` to `expired`, silently). `acknowledge` and `dismiss` only act on `delivered` or `pending` items and stamp `resolved_at`. Use `get_clock()` throughout.
+  5. Venue is a string for now (`app`, or `discord:<channel>` later); only `app` is delivered in B1.
+- **Tests:** create without refs fails; unknown kind fails; decay is pure and monotone; expiry moves items without delivering them; state transitions; double acknowledge is a no-op; parameterised queries only (a quote in `content` round-trips).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add a model call to draft content; callers pass the drafted `content`.
+
+---
+
+**B1-03 Explicit outcome feedback and task evidence (extends G5-03)**
+- **PRD:** 11, finding B8
+- **Tier:** bulk
+- **Depends on:** B1-01, G5-03 (the per-turn classifier, `engines/learning/outcomes.py`, the ring of owner turns and `LearningEngine.set_experience_outcome` already exist; do not build a second classifier)
+- **Files:** `src/aura/engines/learning/outcomes.py`, `src/aura/api/routes/chat.py` (new `POST /chat/outcome`), `src/aura/orchestrator/coordinator.py` (only if the message id to experience id mapping needs exposing), `src/aura/config.py`, new `tests/unit/test_outcome_feedback.py`
+- **Change:**
+  1. `POST /chat/outcome` `{experience_id or message_id, signal: "up"|"down"}`: owner only (same role check as the other owner routes). It records an explicit signal through G5-03's override path, so explicit beats implicit, and calls the same downstream hooks G5-03 calls (G5-04's `apply_outcome` when skill attribution is on).
+  2. Positive task evidence: when a delegated task or a task-graph code node in the same conversation finishes with tests passing (the review verdict PASS) or an approved merge, the turn that requested it is marked `positive` with source `task`. Read the existing task and graph rows; add no new events.
+  3. Extend G5-03's signal vocabulary only by adding `source` values (`explicit`, `task`); keep `positive|negative|unknown`.
+  4. Gated on G5-03's `outcome_signals_enabled`; no new master flag.
+  5. A docstring lists the consumers: skill statistics (G5-04), prediction settlement (B6), dismissal learning (B5-03).
+- **Tests:** an explicit "down" overrides an implicit unknown; an explicit "up" overrides an implicit negative; a guest cannot post an outcome (403); a passing delegated task marks its requesting turn positive; a failing one leaves it as is; flag off: the route returns 404 or a no-op and nothing changes (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add a second correction or rephrase detector; call a model.
+
+---
+
+**B1-04 `/ws/aura` channel and event hub**
+- **PRD:** 8.4, finding B5; design hook for P2-11 (chat report polling switches to this later)
+- **Tier:** frontier (Phase 2 needs: `P2-31..33` and P2-11 follow-up)
+- **Depends on:** B1-01
+- **Files:** `src/aura/api/websocket.py` (new `aura_manager` and endpoint function, same `ConnectionManager` style), new `src/aura/autonomy/channel.py`, `src/aura/main.py` (`@app.websocket("/ws/aura")`), `src/aura/api/routes/` (new `aura_events.py` for the catch-up route), `src/aura/config.py`, new `tests/unit/test_aura_channel.py`
+- **Change:**
+  1. `channel.py`: `publish(event_type, payload, *, persist=True)` builds an envelope `{"v": 1, "seq": n, "type": ..., "at": iso, "payload": {...}}`. Types in B1: `aura_message`, `agenda_update`, `drive_state`, `chat_message`, `autonomy_state`, `ping`. `seq` is a monotone integer per process. A bounded ring buffer (`aura_channel_buffer`, default 200) keeps recent events.
+  2. `chat_message` payload is exactly the message dict that `GET /chat/task-reports` returns (`id`, `conversationId`, `content`, `role`, `timestamp`, `meta`). That is the design hook: P2-11's task reports can later call `publish("chat_message", msg)` and the chat can subscribe instead of polling. Do not change `executor/task_reports.py` or `chat.tsx` in this card.
+  3. `/ws/aura`: on connect, the client may send `{"type": "hello", "last_seq": n}` and receives the buffered events after `n`, then live events. A `ping` every 30 s (same pattern as `/v1/stream/traces`). Client messages of type `presence` are accepted and stored in a small in-memory `PresenceState` (typing, active view, last interaction time) for B5, nothing else is read from the client.
+  4. `GET /aura/events?since_seq=n` returns the buffered events after `n`, the polling fallback (reconnect, tests, and a way for P2-11 to migrate in two steps).
+  5. Events are delivered to the owner's app connection only. There is no per-guest channel; guests reach Aura only through Discord, and nothing in this card sends to Discord.
+  6. Flag `AURA_WS_AURA_ENABLED` (default false): when off, the endpoint closes with 1008 and `publish` is a no-op that still returns the envelope.
+- **Tests:** ordering and seq; catch-up after a given `last_seq`; the buffer bound; a failing client is dropped without affecting others; `publish` with the flag off sends nothing; `chat_message` payload equals the shape of a `/chat/task-reports` message (compare keys); presence is stored.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add auth schemes (the API is unauthenticated like the rest, per the open FOR_MAI item); migrate the chat's polling.
+
+---
+
+**B1-05 Agenda endpoints and manual-item delivery**
+- **PRD:** 8, 8.2 (first part), 8.4; tests T4, T5
+- **Tier:** bulk (Phase 2 needs: P2-33 reads delivery and P2-32 posts to the agenda)
+- **Depends on:** B1-02, B1-04
+- **Files:** new `src/aura/api/routes/agenda.py`, `src/aura/main.py` (router include; start and stop of the deliverer), new `src/aura/autonomy/delivery.py`, `src/aura/config.py`, new `tests/unit/test_agenda_delivery.py`
+- **Change:**
+  1. Routes: `GET /agenda?state=` (default pending and delivered), `POST /agenda` (owner creates a manual item: `kind` limited to `reminder` and `observation` here, `content`, `refs` default `["owner:manual"]` so manual items satisfy the refs rule honestly, `due_at`, `expires_at`), `POST /agenda/{id}/ack`, `POST /agenda/{id}/dismiss`. Each state change publishes `agenda_update` on the channel.
+  2. `delivery.py`: `AgendaDeliverer` is event-driven (PRD 4.3). It runs `deliver_due()` when an item is created, when an item's `due_at` arrives (one `asyncio` timer set for the earliest `due_at`, re-armed on change, using the clock's `now`), when controls change, and on the 5-minute fallback check (`agenda_fallback_seconds`, default 300) which only handles stuck items. No model call.
+  3. `deliver_due()` for each pending item whose `due_at` has passed: skip when `may_initiate(item.kind)` refuses (item waits), skip inside quiet hours (item waits, or expires if `expires_at` passed, T4), otherwise set `delivered`, publish `aura_message` for priority at or above `agenda_message_priority` (default 0.7) and `agenda_update` only (quiet indicator) below it. Write an `autonomy_trace` row for each delivery.
+  4. Interruptibility is a stub function `interruptibility(now)` returning 1.0, in `delivery.py`, called through one name so B5-01 replaces it. Say so in the docstring.
+  5. An item created while `silent` is stored and not delivered (T5); it is still readable through `GET /agenda`.
+- **Tests (T4, T5):** quiet hours with a FakeClock: nothing delivered, item still pending, then delivered after the window or expired when `expires_at` passes; `silent`: item stays pending, drives and creation still work, no `aura_message`; muted kind waits; delivery sets state and publishes once; `due_at` in the future is not delivered early; the fallback timer does not double-deliver; routes round-trip.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add Discord delivery; deliver to any venue other than `app`.
+
+---
+
+**B1-06 Owner controls API and the kill switch (T14)**
+- **PRD:** 8.3, test T14, principle 5, D6
+- **Tier:** frontier (Phase 2 needs: P2-33 reuses the same routes for its slider)
+- **Depends on:** B1-01, B1-05
+- **Files:** `src/aura/autonomy/controls.py`, new `src/aura/autonomy/registry.py`, new `src/aura/api/routes/autonomy.py`, `src/aura/main.py`, `src/aura/executor/delegation.py` (only the existing `abort_all` entry point is called, not edited), `src/aura/executor/task_scheduler.py` (call its existing `shutdown`/cancel path only), `src/aura/engines/goal/engine.py` (`pursue_goal_autonomously` registers its task), new `tests/unit/test_autonomy_kill_switch.py`
+- **Change:**
+  1. `registry.py`: `register_autonomous_task(task: asyncio.Task, kind: str, owner_ref: str)` (added to a module set with a done-callback that removes it, so no unbounded growth), `cancel_all(reason)`, and `interrupt_for_user()` (cooperative pause hook, a no-op list of callbacks for now that B2-04 and B4-02 fill).
+  2. Routes: `GET /autonomy` (level, muted kinds, killed, quiet hours, enabled flags), `PUT /autonomy/level`, `POST /autonomy/mute` and `POST /autonomy/unmute` `{kind}`, `POST /autonomy/kill`, `POST /autonomy/resume` (clears the kill; does not restart anything that was cancelled). Each change publishes `autonomy_state` and writes a trace row.
+  3. Kill: set `killed` first (synchronous cache, so every `may_initiate` refuses at once), then `cancel_all`, then abort every autonomous delegation (call the G4-01 abort-all) and cancel running task graphs that were started autonomously (graphs carry `created_by_turn`; autonomous graphs have none, so select those and call the scheduler's cancel path; leave owner-started graphs alone and say so in the response). Return what was stopped. Everything must have finished within 2 s on the FakeClock-free path; the test measures wall time with fakes.
+  4. `GoalEngine.pursue_goal_autonomously`: wrap its work in a registered task and call `may_initiate("pursue_goal")` first (refused when `silent`, muted or killed). `check_goals_needing_autonomous_pursuit` returns an empty list when the gate refuses. These two gates apply only when `autonomy_enabled`; off means the old behaviour.
+- **Tests (T14):** with several fake long-running autonomous tasks, a delegation and an autonomous graph, `POST /autonomy/kill` cancels them all in under 2 s, leaves an owner-started graph running, and `may_initiate` refuses afterwards; resume clears the flag without restarting; level changes are reflected by `GET /autonomy`; gate on the goal engine blocks pursuit when `silent`; flag off leaves pursuit unchanged.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** make the kill switch depend on a flag, or on the database being reachable for the in-memory refusal.
+
+---
+
+**B1-07 Frontend: quiet indicator, agenda panel, owner controls, thumbs**
+- **PRD:** 8.3, 8.4, 11 (thumbs control)
+- **Tier:** bulk
+- **Depends on:** B1-03, B1-04, B1-05, B1-06
+- **Files:** new `frontend/src/services/auraChannel.ts`, new `frontend/src/hooks/useAuraChannel.ts`, new `frontend/src/components/agenda/` (AgendaIndicator, AgendaPanel, AutonomyControls), `frontend/src/pages/chat.tsx` (render `aura_message` events as assistant messages and the thumbs control; do not touch the task-report polling or the pursuit tag code), `frontend/src/services/auraApiService.ts` (client calls), the settings or dashboard page that fits (find it with grep, add the controls there)
+- **Change:**
+  1. `auraChannel.ts`: a WebSocket client for `/ws/aura` with reconnect and `hello {last_seq}`; sends `presence` (typing, active view) throttled to once per 5 s. `useAuraChannel` exposes events by type.
+  2. Indicator: a small badge with the pending count; opening it shows the agenda items with acknowledge and dismiss. High-priority items arrive as assistant messages in the chat marked "Aura started this".
+  3. Controls: level selector, per-kind mute switches, a clearly separated kill button with a confirm, and the killed state shown when set.
+  4. Thumbs up and down on each assistant message calling `POST /chat/outcome`.
+  5. Existing glass-panel styles; no new dependencies.
+- **Tests:** vitest render tests: the indicator count; ack and dismiss call the API; the kill confirm; thumbs call the API; an `aura_message` event appears in the chat; the client resends `hello` with the last seq after a reconnect.
+- **Done when:** `npm test` and `npm run build` pass, and the full Python suite passes.
+- **Do not:** change how the chat polls `/chat/task-reports`.
+
+---
+
+**B1-08 B1 scenario tests on the simulated clock (T4, T5, T14)**
+- **PRD:** 12 T4, T5, T14
+- **Tier:** bulk
+- **Depends on:** B1-01 to B1-06
+- **Files:** new `tests/scenarios/test_behavior_b1.py`, `docs/FOR_MAI.md`
+- **Change:**
+  1. Three end-to-end scenarios over the real services with fakes and a `FakeClock`: T4 (a reminder due at 02:00 inside quiet hours is delivered at 08:00, or expires), T5 (`silent`: create items, advance a day, nothing delivered, nothing started, controls still readable), T14 (kill during a running fake investigation and a fake delegation, all stopped within 2 s).
+  2. Add to FOR_MAI the three PRD open items that B1 chose defaults for (autonomy default `important`, quiet hours 22:00 to 08:00) so Mai can confirm or change them.
+- **Tests:** the scenarios.
+- **Done when:** the scenarios pass and the full suite passes.
+
+---
+
+**B2-01 Drives as persisted scalars**
+- **PRD:** 5, principle 3 and 6
+- **Tier:** frontier
+- **Depends on:** B1-01, B1-04
+- **Files:** `scripts/schema_behavior.surql`, new `src/aura/autonomy/drives.py`, `src/aura/config.py`, new `tests/unit/test_drives.py`
+- **Change:**
+  1. `drive_state` singleton row `drive_state:main`: `curiosity`, `competence`, `connection`, `coherence`, `rest` floats 0..1 (default 0.3), `updated_at`.
+  2. `DriveModel` with pure arithmetic, no model call: `on_event(name, payload, now)` applies per-event deltas from config (`drive_delta_<event>_<drive>`, all in `config.py`): events `question_opened`, `question_resolved`, `prediction_failed` (reserved for B6), `goal_unfinished_tick`, `task_done`, `finding_pending`, `finding_delivered`, `exchange_happened`, `contradiction_open`, `contradiction_settled`, `dream_completed`, `consolidation_debt` (count of `episode` rows with `extraction_status = "pending"`, read from the table with a parameterised count query; no new field). Plus slow time drift: `drive_decay_per_hour` toward baseline, computed from `now - updated_at` when an event arrives, not from a timer.
+  3. `gain(drive, emotion_vector) -> float`: the drive level times an emotion factor in `[0.8, 1.2]` built from the matching dimensions (curiosity: `curiosity`, `fascination`; competence: `boredom`; others 1.0). Emotion modulation is behind `drive_emotion_modulation_enabled` (default false, ablation: off means factor 1.0). The 20% bound is a clamp in code and in a test.
+  4. Persist after each change; publish `drive_state` on the channel (if enabled). Whole feature behind `drives_enabled`. Drives update even at autonomy `silent` (T5).
+  5. Boredom stops being a goal generator in B3-06, not here; here it is only an input to the gains.
+- **Tests:** each event moves only the listed drives; values clamp to 0..1; decay is computed from the FakeClock; the factor never leaves 0.8 to 1.2 even with extreme emotions; modulation off gives exactly the raw level (ablation); persistence round trip; flag off does nothing and writes no row.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** call a model; read `datetime.now`.
+
+---
+
+**B2-02 Proposals and the workspace registry**
+- **PRD:** 4.1
+- **Tier:** bulk
+- **Depends on:** B2-01
+- **Files:** new `src/aura/orchestrator/workspace.py`, `src/aura/orchestrator/message_bus.py` (read only; use its existing `PROPOSAL` type and `subscribe`), `src/aura/models/` (read `EngineMessage` first), `src/aura/config.py`, new `tests/unit/test_workspace_proposals.py`
+- **Change:**
+  1. `Proposal` and `Cost` models per PRD 4.1: `source`, `kind` (the seven kinds), `summary`, `refs`, `urgency`, `value`, `cost` (`tokens`, `seconds`, `risk` in `read|write|execute|send`), `expires_at`, `created_at`, `id`. A proposal needs non-empty `refs` (same rule as the agenda) and a `summary` of one line.
+  2. `Workspace.post(proposal)`: validates, stores in a bounded in-memory dict (`workspace_max_proposals`, default 50, oldest expired first), and returns the id. Engines may post through the message bus (`PROPOSAL` message) or by calling `post` directly; the workspace subscribes once and converts bus messages.
+  3. `live(now)` drops expired proposals. Duplicates (same `source`, `kind` and sorted `refs`) replace the older one.
+  4. Everything behind `workspace_enabled`; off means `post` returns None and nothing subscribes.
+- **Tests:** validation (empty refs, multi-line summary); expiry with a FakeClock; duplicate replacement; bound; a bus `PROPOSAL` message reaches the workspace; flag off is inert.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** replace or modify the message bus.
+
+---
+
+**B2-03 The attention step**
+- **PRD:** 4.2, principle 2, rule 5
+- **Tier:** frontier
+- **Depends on:** B2-02, B1-01
+- **Files:** `src/aura/orchestrator/workspace.py`, `src/aura/autonomy/trace.py`, `src/aura/config.py`, new `tests/unit/test_workspace_attention.py`
+- **Change:**
+  1. `Workspace.attend(now, budget) -> Winner | None`. Steps: a pending user message wins and pre-empts (returns None for autonomous work and calls `registry.interrupt_for_user()`); otherwise drop proposals refused by `may_initiate(kind_to_gate_kind)` (map each proposal kind to a gate kind; `respond` is never autonomous); drop proposals whose cost exceeds the `budget` object passed in (rule 4: the caller passes the budget, `attend` never reads config or wall time; the budget object is a small dataclass with `tokens`, `seconds` and `allow_risk`, and B4-03 fills it); score each remaining proposal `urgency * value * drive_gain / max(cost_score, epsilon)`, where `cost_score` is a normalised combination from config weights and `drive_gain` comes from B2-01 by the kind-to-drive map from PRD section 5 (`investigate` to curiosity, `pursue_goal` and `practice` to competence, `share` and `ask_user` to connection, `consolidate` to rest, `ask_user` also to coherence taking the max).
+  2. Rejections and the winner each write an `autonomy_trace` row with source, reason and cost (rule 5). Ties break by `created_at`.
+  3. The winner is published on the bus as a broadcast message and returned; the outcome is posted back later as an event (B2-04).
+  4. A cooldown is NOT designed here; B5-02 owns refractory periods. `attend` only picks.
+- **Tests:** a user message wins over a high-scoring proposal; the highest scored wins; an over-budget proposal is rejected and logged; a proposal refused by the gate (silent, muted, killed) is rejected and logged; the drive gain changes the winner; with `drives_enabled` off the gain is 1.0 (ablation); every outcome has a trace row; `attend` called with a FakeClock never reads wall time.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B2-04 Event triggers, the cycle runner and the pre-emption hook (T1, T12)**
+- **PRD:** 4.3, test T1, T12, finding B1 and B7
+- **Tier:** frontier (Phase 2 needs: P2-33 relies on the cycle being the only self-start path)
+- **Depends on:** B2-03, B1-06
+- **Files:** `src/aura/orchestrator/workspace.py` (`Workspace.on_event`, `run_cycle`), `src/aura/orchestrator/coordinator.py` (one hook in `_turn_pipeline` that fires `user_message` and nothing else; also one in `_dreaming_sequence` end for `dream_completed`), `src/aura/executor/task_queue.py` and `src/aura/executor/task_scheduler.py` (one call each to `on_event("task_result")` at the existing completion points; read them first), `src/aura/engines/goal/engine.py` (`tick`: skip the boredom and idle `_consider_new_goal` branches when `workspace_enabled`), `src/aura/main.py` (create and start), `src/aura/config.py`, new `tests/unit/test_workspace_cycle.py`
+- **Change:**
+  1. Event names: `user_message`, `task_result`, `question_resolved`, `prediction_settled` (reserved for B6), `dream_completed`, `agenda_due`. `on_event` updates drives (B2-01) and schedules a cycle with `asyncio` (never awaited inside the turn; the hook is `create_task` with exceptions logged). A slow fallback (`workspace_fallback_seconds`, default 300) only checks that nothing is stuck; it posts no proposals and calls no model.
+  2. `run_cycle`: call `attend`, and when there is a winner, dispatch by kind to a handler registered with `register_handler(kind, coro)`. B2 registers none (handlers come in B4 and B5); an unhandled winner is traced as "no handler" and dropped. So at the end of B2 nothing autonomous happens yet, which is the point: T1.
+  3. Pre-emption (T12): `user_message` calls `registry.interrupt_for_user()` synchronously inside the hook before the reply is generated; handlers registered by autonomous work must pause within 2 s. The workspace supplies `PauseToken` (an `asyncio.Event`) that long autonomous work checks between steps; define it here and use it in B4-02.
+  4. With `workspace_enabled` on, the goal engine's `tick` no longer creates goals from boredom or idle time (the B1 finding), and says so in the trace once at startup. Off keeps the old branches exactly. The goal-progress and stale-goal code in `tick` is left for B3.
+  5. Hook placement is one place in `_turn_pipeline` (B0 merged the pipelines), so T13 stays true: add a test that both entry points fire it once.
+- **Tests:** T1 (idle for six simulated hours with no questions and no findings, no cycle produces a delivery or an investigation, zero `aura_message` events); T12 (a fake autonomous task holding a `PauseToken` pauses within 2 s of a `user_message` event while the reply proceeds); each event name schedules exactly one cycle; the fallback does not post proposals; the boredom branch is skipped when on and runs when off (ablation); both entry points fire the hook once.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add a model call to a cycle, or put work on the chat reply path.
+
+---
+
+**B3-01 Goal schema v2: criteria, evidence, abandoned**
+- **PRD:** 9, findings B2 and B3; hook for P2-31
+- **Tier:** frontier (Phase 2 needs: `P2-31..32`)
+- **Depends on:** B1-01
+- **Files:** `src/aura/models/goal.py`, `scripts/init_schema.surql` (or a `DEFINE FIELD IF NOT EXISTS` block in `scripts/schema_behavior.surql`; prefer the latter so existing databases migrate), `src/aura/engines/goal/engine.py` (`_load_active_goals` and the goal create paths, read only for the row shape), `src/aura/config.py`, new `tests/unit/test_goal_criteria_model.py`
+- **Change:**
+  1. `Goal.status` gains `abandoned`. New `option` fields on the `goal` table and model: `criteria` (array of objects), `abandon_reason`, `last_evidence_at`, `evidence` (array of objects). Existing rows read as `None` and behave as before.
+  2. Criterion shape: `{"id": str, "name": str, "kind": "test_pass"|"file_exists"|"question_resolved"|"owner_confirms"|"task_node_done", "spec": dict, "status": "open"|"met", "met_at": option, "evidence_ref": option str}`. The kind names deliberately match the P2-32 evidence kinds (`test_pass`, `file_exists`, `task_node_done`, `mai_confirms` maps to `owner_confirms`) so P2-31 and P2-32 add `milestones` on top without renaming. Say so in a comment.
+  3. Helper `Goal.progress_from_criteria()` returns met over total, or None when there are no criteria.
+  4. The `goal` list and get routes (`api/routes/goal.py`) return the new fields. Add `POST /goal/{id}/criteria` (owner adds or edits criteria) and `POST /goal/{id}/criteria/{cid}/confirm` (the owner confirms an `owner_confirms` criterion).
+  5. Everything behind `goals_v2_enabled` for behaviour; the schema and fields exist always (option, harmless).
+- **Tests:** model round trip with and without the new fields; legacy rows load; `progress_from_criteria`; criteria routes; owner confirm only works on `owner_confirms`; abandoned status accepted by the table.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add stages, milestones, origin objects or `close_reason` (P2-31).
+
+---
+
+**B3-02 Criteria checker and evidence-based progress (T7)**
+- **PRD:** 9, finding B2, test T7
+- **Tier:** frontier (Phase 2 needs: `P2-32` extends this checker with commits and metrics)
+- **Depends on:** B3-01
+- **Files:** new `src/aura/engines/goal/evidence.py`, `src/aura/engines/goal/engine.py` (`tick`: replace the mood-increment block when `goals_v2_enabled`; `update_goal_progress` read first), `src/aura/config.py`, new `tests/unit/test_goal_evidence.py`
+- **Change:**
+  1. `evidence.check(goal, now) -> list[Met]`, code only, no model call: `file_exists` (path under a registered workspace only; read the G3 workspace registry and refuse paths outside), `test_pass` (a delegation or code-node task row with tests passing for the goal id), `task_node_done` (a `task_node` row in `done` state for the graph linked to the goal), `question_resolved` (the `question` row status is `resolved`), `owner_confirms` (set by the route in B3-01).
+  2. In `tick`, when `goals_v2_enabled`: remove the emotional-alignment increment. Progress is set to `progress_from_criteria()` (met over total) only when it changed, with the reason "criterion met: <name>" and `last_evidence_at` stamped. A goal without criteria keeps its progress unchanged (T7: matching mood and no work done leaves progress at zero). Completion at 100% requires all criteria met.
+  3. Also trigger the check on events (a task node finishing, B2-04's `task_result`), not only the 30-second tick, so progress is prompt.
+  4. Leave the mood code path untouched when the flag is off (ablation test).
+- **Tests (T7):** a goal with matching mood and no work done stays at 0.0 over many ticks; a `file_exists` criterion met moves progress; each kind positive and negative; a path outside a registered workspace is not evidence; completion only when all met; flag off still raises progress by mood (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** accept an LLM statement as evidence; implement milestones or stages.
+
+---
+
+**B3-03 Stall and abandonment, remove stale-complete (T8)**
+- **PRD:** 9, finding B3, test T8
+- **Tier:** bulk
+- **Depends on:** B3-02
+- **Files:** `src/aura/engines/goal/engine.py` (`tick` stale block, `update_goal_progress`), `src/aura/autonomy/agenda.py` (read), `src/aura/config.py`, new `tests/unit/test_goal_abandonment.py`
+- **Change:**
+  1. When `goals_v2_enabled`, replace the "older than 24 h with under 10 percent progress is marked complete at 100 percent" block with: a goal whose `last_evidence_at` (or `created` when none) is older than `goal_stall_days` (default 7) and which is not complete becomes `abandoned` with `abandon_reason` "no evidence for N days", a `completed` stamp left empty, and progress unchanged.
+  2. An agenda `observation` item with the goal id in `refs` tells the owner once (through `AgendaService`, subject to `may_initiate`).
+  3. The owner can reopen an abandoned goal (`POST /goal/{id}/reopen`), which resets `last_evidence_at` to now.
+  4. Flag off keeps the old stale-complete branch exactly.
+- **Tests (T8):** a goal stalled past the limit becomes `abandoned`, never `completed`, progress not set to 1.0; a goal with fresh evidence is not abandoned; the agenda item is created once; reopen; flag off keeps the old behaviour (ablation). Clock via FakeClock.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B3-04 Pursuit grants and the risk check (T11)**
+- **PRD:** 9, principle 4, rule 7, test T11
+- **Tier:** frontier (Phase 2 needs: P2-33 item 3 builds on grants)
+- **Depends on:** B3-02, B1-05
+- **Files:** `scripts/schema_behavior.surql`, new `src/aura/autonomy/grants.py`, `src/aura/executor/tool_executor.py` (`execute_tool_call`; read the role and tier checks first), `src/aura/executor/tool_registry.py` (read `Risk` only), `src/aura/config.py`, new `tests/unit/test_pursuit_grants.py`
+- **Change:**
+  1. `pursuit_grant` table: `goal_id`, `scope` (`write`, `execute`, `send`), `budget` object (`tokens`, `minutes`, `calls`, all option), `granted_by`, `granted_at`, `expires_at`, `revoked_at` option<datetime>. Read-only work needs no grant.
+  2. `grants.check(goal_id, risk, now) -> bool`: false when no live grant for that risk. A tool with an unknown risk counts as needing a grant (PRD rule 7).
+  3. `execute_tool_call` accepts a reserved `_autonomous` context (`{"goal_id": ..., "source": ...}`), passed the same way as `_venue`, `_requester_role` and `_session`, and never in the model-visible schema (see W1-02 and G4-04a). When present and the tool's risk is above `read` and `grants.check` fails: the call is refused with a clear message, a `needs_decision` agenda item is created with `refs=[goal_id, tool_name]` (once per goal and tool, not per call), and an `autonomy_trace` row is written. Owner-initiated calls (no `_autonomous`) are unchanged. The order stays: role, tier, session, then this check.
+  4. Grants are revoked automatically at expiry and by the kill switch (B1-06 calls `grants.revoke_all()`).
+  5. Behind `goals_v2_enabled`.
+- **Tests (T11):** an autonomous write call without a grant is blocked and one `needs_decision` item is created, a second blocked call adds no duplicate; with a live grant it passes; an expired grant blocks; an unknown-risk tool needs a grant; an owner call is unaffected; the schema offered to the model has no `_autonomous` argument; kill revokes grants; flag off changes nothing.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** infer read-only from a tool's name.
+
+---
+
+**B3-05 `request_pursuit` tool, decision to grant (replaces the text tag)**
+- **PRD:** 9, finding B4
+- **Tier:** frontier
+- **Depends on:** B3-04
+- **Files:** new `src/aura/tools/request_pursuit.py`, `src/aura/executor/tool_registry.py` (registration; read how `plan_task` is registered and gated), `src/aura/executor/decisions.py` (`answer`: after a `needs_decision` with `action="pursuit"` is allowed, create the grant), `src/aura/autonomy/grants.py`, `src/aura/config.py`, new `tests/unit/test_request_pursuit.py`
+- **Change:**
+  1. Tool `request_pursuit(goal_id, scope, budget)`: owner role only (guests cannot call it); validates the goal exists and is active, `scope` in `read`, `write`, `execute`, `send`, and the budget numbers are within config caps (`pursuit_max_minutes`, `pursuit_max_tokens`). A `read` scope needs no grant: the tool starts a read-only pursuit under the gate and returns. Other scopes create a `needs_decision` through `DecisionService.create` (`action="pursuit"`, `risk` from scope, `message` stating goal, scope, budget and expiry) plus an agenda item (`kind="needs_decision"`, `refs=[goal_id, decision_id]`), and return "waiting for the owner".
+  2. `DecisionService.answer`: when the decision's `action == "pursuit"` and it is allowed, call `grants.create(...)` with the expiry from `pursuit_grant_hours` (default 24); denied creates nothing. The existing early return for `needs_decision` is kept; only add this branch before it.
+  3. Tool offered only when `goals_v2_enabled` and the tier profile allows tools (same pattern as `plan_task`). Off means the tool list is exactly as before.
+- **Tests:** guest refused; unknown goal refused; read scope starts without a decision; write scope creates exactly one decision and one agenda item; approving creates a grant with an expiry; denying does not; flag off leaves the tool list unchanged.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B3-06 Remove the pursuit text tag; goal creation under the gate**
+- **PRD:** 9 (last bullets), finding B4, principle 1
+- **Tier:** bulk
+- **Depends on:** B3-05, B2-04
+- **Files:** `src/aura/llm/layers.py` (the `GOAL_PURSUIT_REQUEST` prompt blocks near lines 1345 to 1380), `frontend/src/pages/chat.tsx` (`checkForGoalPursuitRequest` and its callers), `src/aura/engines/goal/engine.py` (`_consider_new_goal`, `check_boredom`, `generate_goal_on_demand` callers), `src/aura/config.py`, new `tests/unit/test_goal_tag_removed.py`, frontend test
+- **Change:**
+  1. When `goals_v2_enabled`: the prompt section that teaches the tag is replaced by two sentences telling Aura to use the `request_pursuit` tool. Off keeps the tag text byte for byte. Do not otherwise edit the prompt (P2-12 rewrites it).
+  2. `chat.tsx`: when the server reports `goals_v2` on (read from `GET /autonomy`), skip the tag regex and modal; otherwise unchanged. Remove the regex path entirely only in a later cleanup card, after the flag defaults on (say so in a code comment).
+  3. Goal creation by Aura: goals come from the owner, from an accepted drive proposal or (at `open`) from a read-only curiosity question. `_consider_new_goal` under `goals_v2_enabled` returns immediately unless called with an `accepted_proposal` argument. `check_boredom` stays as a read-only getter (an input to drive gains). Leave the hook comment: P2-33 re-adds proposals at its level 2 through `may_initiate`.
+- **Tests:** the prompt contains the tag text with the flag off and not with it on; `_consider_new_goal` creates nothing from `boredom` or `idle_exploration` triggers when on; an accepted proposal still creates a goal; frontend test: with `goals_v2` on a `[GOAL_PURSUIT_REQUEST:x]` string in a reply opens no modal.
+- **Done when:** the new tests pass, `npm test` and `npm run build` pass, and the full suite passes.
+- **Do not:** delete the tag code path while the flag can still be off.
+
+---
+
+**B4-01 Question scoring without learning value (and random ablation)**
+- **PRD:** 6.1, 6.2 (relevance and tractability), ablation list; hook for B6 learning value
+- **Tier:** frontier
+- **Depends on:** B2-04
+- **Files:** `scripts/schema_behavior.surql` (option fields on `question`: `score`, `scored_at`, `tractability`, `parked_reason`, `resolved_by`), new `src/aura/autonomy/curiosity.py`, `src/aura/engines/memory/v2/` (read how `question` rows are created and recalled; relevance reads the graph through the existing recall or graph query helpers, not new SQL strings built by hand), `src/aura/config.py`, new `tests/unit/test_question_scoring.py`
+- **Change:**
+  1. `relevance(question) -> float`: closeness to the owner's active goals, projects and recent topics. Use the question's linked entities from the graph; score by shared entities with active goals and with entities of the last N episodes (`curiosity_recent_episodes`, default 20). Pure arithmetic on rows read once per cycle.
+  2. `tractability(question) -> (float, route)`: rule-based, no model: a question linked to a speaker or preference node is `ask_user` (tractability 1.0 for asking, 0 for tools); a question with external-looking entities (libraries, products, urls) is `search`; a question about files in a registered workspace is `read`; otherwise `search` with a low value. Routes: `search`, `read`, `ask_user`, `park`.
+  3. `score = learning_value * relevance * tractability` where `learning_value` is the constant `1.0` through one function `learning_value(question)` that B6 replaces. Say so in the docstring.
+  4. Only questions visible to the owner and created from owner conversations are scored. Guest-created or guest-visibility questions are never scored or investigated (PRD open item 4 recommended: only the owner; confirm with Mai).
+  5. Ablation flag `curiosity_random_choice` (default false): when on, the choice among questions above a minimum is random with a seeded RNG passed in (`random.Random`). The default is the scored choice.
+  6. `pick_questions(now, limit)` returns the top scored open questions with their route and writes the score back (option fields). Behind `curiosity_enabled`.
+- **Tests:** two questions, one relevant and tractable ranks above one irrelevant; owner-preference question routes to `ask_user`; guest-visibility question excluded; random mode picks differently from scored mode under a seeded RNG (ablation); scoring is stable (same inputs, same order); flag off returns nothing.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add learning-value or prediction-error tracking (B6).
+
+---
+
+**B4-02 Investigations: bounded, read-only, pausable**
+- **PRD:** 6.3 (steps 1 to 4), principle 4, tests T11 (shared with B3-04), T12 (shared with B2-04)
+- **Tier:** frontier
+- **Depends on:** B4-01, B2-04, B3-04
+- **Files:** new `src/aura/autonomy/investigation.py`, `src/aura/executor/task_scheduler.py` (read `_run_research`, `_ResearchExecutor` and `_research_tool_definitions`; reuse them, do not copy), `src/aura/engines/memory/v2/facts.py` (`write_facts`, read the provenance handling first), `src/aura/orchestrator/workspace.py` (register the handler for `investigate`), `src/aura/config.py`, new `tests/unit/test_investigation.py`
+- **Change:**
+  1. `InvestigationRunner.run(question, route, budget, pause_token)`: reuses the research-node loop of the task scheduler with its read-only tool set (search, read, recall). Hard limits from config: `investigation_max_tokens`, `investigation_max_tool_calls`, `investigation_max_minutes`; any limit stops it and records the reason. Every tool call carries `_autonomous={"goal_id": None, "source": "investigation"}` so B3-04 blocks any non-read tool and creates a `needs_decision` item (T11 at investigation level).
+  2. Model calls happen only inside the investigation, which is itself an event handler for a winning `investigate` proposal (rule 2); each call goes through the existing budget and cost record. Uses the L2 model, never L3, unless the tier profile says otherwise.
+  3. `PauseToken` from B2-04 is checked between steps; a user message pauses within 2 s and the run resumes only on the next winning cycle (state `paused`, progress kept). The runner registers its task with `registry.register_autonomous_task` so the kill switch stops it (T14).
+  4. Result: findings written with `write_facts` (provenance `external`, with source urls in the existing sources field). A trace row records cost.
+  5. A `question` row ends `resolved`, `partial` or `parked` with a reason (B4-04 handles what follows).
+  6. Only registered for owner-visible questions (B4-01 rule). Behind `curiosity_enabled`.
+- **Tests:** each limit stops the run and records its reason; a write-tool attempt is blocked and creates one `needs_decision` (T11); a pause token set mid-run pauses within 2 s on fakes (T12); findings are stored with provenance `external` and sources; kill cancels the run; a guest-visibility question is refused; flag off registers no handler. Fake LLM and fake tools only.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** use OpenCode explore agents here (a later card; the research node loop is the read-only path that already exists).
+
+---
+
+**B4-03 Daily budgets and rejection logging (T6)**
+- **PRD:** 6.4, rule 4, test T6; hook for P2-33 daily budgets
+- **Tier:** bulk
+- **Depends on:** B4-02
+- **Files:** `scripts/schema_behavior.surql`, new `src/aura/autonomy/budget.py`, `src/aura/orchestrator/workspace.py` (the budget object passed to `attend`), `src/aura/autonomy/investigation.py` (record spend), `src/aura/config.py`, new `tests/unit/test_curiosity_budget.py`
+- **Change:**
+  1. `curiosity_budget` row per local day (`day` string, `investigations`, `tokens`, `spend_usd`). Ceilings from config: `curiosity_daily_investigations` (default 3), `curiosity_daily_tokens` (default 200000), `curiosity_daily_spend_usd` (default 0.0, meaning no paid spend until Mai sets it; PRD open item 2). With a spend ceiling of 0 only free or zero-cost routes may run, and the test says what that means in practice (tokens counted, spend ignored when the provider cost is zero).
+  2. `Budget` object built from today's row and passed into `Workspace.attend`; when any ceiling is reached, `investigate` proposals are rejected and a trace row says "daily budget reached: <which>" (T6). Day rolls over at local midnight from `get_clock()` and `app_timezone`.
+  3. `GET /autonomy/budget` returns the remaining budget for the mind panel (B7 shows it later) and publishes `drive_state`-style `autonomy_state` on change.
+  4. This is a curiosity budget only. P2-33 adds message and Sage budgets through `may_initiate`; do not add those.
+- **Tests (T6):** after the ceiling, further `investigate` proposals are rejected and logged, other kinds are unaffected; each ceiling alone triggers; rollover at midnight with a FakeClock resets; spend and tokens add up across runs; the endpoint reports remaining.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B4-04 Findings to the agenda, ask-the-owner, share proposals**
+- **PRD:** 6.3 steps 5 and 6, 8, test T2 (the setup half; delivery timing is B5-02)
+- **Tier:** bulk
+- **Depends on:** B4-02, B1-05, B2-02
+- **Files:** `src/aura/autonomy/investigation.py` (finish hook), new `src/aura/autonomy/findings.py`, `src/aura/orchestrator/workspace.py` (handlers for `share` and `ask_user`), `src/aura/config.py`, new `tests/unit/test_findings_to_agenda.py`
+- **Change:**
+  1. After an investigation, `findings.publish(question, result)`: if the finding matters to the owner (relevance from B4-01 at or above `finding_share_relevance`, default 0.5), create an agenda `finding` item whose `content` is drafted by one short L2 call made as part of the investigation event (not on a timer, not on the chat path), `refs` the fact ids and question id, and post a `share` proposal. If the question's route is `ask_user` or the result says only the owner can answer, create a `question_for_you` item with the question as `content` and `refs=[question_id]`. She never guesses an answer for an owner-only question.
+  2. Items expire after `finding_expiry_hours` (default 72). A parked question with a reason creates no item.
+  3. The `question_resolved` event is sent to the workspace (B2-04), lowering the curiosity drive.
+  4. The `share` and `ask_user` handlers only create the agenda delivery work; the actual delivery path is the B1-05 deliverer, still using the stub interruptibility until B5. They honour `may_initiate` and quiet hours.
+  5. Guests: items are created only from owner-visible questions; nothing here can send to anyone but the owner.
+- **Tests:** a relevant finding creates one `finding` item with refs and one `share` proposal; an irrelevant finding creates none; an owner-only question creates `question_for_you` and no fact is written; a parked question creates no item; the draft call runs once per finding; delivery respects silent and quiet hours; the curiosity drive drops on resolution.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B5-01 The interruptibility model**
+- **PRD:** 8.1, ablation (against a fixed cooldown)
+- **Tier:** frontier (Phase 2 needs: `P2-33` item 5)
+- **Depends on:** B1-04 (presence), B1-05
+- **Files:** new `src/aura/autonomy/interruptibility.py`, `src/aura/autonomy/delivery.py` (replace the stub), `src/aura/autonomy/channel.py` (read `PresenceState`), `src/aura/executor/delegation.py` and `src/aura/executor/task_queue.py` (read only: is a delegated task running and watched), `frontend/src/services/auraChannel.ts` (the `watching` field in presence), `src/aura/config.py`, new `tests/unit/test_interruptibility.py`
+- **Change:**
+  1. `interruptibility(signals, now) -> float` in 0..1, pure: typing or active in the app now gives a low factor (`interrupt_typing_factor`, default 0.1); a delegated task running and the owner watching its page gives a low factor (0.3); seconds since the last owner message gives a curve that rises over `interrupt_rise_seconds` then falls after `interrupt_absence_hours` of absence; quiet hours return 0 (from `quiet_hours_active`); recent dismissals subtract a decaying penalty (read from the dismissal log of B5-03; until then zero). All factors in config.
+  2. `collect_signals()` assembles the inputs from `PresenceState` (B1-04), the task queue and the agenda. The app sends `watching: task_id|null` in its presence message.
+  3. Replaces the B1 stub when `interruptibility_model_enabled` is on. Ablation: off uses a fixed cooldown (`interrupt_fixed_cooldown_seconds`, default 600) and the stub value otherwise, which is the control the PRD's ablation compares against.
+- **Tests:** each signal moves the value the right way; quiet hours are exactly 0; typing gives a low value and the value recovers after typing stops; the curve rises then falls with a FakeClock; the fixed-cooldown path when off (ablation); the function is pure (same input, same output).
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** add a model call; send presence data anywhere else.
+
+---
+
+**B5-02 Delivery decision and refractory period (T2)**
+- **PRD:** 8.1 (threshold), 8.2 (refractory), test T2
+- **Tier:** frontier (Phase 2 needs: `P2-33`)
+- **Depends on:** B5-01
+- **Files:** `src/aura/autonomy/delivery.py`, `src/aura/autonomy/agenda.py` (read), `src/aura/config.py`, new `tests/unit/test_delivery_threshold.py`, `tests/scenarios/test_behavior_b5.py`
+- **Change:**
+  1. `deliver_due()` delivers an item when `effective_priority * interruptibility >= threshold(kind)`. Per-kind thresholds from config (`delivery_threshold_<kind>`), `needs_decision` for a blocked task uses the lower `delivery_threshold_needs_decision` (default lower than the others). Thresholds are read from the learning state of B5-03 when present, otherwise from config.
+  2. Refractory period: after a delivery, no other unprompted message for `delivery_refractory_seconds` (default 900); items wait, they are not dropped.
+  3. Re-evaluate on events that change the inputs: typing stopped (presence event), a task finished, the owner's reply, quiet hours ending (one timer to the boundary), item created. No polling loop; the 5-minute fallback remains.
+  4. A trace row records the product, the threshold and the decision for every evaluation that delivers or defers.
+  5. This card also honours the kill switch and the gate; deferral is silent.
+- **Tests (T2):** a question resolved while the owner is typing: the `finding` item is delivered only after typing stops and the threshold is met (FakeClock and presence events); refractory delays a second item; a `needs_decision` item delivers at an interruptibility where a `finding` would not; deferral writes a trace row; with the model off the old fixed cooldown applies (ablation).
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B5-03 Dismissal learning, three-strikes mute (T3)**
+- **PRD:** 8.2 (after delivering), test T3, 11 (outcomes feed it)
+- **Tier:** frontier
+- **Depends on:** B5-02, B1-03
+- **Files:** `scripts/schema_behavior.surql`, new `src/aura/autonomy/learning.py`, `src/aura/autonomy/delivery.py`, `src/aura/autonomy/controls.py`, `src/aura/api/routes/agenda.py`, `src/aura/config.py`, new `tests/unit/test_dismissal_learning.py`
+- **Change:**
+  1. `agenda_kind_stats` table per kind: `threshold_delta` float, `consecutive_dismissals` int, `muted_until` option<datetime>, `delivered`, `acknowledged`, `dismissed`, `ignored` ints.
+  2. Acknowledge (or the owner replying about the item, or acting on it) eases the kind's threshold by `dismissal_ease_step` (clamped to a floor); dismiss or ignore (a delivered item unanswered for `agenda_ignore_hours`, default 24, moved to `expired` with `ignored` counted) raises it by `dismissal_raise_step` (clamped to a ceiling) and increments consecutive dismissals. Three in a row (`dismissal_mute_after`, default 3) set `muted_until` to the clock plus a day and trace it; an acknowledgement resets the streak. Muted-by-learning kinds are read by `may_initiate` alongside manual mutes (the owner can lift it).
+  3. The recent-dismissal penalty in B5-01 now reads the last dismissals from this log.
+  4. Reply-rate per kind (`acknowledged` over `delivered`), exposed by `GET /autonomy/stats`, for the mind panel later and for the PRD's "the number that matters".
+  5. Behind `dismissal_learning_enabled`; off keeps the config thresholds fixed (ablation).
+- **Tests (T3):** three dismissals of `finding` items mute `finding` for a day and leave `question_for_you` and the others unaffected; an acknowledgement between dismissals resets the streak; the mute ends after a day on the FakeClock; ignore after the timeout counts as a dismissal; thresholds stay inside their clamps; flag off leaves thresholds fixed; stats compute the reply rate.
+- **Done when:** the new tests pass and the full suite passes.
+
+---
+
+**B5-04 Working-set offer: bring pending items up inside the reply**
+- **PRD:** 8.2 (last bullet)
+- **Tier:** frontier
+- **Depends on:** B5-03, B1-05
+- **Files:** `src/aura/engines/recall/` (read how the Recall Engine builds the context packet and its working-set block; extend with one optional source), `src/aura/orchestrator/coordinator.py` (only where the recall call receives its arguments, inside `_turn_pipeline`), new `src/aura/autonomy/offer.py`, `src/aura/config.py`, new `tests/unit/test_agenda_offer.py`
+- **Change:**
+  1. `offer.relevant_items(user_text, entities, now, limit)`: pending items (not yet delivered) whose `refs` or content overlap the entities or tokens of the owner's message, by lexical and entity overlap only, no model call and a tight time bound, since this is on the chat hot path.
+  2. Offered as a labelled working-set block ("things you were holding for the owner") to the Recall Engine; the reply may mention them. When the reply includes the item (detected by the item id being in the offered block and an explicit `[agenda:id]` marker the block asks the model to return, stripped before display, or, simpler and preferred, by the owner's next message acknowledging), mark it `delivered` and `acknowledged` through the service; otherwise leave it pending.
+  3. Behind `interruptibility_model_enabled` and `autonomy_enabled`; guests: the block is built only for the owner's turns (role check).
+- **Tests:** an item matching the owner's topic is offered; an unrelated item is not; the block is absent for a guest turn and when the flag is off; the hot-path cost is bounded (no database call beyond one indexed query, asserted with a counting fake); an offered item moves to `delivered`.
+- **Done when:** the new tests pass and the full suite passes.
+- **Do not:** make a model call on the chat path; interrupt the owner with an item this way.
+
+---
+
+---
+
+
 ## 5. Later waves
 
 Cards for these are written at the start of each wave (see 1.3). Milestone details are in the PRDs.
