@@ -213,3 +213,50 @@ async def test_stack2_failure_falls_back_only_to_stack2_fallbacks(audit_env, mon
         assert client._get_cloud_fallback(_audit_name(0, layer)) is None
         assert client._get_cloud_fallback(_audit_name(1, layer)) is None
     assert client._get_cloud_fallback("not/a-model") is None
+
+
+def _fb_setup(monkeypatch):
+    import aura.config as cfg
+
+    monkeypatch.setattr(cfg, "_FALLBACK_WARNED", set())
+    for layer in range(1, 6):
+        for suffix in ("", "1", "2"):
+            monkeypatch.setattr(settings, f"l{layer}_model_fallback{suffix}", None)
+
+
+async def test_per_stack_fallback_is_used_and_never_crosses(audit_env, monkeypatch):
+    """P2-02b: Titan (stack 2) falls back only to l3_model_fallback2 when set."""
+    from aura.llm.unified_provider import UnifiedLLMClient
+
+    _fb_setup(monkeypatch)
+    monkeypatch.setattr(settings, "l3_model_fallback", "fb/shared")
+    monkeypatch.setattr(settings, "l3_model_fallback1", "fb/stack1")
+    monkeypatch.setattr(settings, "l3_model_fallback2", "fb/stack2")
+    await _switch_stack(2)
+    client = UnifiedLLMClient(openrouter_client=MagicMock(), ollama_client=MagicMock())
+    assert settings.get_fallback(_audit_name(2, 3)) == "fb/stack2"
+    assert client._get_cloud_fallback(_audit_name(2, 3)) == "fb/stack2"
+    assert client._get_cloud_fallback(_audit_name(0, 3)) is None
+    assert client._get_cloud_fallback(_audit_name(1, 3)) is None
+
+
+async def test_unset_stack_fallback_uses_shared_and_warns_once(audit_env, monkeypatch, caplog):
+    _fb_setup(monkeypatch)
+    monkeypatch.setattr(settings, "l3_model_fallback", "fb/shared")
+    monkeypatch.setattr(settings, "l3_model_fallback1", "fb/stack1")
+    await _switch_stack(2)
+    with caplog.at_level(logging.WARNING, logger="aura.config"):
+        assert settings.get_fallback(_audit_name(2, 3)) == "fb/shared"
+        assert settings.get_fallback(_audit_name(2, 3)) == "fb/shared"
+    warns = [r for r in caplog.records if "L3_MODEL_FALLBACK2" in r.getMessage()]
+    assert len(warns) == 1
+
+
+async def test_stack0_fallback_unchanged_and_silent(audit_env, monkeypatch, caplog):
+    _fb_setup(monkeypatch)
+    monkeypatch.setattr(settings, "l3_model_fallback", "fb/shared")
+    monkeypatch.setattr(settings, "l3_model_fallback2", "fb/stack2")
+    await _switch_stack(0)
+    with caplog.at_level(logging.WARNING, logger="aura.config"):
+        assert settings.get_fallback(_audit_name(0, 3)) == "fb/shared"
+    assert not caplog.records

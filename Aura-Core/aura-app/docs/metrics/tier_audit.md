@@ -67,3 +67,5 @@ P2-02 should remove the cached attributes (or make them properties that call `mo
 ## After P2-02
 
 All 8 xfails are removed; every row in the observed table now passes on stacks 0, 1 and 2 (`tests/unit/test_tier_audit.py`). Fixed: extraction, themes, latent summary, `_get_cloud_fallback` (per-call map from the active stack), `LLMLayers.lX_model` (properties of the active stack), coordinator traces, `settings.get_fallback`, `POST /system/model-stack` (same `object.__setattr__` as inference-config), `settings.tsx` chips (active models from the API). `tests/unit/test_no_stack0_model_reads.py` fails on any `settings.lN_model` read outside `config.py`. `main.py` startup log now prints the active stack.
+
+P2-02b: `AURA_LX_MODEL_FALLBACK1` / `FALLBACK2` per stack, resolved by `settings.fallback_for(layer)` (unset falls back to the shared `lX_model_fallback` with one warning per process); a failing Titan model falls back only to Titan's fallback (`test_tier_audit.py`). The grep test also forbids `settings.lN_model_fallback` outside `config.py`.

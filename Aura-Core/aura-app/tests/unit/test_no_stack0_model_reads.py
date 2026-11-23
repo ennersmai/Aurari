@@ -6,7 +6,8 @@ them ignores the active stack (LEAN / CORE / TITAN), so callers must use
 
 Every ``src/aura/**/*.py`` file except ``config.py`` is tokenized (so comments
 and strings, including docstrings, are ignored) and the test fails on the token
-sequence ``settings . lN_model``.
+sequence ``settings . lN_model`` or ``settings . lN_model_fallback`` (use
+``settings.fallback_for("lN")``, P2-02b).
 
 The rule is deliberately limited to the name ``settings``. A rule on any
 ``.lN_model`` attribute would also flag ``llm_layers.l3_model`` in school.py,
@@ -17,6 +18,7 @@ The test below checks that property follows a stack switch.
 
 import io
 import re
+import sys
 import tokenize
 from pathlib import Path
 
@@ -25,7 +27,8 @@ import pytest
 from aura.config import settings
 
 SRC = Path(__file__).resolve().parents[2] / "src" / "aura"
-STACK0 = re.compile(r"l[1-5]_model")
+NL = chr(10)
+STACK0 = re.compile(r"l[1-5]_model(_fallback)?")
 
 
 def _offences(path: Path) -> list[str]:
@@ -74,3 +77,13 @@ def test_model_for_rejects_unknown_layer():
         settings.model_for("l6")
     with pytest.raises(ValueError):
         settings.model_for("embeddings")
+
+
+@pytest.mark.parametrize("attr", ["l3_model", "l3_model_fallback"])
+def test_grep_rule_catches_planted_reads(tmp_path, monkeypatch, attr):
+    monkeypatch.setattr(sys.modules[__name__], "SRC", tmp_path)
+    planted = tmp_path / "planted.py"
+    planted.write_text("x = settings." + attr + NL, encoding="utf-8")
+    assert _offences(planted)
+    planted.write_text("x = settings.l3_model_fallback1  # not a stack 0 field" + NL, encoding="utf-8")
+    assert not _offences(planted)

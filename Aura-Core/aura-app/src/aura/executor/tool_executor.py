@@ -13,8 +13,10 @@ import os
 import time
 from typing import Any, Dict, Literal, Optional, Tuple
 
+from aura.config import settings
 from aura.db.client import get_db_client
 from aura.executor.tool_registry import get_tool_registry
+from aura.tiers import TIER_UNAVAILABLE_ERROR, active_profile, tool_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +212,16 @@ class ToolExecutor:
                 "error": "Missing 'tool' field in tool call",
                 "tool_name": "unknown"
             }
-        
+
+        # Tier gate (P2-03, D3). Runs after the role check, which stays first.
+        if settings.tier_profiles_enabled and not tool_allowed(active_profile(), tool_name):
+            return {
+                "success": False,
+                "result": "",
+                "error": f"Tool '{tool_name}' is {TIER_UNAVAILABLE_ERROR}.",
+                "tool_name": tool_name,
+            }
+
         self.logger.info(f"Executing tool: {tool_name} with arguments: {arguments}")
         
         start = time.perf_counter()

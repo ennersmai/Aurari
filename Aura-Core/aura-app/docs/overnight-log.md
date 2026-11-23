@@ -2553,3 +2553,18 @@
 
 **Supervisor (2026-11-23), W4-15 + P2-02:** Reviewed both diffs; no changes. W4-15 marks `capped` on scaled-down events too, not only blocked ones (more useful for the inspector). P2-02: there are no per-stack fallback settings, so fallbacks are shared across tiers (noted in FOR_MAI section 5). Full suite: 944 passed, 3 skipped.
 **Supervisor (2026-11-23), config:** W4-14 and W4-15 settings had no `validation_alias` (no env prefix is configured, so `AURA_*` names did nothing). All 21 now have `AURA_<NAME>` aliases; checked by loading two from the environment.
+
+## P2-02b: per-tier fallbacks
+- config.py: `lX_model_fallback1` / `lX_model_fallback2` (str | None, None, aliases `AURA_LX_MODEL_FALLBACK1/2`); `fallback_for(layer)` next to `model_for` (stack 0 shared; stack 1/2 own field, else shared + one warning per (stack, layer) per process via `_FALLBACK_WARNED`). `get_fallback` and `unified_provider._get_cloud_fallback` use it; hardcoded defaults stay last resort.
+- Grep test now also forbids `settings.lN_model_fallback`; planted-read test added.
+- Tests added in test_tier_audit.py: stack 2 uses fallback2 and never crosses, unset uses shared with one warning over two calls, stack 0 unchanged.
+
+## P2-03: tier profiles
+- New `src/aura/tiers.py`: `TierProfile` (pydantic, every knob of plan 3.1, ge/le, extra forbidden), `LEAN`/`CORE`/`TITAN`, `active_profile()` (keyed by `model_stack_index`, merges `tier_overrides_path`, cached by mtime, missing file = defaults, corrupt or invalid file = defaults + one warning per process), `l3_reasoning_allowed(profile, route, stakes)`, `TIER_GATED_TOOLS`, `trim_history`.
+- config.py "TIER PROFILES" block: `tier_profiles_enabled` (False), `tier_overrides_path`, `tier_recall_share` (0.3).
+- Wiring (all only with the flag on): coordinator `_turn_pipeline` ANDs the client toggles with the profile (L3 reasoning is False on every tier until P2-06, no route or stakes exist; L2 and L2 reasoning per `l2_post_analysis`), trims history newest-first to 70% of `context_budget_tokens` with the exchange floor, gives recall `int(0.3 * budget)` through `RecallRequest.token_budget`, passes `top_k` and `exclude` to `select_tools`, passes the turn budgets to `run_tool_loop` (new optional kwargs, unused until P2-41), and publishes a TIER/profile_applied trace with `tier_name` and the flattened profile.
+- `select_tools` gained `top_k` (caps both paths; a cap below the candidate count ranks by similarity) and `exclude`. `tool_executor.execute_tool_call` refuses gated tools with "not available on this tier" after the unchanged role check.
+- Token counter: `engines.recall.assembly.estimate_tokens`. Consult, afterthought, JIT and autonomy knobs are defined, not read.
+- Tests: tests/unit/test_tier_profiles.py. Gate reverts (executor gate, top_k, exclude, three ceiling ANDs, history trim, recall budget, loop budgets, trace, registry exclude) each fail a test.
+
+**Supervisor (2026-11-23), P2-02b + P2-03:** Reviewed both. P2-02b: moved an in-function `import logging` in config.py to module level. P2-03: accepted as is. With an explicit tier top_k, selection ranks by similarity even below the selection threshold, which is right for a cap. A bad override file discards all overrides (defaults plus one warning). Early replies (pre-intent, teaching) publish no tier trace. Full suite: 995 passed, 3 skipped.

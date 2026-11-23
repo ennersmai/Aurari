@@ -266,7 +266,7 @@ class UnifiedLLMClient:
             "l5": "google/gemini-2.0-flash-001",
         }
         layer_map = {
-            settings.model_for(layer): getattr(settings, f"{layer}_model_fallback") or default
+            settings.model_for(layer): settings.fallback_for(layer) or default
             for layer, default in defaults.items()
         }
         return layer_map.get(local_model)

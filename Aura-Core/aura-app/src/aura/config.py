@@ -1,7 +1,13 @@
 """Application configuration using Pydantic Settings."""
 
+import logging
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+# (stack, layer) pairs already warned about an unset per-stack fallback.
+_FALLBACK_WARNED: set[tuple[int, str]] = set()
 
 
 class Settings(BaseSettings):
@@ -198,6 +204,58 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="AURA_L5_MODEL_FALLBACK",
         description="L5 Fallback Model - Used when primary model fails (rate limit/5xx)",
+    )
+
+    # --- PER-STACK FALLBACKS (stack 1 = FALLBACK1, stack 2 = FALLBACK2) ---
+    l1_model_fallback1: str | None = Field(
+        default=None,
+        validation_alias="AURA_L1_MODEL_FALLBACK1",
+        description="Stack 1: L1 Fallback Model. Unset: the shared AURA_L1_MODEL_FALLBACK is used (warns once).",
+    )
+    l1_model_fallback2: str | None = Field(
+        default=None,
+        validation_alias="AURA_L1_MODEL_FALLBACK2",
+        description="Stack 2: L1 Fallback Model. Unset: the shared AURA_L1_MODEL_FALLBACK is used (warns once).",
+    )
+    l2_model_fallback1: str | None = Field(
+        default=None,
+        validation_alias="AURA_L2_MODEL_FALLBACK1",
+        description="Stack 1: L2 Fallback Model. Unset: the shared AURA_L2_MODEL_FALLBACK is used (warns once).",
+    )
+    l2_model_fallback2: str | None = Field(
+        default=None,
+        validation_alias="AURA_L2_MODEL_FALLBACK2",
+        description="Stack 2: L2 Fallback Model. Unset: the shared AURA_L2_MODEL_FALLBACK is used (warns once).",
+    )
+    l3_model_fallback1: str | None = Field(
+        default=None,
+        validation_alias="AURA_L3_MODEL_FALLBACK1",
+        description="Stack 1: L3 Fallback Model. Unset: the shared AURA_L3_MODEL_FALLBACK is used (warns once).",
+    )
+    l3_model_fallback2: str | None = Field(
+        default=None,
+        validation_alias="AURA_L3_MODEL_FALLBACK2",
+        description="Stack 2: L3 Fallback Model. Unset: the shared AURA_L3_MODEL_FALLBACK is used (warns once).",
+    )
+    l4_model_fallback1: str | None = Field(
+        default=None,
+        validation_alias="AURA_L4_MODEL_FALLBACK1",
+        description="Stack 1: L4 Fallback Model. Unset: the shared AURA_L4_MODEL_FALLBACK is used (warns once).",
+    )
+    l4_model_fallback2: str | None = Field(
+        default=None,
+        validation_alias="AURA_L4_MODEL_FALLBACK2",
+        description="Stack 2: L4 Fallback Model. Unset: the shared AURA_L4_MODEL_FALLBACK is used (warns once).",
+    )
+    l5_model_fallback1: str | None = Field(
+        default=None,
+        validation_alias="AURA_L5_MODEL_FALLBACK1",
+        description="Stack 1: L5 Fallback Model. Unset: the shared AURA_L5_MODEL_FALLBACK is used (warns once).",
+    )
+    l5_model_fallback2: str | None = Field(
+        default=None,
+        validation_alias="AURA_L5_MODEL_FALLBACK2",
+        description="Stack 2: L5 Fallback Model. Unset: the shared AURA_L5_MODEL_FALLBACK is used (warns once).",
     )
 
     # --- STACK 1 (MODEL1 suffix) ---
@@ -437,6 +495,30 @@ class Settings(BaseSettings):
             raise ValueError(f"Unknown layer {layer!r}; expected 'l1'..'l5'")
         suffix = {1: "1", 2: "2"}.get(self.model_stack_index, "")
         return getattr(self, f"{layer}_model{suffix}")
+
+    def fallback_for(self, layer: str) -> str | None:
+        """Return the fallback model of ``layer`` for the active stack.
+
+        Stack 1/2 read ``lX_model_fallback1`` / ``lX_model_fallback2``. If that
+        is unset the shared ``lX_model_fallback`` is used and a warning is
+        logged once per process per (stack, layer). Stack 0 reads the shared one.
+        """
+        if layer not in ("l1", "l2", "l3", "l4", "l5"):
+            raise ValueError(f"Unknown layer {layer!r}; expected 'l1'..'l5'")
+        stack = self.model_stack_index
+        shared = getattr(self, f"{layer}_model_fallback")
+        if stack not in (1, 2):
+            return shared
+        value = getattr(self, f"{layer}_model_fallback{stack}")
+        if value is not None:
+            return value
+        if (stack, layer) not in _FALLBACK_WARNED:
+            _FALLBACK_WARNED.add((stack, layer))
+            logging.getLogger(__name__).warning(
+                "AURA_%s_MODEL_FALLBACK%d is unset; stack %d uses the shared "
+                "AURA_%s_MODEL_FALLBACK.", layer.upper(), stack, stack, layer.upper(),
+            )
+        return shared
 
     @property
     def active_l1_model(self) -> str:
@@ -1186,6 +1268,29 @@ class Settings(BaseSettings):
         description="Number of top tools to return when selection runs",
         ge=1,
     )
+    # =========================================================================
+    # TIER PROFILES (P2-03)
+    # =========================================================================
+    tier_profiles_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_TIER_PROFILES_ENABLED",
+        description="When true, the active tier's profile (aura.tiers) governs L3 reasoning, "
+                    "L2 post-analysis, tools offered, tool gating and the context budget. "
+                    "Off means the pre-tier behaviour exactly.",
+    )
+    tier_overrides_path: str = Field(
+        default=".aura/tier_overrides.json",
+        validation_alias="AURA_TIER_OVERRIDES_PATH",
+        description="Per-tier knob overrides, relative to the app directory unless absolute.",
+    )
+    tier_recall_share: float = Field(
+        default=0.3,
+        validation_alias="AURA_TIER_RECALL_SHARE",
+        description="Share of context_budget_tokens given to recall; history gets the rest.",
+        ge=0.0,
+        le=1.0,
+    )
+
     tool_selection_success_weight: float = Field(
         default=0.2,
         validation_alias="AURA_TOOL_SELECTION_SUCCESS_WEIGHT",
@@ -1386,7 +1491,7 @@ class Settings(BaseSettings):
         """
         for layer in ("l1", "l2", "l3", "l4", "l5"):
             if model_id == self.model_for(layer):
-                return getattr(self, f"{layer}_model_fallback")
+                return self.fallback_for(layer)
         return None
 
 
@@ -1394,7 +1499,6 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # Debug: Log database config at startup
-import logging
 logger = logging.getLogger(__name__)
 logger.info(f"Database config loaded: url={settings.surreal_url}, user={settings.surreal_user}, ns={settings.surreal_ns}, db={settings.surreal_db}")
 

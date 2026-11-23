@@ -32,6 +32,8 @@ Settings go in Aura's `.env` unless noted.
 - [ ] **Policy table** (agency PRD 11.3): the default is the PRD recommendation: owner read and write allowed inside a workspace, shell and network ask; trusted read only; guests nothing.
 - [ ] **Trusted Discord users and owner verification** (agency PRD 11.4), and `discord_owner_ids` (build plan section 6 item 3).
 - [ ] **Later, with real usage** (agency PRD 11.5): retire `terminal` and `execute_code` in favour of delegation, or keep them.
+- [x] Phase 2 order (decided 2026-11-23): P2-02b per-tier fallbacks; step 2 (P2-03..06); step 3 (P2-07, P2-41, P2-42); G4 before Part 4; Part 4 (P2-08..11); G5, G6, B1..B5 before the steps that need them; UI steps (P2-13, P2-14 A) when blocked on your approvals; V5..V7 parked until the avatar asset exists.
+- [ ] **Tier profiles (P2-03), when you turn on `AURA_TIER_PROFILES_ENABLED`:** the profile caps the chat reasoning toggles. L3 deep reasoning stays off on every tier until P2-06 adds L1 routes, because the plan only allows it on route `think`.
 - [x] OpenCode version pin: v2.3.2, Aura runs her own server (decided 2026-11-20).
 
 ## 3. Checks only you can do
@@ -55,7 +57,7 @@ Settings go in Aura's `.env` unless noted.
 
 ## 5. Known follow-ups (no decision needed, listed so they are not lost)
 
-- Tier fallbacks (P2-02): there is one fallback model per layer (`AURA_L1_MODEL_FALLBACK` and so on), shared by all three tiers. Since P2-02 a fallback only fires for a model of the active tier, but the fallback itself is the same on Lean and Titan. If Titan should fall back to something stronger, per-tier fallback settings would be a small card. Tell me if you want it.
+- Tier fallbacks (P2-02, P2-02b): `AURA_L1_MODEL_FALLBACK` and so on are still the shared fallback per layer. Per-tier settings now exist and are optional: `AURA_L1_MODEL_FALLBACK1`..`AURA_L5_MODEL_FALLBACK1` for Core and `AURA_L1_MODEL_FALLBACK2`..`AURA_L5_MODEL_FALLBACK2` for Titan. If one is unset, that tier uses the shared one and a warning is logged once.
 
 - Remaining direct time reads (`DreamingEngine.tick`, parts of `manager.py`) for the next clock pass.
 - A retryable tool failure matches no appraisal row, so it produces no emotion.

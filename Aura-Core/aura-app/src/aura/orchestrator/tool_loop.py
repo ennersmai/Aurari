@@ -73,6 +73,8 @@ async def run_tool_loop(
     max_rounds: int | None = None,   # None -> settings.tool_loop_max_rounds
     seed_results: str | None = None,
     on_tool_result: Callable[[str, bool], Awaitable[None]] | None = None,
+    turn_budget_seconds: int | None = None,
+    turn_budget_usd: float | None = None,
 ) -> AsyncIterator[LoopEvent]:
     """
     Run the single tool loop.
@@ -87,6 +89,9 @@ async def run_tool_loop(
         seed_results: Optional seed results from a forced tool call (pre-loop).
         on_tool_result: Optional callback called once per executed tool call with
             (tool_name, success). Called when the executor reports per-call success.
+        turn_budget_seconds: The tier's tool-use time budget per turn (P2-03).
+            Accepted and unused until P2-41 enforces it.
+        turn_budget_usd: The tier's cost budget per turn (P2-03). Unused until P2-41.
 
     Yields:
         LoopEvent with kind "delta" for text chunks, "separator" for round separators,

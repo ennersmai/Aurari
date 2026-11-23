@@ -290,6 +290,8 @@ class ToolRegistry:
         *,
         requester_role: str,
         embed: Optional[Callable[[str], Any]] = None,
+        top_k: int | None = None,
+        exclude: frozenset[str] | set[str] = frozenset(),
     ) -> list[ToolRecord]:
         """Select the top tools by embedding similarity and recent success.
 
@@ -304,6 +306,11 @@ class ToolRegistry:
             requester_role: The role of the requester ("owner", "trusted", "guest").
             embed: Async function to generate embeddings. Defaults to
                 `get_embeddings_client().embed`.
+            top_k: Cap on the tools returned. None means
+                `settings.tool_selection_top_k` when selection runs and no cap
+                when the candidates are at or below the threshold. A value
+                (the tier's tools_offered_max, P2-03) caps both paths.
+            exclude: Tool names never offered (tier-gated tools, P2-03).
 
         Returns:
             List of up to `tool_selection_top_k` ToolRecords, sorted by score.
@@ -311,9 +318,16 @@ class ToolRegistry:
         if requester_role != "owner":
             return []
 
-        candidates = [r for r in self.all() if r.health.status != "offline"]
+        candidates = [
+            r for r in self.all()
+            if r.health.status != "offline" and r.name not in exclude
+        ]
+        limit = settings.tool_selection_top_k if top_k is None else top_k
 
-        if len(candidates) <= settings.tool_selection_threshold:
+        # An explicit cap below the candidate count still ranks by similarity.
+        within_threshold = len(candidates) <= settings.tool_selection_threshold
+        within_cap = top_k is None or len(candidates) <= top_k
+        if within_threshold and within_cap:
             return candidates
 
         # Use the provided embed function or default to the embeddings client
@@ -324,12 +338,12 @@ class ToolRegistry:
         try:
             request_embedding = await embed(request_text)
         except Exception:
-            logger.warning("Tool selection: request embedding failed, falling back to first %d by name", settings.tool_selection_top_k)
-            return candidates[: settings.tool_selection_top_k]
+            logger.warning("Tool selection: request embedding failed, falling back to first %d by name", limit)
+            return candidates[:limit]
 
         if request_embedding is None:
-            logger.warning("Tool selection: request embedding returned None, falling back to first %d by name", settings.tool_selection_top_k)
-            return candidates[: settings.tool_selection_top_k]
+            logger.warning("Tool selection: request embedding returned None, falling back to first %d by name", limit)
+            return candidates[:limit]
 
         # Ensure each candidate has a description embedding
         for record in candidates:
@@ -359,8 +373,7 @@ class ToolRegistry:
         # Sort by score descending, then by name ascending for ties
         scored.sort(key=lambda x: (-x[0], x[1].name))
 
-        top_k = settings.tool_selection_top_k
-        return [record for _, record in scored[:top_k]]
+        return [record for _, record in scored[:limit]]
 
     async def refresh(self, db: Any) -> None:
         """Rebuild the registry: builtins first, then `skill` rows.

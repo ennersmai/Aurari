@@ -27,6 +27,7 @@ from aura.engines.memory.v2.salience import (
     interaction_depth,
     salience as compute_salience,
 )
+from aura.engines.recall.assembly import estimate_tokens
 from aura.engines.recall.models import ContextPacket, RecallRequest
 from aura.engines.reflection.engine import ReflectionEngine
 from aura.executor.tool_executor import ToolExecutor
@@ -39,6 +40,16 @@ from aura.models.learning import LearningContext
 from aura.models.messages import EngineMessage
 from aura.orchestrator.message_bus import MessageBus
 from aura.orchestrator.tool_loop import NativeCalls, run_tool_loop
+from aura.tiers import (
+    TierProfile,
+    active_profile,
+    gated_tools_denied,
+    l2_analysis_allowed,
+    l2_reasoning_allowed,
+    l3_reasoning_allowed,
+    recall_budget_tokens,
+    trim_history,
+)
 from aura.engines.emotion.system_events import tool_succeeded, tool_failed, self_critique_received, memory_write_failed
 
 logger = logging.getLogger(__name__)
@@ -66,6 +77,7 @@ class TurnContext:
     offered_tools: list = field(default_factory=list)
     speaker: str = ""
     venue: str = "app"
+    tier_profile: TierProfile | None = None  # set only with tier_profiles_enabled
 
 
 @dataclass
@@ -1069,6 +1081,7 @@ Constraints:
         conversation_history: list[dict[str, str]] | None,
         stream: bool,
         venue: str = "app",
+        recall_token_budget: int | None = None,
     ) -> TurnContext:
         """Gather engine context and assemble the L3 ``SynthesisContext`` (W2-08).
 
@@ -1155,6 +1168,7 @@ Constraints:
                     include_cold_start=True,
                     include_latent=True,
                     venue=venue,
+                    token_budget=recall_token_budget,
                 ))
             except Exception as e:
                 self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1301,6 +1315,7 @@ Constraints:
                 include_cold_start=False,
                 include_latent=True,
                 venue=venue,
+                token_budget=recall_token_budget,
             ))
         except Exception as e:
             self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1451,6 +1466,8 @@ Constraints:
             venue=ctx.venue,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
+            turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
+            turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
         ):
             if event.kind == "done":
                 response = event.text
@@ -1565,6 +1582,8 @@ Constraints:
             venue=ctx.venue,
             seed_results=seed,
             on_tool_result=_on_tool_result if settings.emotion_appraisal_enabled else None,
+            turn_budget_seconds=ctx.tier_profile.turn_budget_seconds if ctx.tier_profile else None,
+            turn_budget_usd=ctx.tier_profile.turn_budget_usd if ctx.tier_profile else None,
         ):
             yield event
 
@@ -1657,16 +1676,40 @@ Constraints:
         use_forced_tool_mode, tool_schema_str = await self._resolve_forced_tool(intent, intent_data)
 
         # Stage 6: gather engine context (emotion/learning/identity/goal + memory).
+        profile = active_profile() if settings.tier_profiles_enabled else None
+        history_for_turn = conversation_history
+        if profile is not None:
+            # The profile is a ceiling: the client toggles are ANDed with it (P2-03).
+            enable_l2 = enable_l2 and l2_analysis_allowed(profile)
+            l2_reasoning_enabled = l2_reasoning_enabled and l2_reasoning_allowed(profile)
+            # No L1 route or stakes exist until P2-06, so this is False on every tier.
+            reasoning_enabled = reasoning_enabled and l3_reasoning_allowed(profile, None, None)
+            if conversation_history:
+                history_for_turn = trim_history(conversation_history, profile, estimate_tokens)
+            self._publish_trace("TIER", "profile_applied", {
+                "tier_name": profile.name,
+                **profile.model_dump(),
+            })
         ctx = await self._gather_turn_context(
-            user_input, user_id, conversation_history, stream=stream, venue=venue
+            user_input,
+            user_id,
+            history_for_turn,
+            stream=stream,
+            venue=venue,
+            recall_token_budget=recall_budget_tokens(profile) if profile else None,
         )
+        ctx.tier_profile = profile
         # Record who is speaking and where this turn happens (W3-10).
         ctx.speaker = speaker_key(user_id, requester_role)
         ctx.venue = venue
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
+            tier_args = (
+                {"top_k": profile.tools_offered_max, "exclude": gated_tools_denied(profile)}
+                if profile else {}
+            )
             ctx.offered_tools = await get_tool_registry().select_tools(
-                user_input, requester_role=requester_role
+                user_input, requester_role=requester_role, **tier_args
             )
         except Exception as e:
             self.logger.warning(f"Tool selection failed (non-critical): {e}")
@@ -1680,7 +1723,7 @@ Constraints:
             response = ""
             async for event in self._generate_streaming(
                 user_input,
-                conversation_history,
+                history_for_turn,
                 ctx,
                 reasoning_enabled,
                 use_forced_tool_mode,
@@ -1694,7 +1737,7 @@ Constraints:
         else:
             response = await self._generate_blocking(
                 user_input,
-                conversation_history,
+                history_for_turn,
                 ctx,
                 context_limit,
                 reasoning_enabled,
