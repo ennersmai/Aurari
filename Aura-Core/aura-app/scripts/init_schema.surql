@@ -27,6 +27,8 @@ DEFINE FIELD vector ON emotion_state TYPE object FLEXIBLE;
 DEFINE FIELD dominant ON emotion_state TYPE array;
 DEFINE FIELD volatility ON emotion_state TYPE float;
 DEFINE FIELD description ON emotion_state TYPE string;
+DEFINE FIELD mood ON emotion_state TYPE option<object> FLEXIBLE;
+DEFINE FIELD mood_at ON emotion_state TYPE option<datetime>;
 DEFINE INDEX emotion_state_timestamp ON emotion_state FIELDS timestamp;
 
 DEFINE TABLE emotion_event SCHEMAFULL;
@@ -41,6 +43,7 @@ DEFINE FIELD impulses ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD deviation_change ON emotion_event TYPE object FLEXIBLE;
 DEFINE FIELD dominant_change ON emotion_event TYPE option<string>;
 DEFINE FIELD size ON emotion_event TYPE float DEFAULT 0;
+DEFINE FIELD mood_bias ON emotion_event TYPE option<float>;
 DEFINE INDEX emotion_event_at ON emotion_event FIELDS at;
 
 -- ============================================================================

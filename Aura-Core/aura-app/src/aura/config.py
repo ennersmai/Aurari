@@ -1004,6 +1004,75 @@ class Settings(BaseSettings):
     )
 
     # =========================================================================
+    # EMOTION MOOD (W4-13, Emotion PRD 6.2)
+    # =========================================================================
+    emotion_mood_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_EMOTION_MOOD_ENABLED",
+        description="Track mood (valence, arousal, control) as a slow average of the emotional state; it shifts the resting point of the positive dimensions. Off by default.",
+    )
+    emotion_mood_half_life_hours: float = Field(
+        default=8.0, gt=0.0,
+        validation_alias="AURA_EMOTION_MOOD_HALF_LIFE_HOURS",
+        description="Half-life of the mood average, in real hours.",
+    )
+    emotion_mood_baseline_gain: float = Field(
+        default=0.1,
+        validation_alias="AURA_EMOTION_MOOD_BASELINE_GAIN",
+        description="Baseline shift of the positive dimensions per unit of mood valence.",
+    )
+    emotion_mood_baseline_shift_max: float = Field(
+        default=0.1, ge=0.0,
+        validation_alias="AURA_EMOTION_MOOD_BASELINE_SHIFT_MAX",
+        description="Cap on the mood baseline shift (either direction).",
+    )
+    emotion_mood_appraisal_bias_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_EMOTION_MOOD_APPRAISAL_BIAS_ENABLED",
+        description="Let mood nudge the congruence of ambiguous events (separate flag, for ablation).",
+    )
+    emotion_mood_appraisal_bias: float = Field(
+        default=0.1,
+        validation_alias="AURA_EMOTION_MOOD_APPRAISAL_BIAS",
+        description="Congruence shift per unit of mood valence for an ambiguous event (|congruence| < 0.3), capped at 0.1.",
+    )
+    # Projection weights over deviations from baseline. Valence: +1 for the
+    # positive set and -1 for the negative set of EmotionEngine._compute_valence
+    # (surprise and nostalgia neutral). Arousal: high-energy dimensions positive
+    # (anger, fear, surprise, fascination, awe, joy at a smaller weight), calm or
+    # flat ones negative (serenity, boredom). Control: confident or capable
+    # dimensions positive (pride, certainty, joy, trust), helpless or unsure ones
+    # negative (fear, shame, confusion, doubt).
+    emotion_mood_valence_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            **{d: 1.0 for d in (
+                "joy", "love", "interest", "trust", "curiosity", "fascination",
+                "wonder", "awe", "beauty", "serenity", "empathy", "compassion",
+                "gratitude", "pride", "certainty",
+            )},
+            **{d: -1.0 for d in (
+                "fear", "sadness", "anger", "disgust", "shame", "envy",
+                "doubt", "confusion", "boredom", "melancholy",
+            )},
+        }
+    )
+    emotion_mood_arousal_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "anger": 1.0, "fear": 1.0, "surprise": 0.8, "fascination": 0.5,
+            "awe": 0.5, "joy": 0.5, "interest": 0.3, "curiosity": 0.3,
+            "wonder": 0.3, "disgust": 0.3, "envy": 0.3, "sadness": -0.3,
+            "melancholy": -0.3, "boredom": -0.8, "serenity": -1.0,
+        }
+    )
+    emotion_mood_control_weights: dict[str, float] = Field(
+        default_factory=lambda: {
+            "pride": 1.0, "certainty": 1.0, "joy": 0.5, "trust": 0.3,
+            "anger": 0.3, "fear": -1.0, "shame": -1.0, "confusion": -0.8,
+            "doubt": -0.8, "sadness": -0.3,
+        }
+    )
+
+    # =========================================================================
     # SYSTEM STATE MACHINE (Sleep/Wake Cycle)
     # =========================================================================
     system_idle_after_minutes: int = Field(

@@ -2466,3 +2466,19 @@
 - **Runtime:** about 34 s of simulation, 44 s with import.
 - **Notes:** archived facts stay 0 because a superseded fact needs to be 90 days old and the run is 90 days. The legacy dream phase writes a cycle note through the global `get_memory_manager()`, which loads the real embedding model every night (about 0.8 s) and fails with the DB not connected; the test stubs `get_memory_manager`. Chatter has no turn marker (a marker would defeat the recall gate, so the turn would not be ephemeral). No dreaming or recall bugs found.
 - **Supervisor (2026-11-23), W4-12:** accepted. No superseded fact reaches the 90-day archive age inside a 90-day run, so fact archiving is covered by W4-09's tests, not here. The legacy dream phase's cycle note uses the global memory manager and loads the embedding model every night (stubbed in the test); left as is, noted for cleanup. Metrics recorded.
+
+---
+
+## W4-13: Mood
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/engines/emotion/mood.py` (new) - pure maths: `project`, `project_mood`, `step` (`m += (target - m) * (1 - 0.5 ** (dt / half_life))`), `decay`, `baseline_shift`, `POSITIVE_DIMENSIONS`.
+  - `src/aura/engines/emotion/engine.py` - `_effective_baseline()` and `_advance_mood()`; `tick` decays toward `_effective_baseline()` instead of `config.baseline` (the only place the shift enters the physics; flag off returns the same `config.baseline` object); mood advanced after each tick and after each appraisal's impulses; `get_current_state` fills `mood` when on; appraisal bias; `_persist_state` / `_load_state` carry mood.
+  - `src/aura/config.py` - `emotion_mood_enabled`, `_half_life_hours` (8), `_baseline_gain` (0.1), `_baseline_shift_max` (0.1), `_appraisal_bias_enabled`, `_appraisal_bias` (0.1), and the three weight dicts (valence +1/-1 by the `_compute_valence` split; arousal and control as documented in one comment).
+  - `src/aura/models/emotion.py` (mood field description), `scripts/init_schema.surql` (`emotion_state.mood`, `mood_at`; `emotion_event.mood_bias`, all `option<...>`).
+  - `tests/unit/test_emotion_mood.py` (new, 9 tests).
+- **Projection baseline:** deviations are measured from the effective (shifted) baseline, not the configured one. Against the configured one a lowered resting point would read as permanent negative valence and the mood would lock itself in.
+- **Persistence:** `emotion_state` rows gain `mood` (object) and `mood_at`, written only while the flag is on. On load, mood decays toward 0 by `now - mood_at` (no cap); `_mood_at` is set to now.
+- **Bias:** only when both flags are on; `abs(congruence) < 0.3` shifts congruence by `clamp(bias * valence, +-0.1)` before `impulses_for`; the event records the unbiased appraisal plus `mood_bias` (0.0 when not ambiguous). Field is absent with the bias flag off.
+- **Tests:** T12 negative and positive day (baseline shift within 0.1, recovers to under 20% of peak after 3 days; love/trust's 12 h half-life keeps the tail), maths on fixed inputs, bias cap, restart (16 h = a quarter), ablation. Unit suite 609 passed, 2 skipped.
+- **Supervisor (2026-11-23), W4-13:** accepted as built. Mood is projected from deviations against the effective baseline (against the configured one a lowered resting point would read as lasting negative valence and lock the mood in); recovery after three quiet days is to about 12% of peak because love/trust decay slowly. The card's `goal_congruence` is the model's `congruence`. Suite: 758 passed, 3 skipped.

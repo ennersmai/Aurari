@@ -174,7 +174,7 @@ class EmotionState(BaseModel):
         default=None, description="Baseline (resting) emotional state"
     )
     mood: dict[str, float] | None = Field(
-        default=None, description="Mood state (always None until E4)"
+        default=None, description="Mood {valence, arousal, control} in [-1, 1]; None unless emotion_mood_enabled"
     )
     top_causes: list[EmotionCause] = Field(
         default_factory=list, description="Top 3 emotion events of the last hour by size"

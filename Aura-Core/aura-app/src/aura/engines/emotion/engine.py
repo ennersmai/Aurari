@@ -13,6 +13,7 @@ from aura.config import settings
 from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
+from aura.engines.emotion import mood as mood_math
 from aura.engines.emotion.physics import EmotionPhysics
 from aura.engines.emotion.translator import EmotionTranslator
 from aura.models.emotion import (
@@ -65,6 +66,10 @@ class EmotionEngine(BaseEngine):
         self.current_vector = self.config.baseline.model_copy()
         self.previous_vector = self.current_vector.model_copy()
         self.volatility_history: list[float] = []
+
+        # Mood (W4-13): only touched while settings.emotion_mood_enabled
+        self._mood: dict[str, float] = {axis: 0.0 for axis in mood_math.AXES}
+        self._mood_at = get_clock().now()
 
         # Timing
         self._last_tick_time = get_clock().now()
@@ -165,6 +170,45 @@ class EmotionEngine(BaseEngine):
         except Exception as exc:
             self.logger.warning("Physics DB hydration failed (non-fatal): %s", exc)
 
+    def _effective_baseline(self) -> EmotionVector:
+        """Resting point the physics decays toward.
+
+        The configured baseline, plus (mood flag on) a shift of the positive
+        dimensions by the mood valence. The configured baseline is never changed.
+        """
+        if not settings.emotion_mood_enabled:
+            return self.config.baseline
+        shift = mood_math.baseline_shift(
+            self._mood["valence"],
+            settings.emotion_mood_baseline_gain,
+            settings.emotion_mood_baseline_shift_max,
+        )
+        values = self.config.baseline.model_dump()
+        for dim in mood_math.POSITIVE_DIMENSIONS:
+            values[dim] = max(0.0, min(1.0, values[dim] + shift))
+        return EmotionVector(**values)
+
+    def _advance_mood(self, now: datetime) -> None:
+        """Move mood toward the current state's projection by the real time elapsed.
+
+        The projection is measured from the effective baseline, so a state resting
+        at a mood-shifted baseline does not feed the mood it came from.
+        """
+        dt = (now - self._mood_at).total_seconds()
+        self._mood_at = now
+        target = mood_math.project_mood(
+            self.current_vector.model_dump(),
+            self._effective_baseline().model_dump(),
+            {
+                "valence": settings.emotion_mood_valence_weights,
+                "arousal": settings.emotion_mood_arousal_weights,
+                "control": settings.emotion_mood_control_weights,
+            },
+        )
+        self._mood = mood_math.step(
+            self._mood, target, dt, settings.emotion_mood_half_life_hours * 3600.0
+        )
+
     async def tick(self) -> None:
         """Execute one emotion engine cycle."""
         now = get_clock().now()
@@ -179,9 +223,11 @@ class EmotionEngine(BaseEngine):
         # Apply physics
         self.previous_vector = self.current_vector.model_copy()
         self.current_vector = self.physics.tick(
-            self.current_vector, dt, self.config.baseline
+            self.current_vector, dt, self._effective_baseline()
         )
         self._last_tick_time = now
+        if settings.emotion_mood_enabled:
+            self._advance_mood(now)
 
         # Calculate volatility
         volatility = self.physics.calculate_volatility(
@@ -246,7 +292,7 @@ class EmotionEngine(BaseEngine):
             description=description,
             deviation=deviation,
             baseline=baseline_dict,
-            mood=None,  # Always None until E4
+            mood=dict(self._mood) if settings.emotion_mood_enabled else None,
             top_causes=top_causes,
         )
 
@@ -385,7 +431,27 @@ class EmotionEngine(BaseEngine):
         # Compute impulses from the appraisal table
         from aura.engines.emotion.appraisal import impulses_for
 
-        impulses = impulses_for(event.appraisal, event.user_state)
+        # Mood bias (W4-13): an ambiguous event leans with the mood. The unbiased
+        # appraisal is what gets recorded.
+        appraisal = event.appraisal
+        mood_bias = None
+        if (
+            settings.emotion_mood_enabled
+            and settings.emotion_mood_appraisal_bias_enabled
+        ):
+            mood_bias = 0.0
+            if abs(appraisal.congruence) < 0.3:
+                mood_bias = max(
+                    -0.1,
+                    min(0.1, settings.emotion_mood_appraisal_bias * self._mood["valence"]),
+                )
+                appraisal = appraisal.model_copy(
+                    update={
+                        "congruence": max(-1.0, min(1.0, appraisal.congruence + mood_bias))
+                    }
+                )
+
+        impulses = impulses_for(appraisal, event.user_state)
 
         # If no impulses matched, log at DEBUG and return current state
         if not impulses:
@@ -411,6 +477,8 @@ class EmotionEngine(BaseEngine):
         vector_dict = self.current_vector.model_dump()
         clamped_dict = {k: max(0.0, min(1.0, v)) for k, v in vector_dict.items()}
         self.current_vector = EmotionVector(**clamped_dict)
+        if settings.emotion_mood_enabled:
+            self._advance_mood(get_clock().now())
 
         # Compute per-dimension deviation change from baseline
         new_vector_dict = self.current_vector.model_dump()
@@ -433,23 +501,23 @@ class EmotionEngine(BaseEngine):
 
         # Write emotion_event record
         at = get_clock().now()
+        event_record = {
+            "at": at,
+            "kind": event.kind,
+            "source": event.source,
+            "ref": event.ref,
+            "person_id": event.person_id,
+            "venue": event.venue,
+            "appraisal": event.appraisal.model_dump(),
+            "impulses": impulses,
+            "deviation_change": deviation_change,
+            "dominant_change": dominant_change,
+            "size": max_change,
+        }
+        if mood_bias is not None:
+            event_record["mood_bias"] = mood_bias
         try:
-            await self.db.create(
-                "emotion_event",
-                {
-                    "at": at,
-                    "kind": event.kind,
-                    "source": event.source,
-                    "ref": event.ref,
-                    "person_id": event.person_id,
-                    "venue": event.venue,
-                    "appraisal": event.appraisal.model_dump(),
-                    "impulses": impulses,
-                    "deviation_change": deviation_change,
-                    "dominant_change": dominant_change,
-                    "size": max_change,
-                },
-            )
+            await self.db.create("emotion_event", event_record)
         except Exception as e:
             # Database failure is logged but does not undo the state change
             self.logger.error(f"Failed to write emotion_event: {e}")
@@ -629,16 +697,17 @@ class EmotionEngine(BaseEngine):
         try:
             state = await self.get_current_state()
 
-            await self.db.create(
-                "emotion_state",
-                {
-                    "timestamp": state.timestamp,
-                    "vector": state.vector.model_dump(),
-                    "dominant": list(state.dominant),
-                    "volatility": state.volatility,
-                    "description": state.description,
-                },
-            )
+            record = {
+                "timestamp": state.timestamp,
+                "vector": state.vector.model_dump(),
+                "dominant": list(state.dominant),
+                "volatility": state.volatility,
+                "description": state.description,
+            }
+            if settings.emotion_mood_enabled:
+                record["mood"] = dict(self._mood)
+                record["mood_at"] = self._mood_at
+            await self.db.create("emotion_state", record)
 
             self.logger.debug("Emotional state persisted to database")
         except Exception as e:
@@ -679,6 +748,18 @@ class EmotionEngine(BaseEngine):
                     self.current_vector = loaded_vector
                 
                 self.previous_vector = self.current_vector.model_copy()
+                if settings.emotion_mood_enabled and last_state.get("mood"):
+                    # No state was lived through while offline: mood decays toward
+                    # neutral by the real elapsed time (no cap).
+                    now = get_clock().now()
+                    saved_at = last_state.get("mood_at") or last_state.get("timestamp")
+                    saved = last_state["mood"]
+                    self._mood = mood_math.decay(
+                        {axis: float(saved.get(axis, 0.0)) for axis in mood_math.AXES},
+                        (now - saved_at).total_seconds(),
+                        settings.emotion_mood_half_life_hours * 3600.0,
+                    )
+                    self._mood_at = now
                 self.logger.info("Loaded previous emotional state from database")
         except Exception as e:
             self.logger.error(f"Failed to load state: {e}")
