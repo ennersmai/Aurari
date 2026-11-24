@@ -26,7 +26,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from aura.autonomy import registry, trace
+from aura.autonomy import budget as curiosity_budget, registry, trace
 from aura.clock import get_clock
 from aura.config import settings
 from aura.db.client import get_db_client
@@ -261,6 +261,14 @@ class InvestigationRunner:
              "pr": result.reason if result.state == "parked" else None,
              "rb": "investigation" if result.state == "resolved" else None},
         )
+        # Record spend against the curiosity daily budget (B4-03)
+        if result.tokens > 0 or result.tool_calls > 0 or result.cost_usd > 0.0:
+            await curiosity_budget.record_spend(
+                investigations=1,
+                tokens=result.tokens,
+                spend_usd=result.cost_usd,
+                db=self.db,
+            )
         await trace.record(
             "investigation", f"investigation:{result.state}", result.reason or "completed",
             allowed=True, refs=[str(qid)], db=self.db,

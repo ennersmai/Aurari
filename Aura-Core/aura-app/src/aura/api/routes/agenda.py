@@ -6,7 +6,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from aura.autonomy import channel
+from aura.autonomy import channel, learning
 from aura.autonomy.agenda import STATES, AgendaService
 from aura.autonomy.delivery import get_deliverer, item_to_dict
 
@@ -55,13 +55,18 @@ async def create_agenda_item(body: AgendaCreate) -> dict[str, Any]:
 
 async def _resolve(item_id: str, action: str) -> dict[str, Any]:
     svc = AgendaService()
-    if await svc.get(item_id) is None:
+    before = await svc.get(item_id)
+    if before is None:
         raise HTTPException(status_code=404, detail="agenda item not found")
     ok = await (svc.acknowledge(item_id) if action == "ack" else svc.dismiss(item_id))
     if not ok:
         raise HTTPException(status_code=409, detail="agenda item is not open")
     item = await svc.get(item_id)
     assert item is not None
+    if before.delivered_at is not None:  # only a delivered item teaches anything
+        await learning.record_outcome(
+            item.kind, "acknowledged" if action == "ack" else "dismissed", item_id=item.id
+        )
     await channel.publish("agenda_update", item_to_dict(item))
     return item_to_dict(item)
 

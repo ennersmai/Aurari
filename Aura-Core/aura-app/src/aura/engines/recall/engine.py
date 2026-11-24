@@ -214,6 +214,33 @@ class RecallEngine:
                 channel_errors["memories"] = str(e)
                 logger.debug("Recall memories channel failed (non-critical): %s", e)
 
+        # --- working_set channel (B5-04: optional, owner turns only) -------
+        if request.working_set:
+            ws_candidates = [
+                Candidate(
+                    block="working_set",
+                    key=item_id,
+                    dedup_keys=(),
+                    payload=text,
+                    rank=rank,
+                    source="agenda.offer",
+                )
+                for rank, (item_id, text) in enumerate(request.working_set)
+            ]
+            candidates.extend(ws_candidates)
+
+            def _ws_renderer(payloads: list[Any]) -> str:
+                if not payloads:
+                    return ""
+                lines = "\n".join(f"- {p}" for p in payloads)
+                return (
+                    "<working_set>\nThings you were holding for the owner. Mention one "
+                    "only if it fits the conversation; do not change the subject for it.\n"
+                    f"{lines}\n</working_set>"
+                )
+
+            renderers["working_set"] = _ws_renderer
+
         # --- assemble ------------------------------------------------
         budget_tokens = request.token_budget or settings.recall_token_budget
         shares: dict[BlockKind, float] = {
@@ -221,6 +248,7 @@ class RecallEngine:
             "latent": settings.recall_share_latent,
             "cold_start": settings.recall_share_cold_start,
             "memories": settings.recall_share_memories,
+            "working_set": settings.recall_share_working_set,
         }
 
         blocks, trace_items, tokens_before, tokens_after = assemble(

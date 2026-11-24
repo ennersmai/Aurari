@@ -68,7 +68,7 @@ def _packet(
     dynamic: list[Block] = []
     for kind in BLOCK_ORDER:
         text = {"insights": insights, "latent": latent,
-                "cold_start": cold_start, "memories": memories}[kind]
+                "cold_start": cold_start, "memories": memories}.get(kind)
         if text is None:
             continue
         block = _block(kind, text)

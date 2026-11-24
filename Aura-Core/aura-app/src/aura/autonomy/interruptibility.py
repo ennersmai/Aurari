@@ -70,7 +70,7 @@ def _age(then: datetime | None, now: datetime) -> float | None:
 
 def collect_signals(now: datetime) -> Signals:
     """Assemble the inputs from presence, running delegations and quiet hours."""
-    from aura.autonomy import channel
+    from aura.autonomy import channel, learning
     from aura.autonomy.controls import quiet_hours_active
     from aura.executor import delegation
 
@@ -82,7 +82,7 @@ def collect_signals(now: datetime) -> Signals:
         seconds_since_interaction=_age(p.last_interaction_at, now),
         watching_running_task=watching,
         seconds_since_owner_message=_age(p.last_owner_message_at, now),
-        dismissal_ages_seconds=(),  # B5-03 supplies the dismissal log; zero until then
+        dismissal_ages_seconds=learning.dismissal_ages(now),  # empty unless dismissal learning is on
     )
 
 

@@ -1203,6 +1203,21 @@ Constraints:
         task.add_done_callback(_done)
         return task
 
+    async def _working_set_offer(
+        self, user_id: str, user_input: str, requester_role: str, venue: str
+    ) -> list[tuple[str, str]]:
+        """B5-04: pending agenda items to offer inside this owner reply. Cheap, no
+        model call; never raises into the turn."""
+        from aura.autonomy import offer
+
+        if not offer.enabled():
+            return []
+        try:
+            return await offer.working_set_for_turn(user_id, user_input, requester_role, venue)
+        except Exception as e:  # noqa: BLE001
+            self.logger.debug(f"Working-set offer failed (non-critical): {e}")
+            return []
+
     async def _gather_turn_context(
         self,
         user_input: str,
@@ -1211,6 +1226,7 @@ Constraints:
         stream: bool,
         venue: str = "app",
         recall_token_budget: int | None = None,
+        requester_role: str = "guest",
     ) -> TurnContext:
         """Gather engine context and assemble the L3 ``SynthesisContext`` (W2-08).
 
@@ -1284,6 +1300,7 @@ Constraints:
             # and latent-intuition blocks and the per-round retrieval in L3.
             from aura.engines.recall.engine import get_recall_engine
             packet: ContextPacket | None = None
+            working_set = await self._working_set_offer(user_id, user_input, requester_role, venue)
             try:
                 packet = await get_recall_engine().recall(RecallRequest(
                     user_id=user_id,
@@ -1298,6 +1315,7 @@ Constraints:
                     include_latent=True,
                     venue=venue,
                     token_budget=recall_token_budget,
+                    working_set=working_set,
                 ))
             except Exception as e:
                 self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1305,6 +1323,11 @@ Constraints:
 
             cold_start_xml = packet.block_text("cold_start") if packet else None
             latent_intuition_xml = packet.block_text("latent") if packet else None
+            ws = packet.block_text("working_set") if packet else None
+            if ws:
+                latent_intuition_xml = (
+                    "\n".join([latent_intuition_xml, ws]) if latent_intuition_xml else ws
+                )
             if packet is not None:
                 self.logger.info(
                     f"[ICE] Recall packet: {packet.trace.tokens_after} tokens "
@@ -1431,6 +1454,7 @@ Constraints:
         # cold-start and memories blocks for the streaming path.
         from aura.engines.recall.engine import get_recall_engine
         packet: ContextPacket | None = None
+        working_set = await self._working_set_offer(user_id, user_input, requester_role, venue)
         try:
             packet = await get_recall_engine().recall(RecallRequest(
                 user_id=user_id,
@@ -1445,6 +1469,7 @@ Constraints:
                 include_latent=True,
                 venue=venue,
                 token_budget=recall_token_budget,
+                working_set=working_set,
             ))
         except Exception as e:
             self.logger.warning(f"Recall engine failed (non-critical): {e}")
@@ -1452,6 +1477,11 @@ Constraints:
 
         cold_start_xml = packet.block_text("cold_start") if packet else None
         latent_intuition_xml = packet.block_text("latent") if packet else None
+        ws = packet.block_text("working_set") if packet else None
+        if ws:
+            latent_intuition_xml = (
+                "\n".join([latent_intuition_xml, ws]) if latent_intuition_xml else ws
+            )
         if packet is not None:
             self.logger.info(
                 f"[ICE] Recall packet (stream): {packet.trace.tokens_after} tokens "
@@ -1944,6 +1974,7 @@ Constraints:
             stream=stream,
             venue=venue,
             recall_token_budget=recall_budget_tokens(profile) if profile else None,
+            requester_role=requester_role,
         )
         ctx.tier_profile = profile
         ctx.route = route

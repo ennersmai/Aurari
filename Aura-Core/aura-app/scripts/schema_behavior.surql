@@ -78,3 +78,25 @@ DEFINE FIELD IF NOT EXISTS resolved_by ON question TYPE option<string>;
 -- Investigations (B4-02): progress and outcome on the question; sources on external facts.
 DEFINE FIELD IF NOT EXISTS investigation ON question TYPE option<object> FLEXIBLE;
 DEFINE FIELD IF NOT EXISTS sources ON fact TYPE option<array<string>>;
+
+-- Dismissal learning (B5-03): per-kind learned state; ignored marker on agenda items.
+DEFINE TABLE IF NOT EXISTS agenda_kind_stats SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS kind ON agenda_kind_stats TYPE string;
+DEFINE FIELD IF NOT EXISTS threshold_delta ON agenda_kind_stats TYPE float DEFAULT 0.0;
+DEFINE FIELD IF NOT EXISTS consecutive_dismissals ON agenda_kind_stats TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS muted_until ON agenda_kind_stats TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS delivered ON agenda_kind_stats TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS acknowledged ON agenda_kind_stats TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS dismissed ON agenda_kind_stats TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS ignored ON agenda_kind_stats TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS updated_at ON agenda_kind_stats TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS ignored ON agenda_item TYPE option<bool>;
+
+-- Curiosity daily budget (B4-03): one row per local day (YYYY-MM-DD in app_timezone).
+DEFINE TABLE IF NOT EXISTS curiosity_budget SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS day ON curiosity_budget TYPE string;
+DEFINE FIELD IF NOT EXISTS investigations ON curiosity_budget TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS tokens ON curiosity_budget TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS spend_usd ON curiosity_budget TYPE float DEFAULT 0.0;
+DEFINE FIELD IF NOT EXISTS updated_at ON curiosity_budget TYPE datetime;
+DEFINE INDEX IF NOT EXISTS curiosity_budget_day ON curiosity_budget FIELDS day UNIQUE;

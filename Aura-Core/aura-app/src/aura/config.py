@@ -825,6 +825,11 @@ class Settings(BaseSettings):
         description="Share of the Recall Engine token budget allocated to the retrieved "
                     "memories block.",
     )
+    recall_share_working_set: float = Field(
+        default=0.10,
+        validation_alias="AURA_RECALL_SHARE_WORKING_SET",
+        description="Share of the Recall Engine token budget for the working-set offer block (B5-04).",
+    )
     recall_dedup_enabled: bool = Field(
         default=True,
         validation_alias="AURA_RECALL_DEDUP_ENABLED",
@@ -1970,6 +1975,26 @@ class Settings(BaseSettings):
         description="Ablation: choose among questions above the minimum at random, not by score (B4-01).",
     )
 
+    # Curiosity daily budgets (B4-03)
+    curiosity_daily_investigations: int = Field(
+        default=3,
+        validation_alias="AURA_CURIOSITY_DAILY_INVESTIGATIONS",
+        description="Maximum investigations per local day (B4-03).",
+        ge=0,
+    )
+    curiosity_daily_tokens: int = Field(
+        default=200000,
+        validation_alias="AURA_CURIOSITY_DAILY_TOKENS",
+        description="Maximum tokens per local day for curiosity (B4-03).",
+        ge=0,
+    )
+    curiosity_daily_spend_usd: float = Field(
+        default=0.0,
+        validation_alias="AURA_CURIOSITY_DAILY_SPEND_USD",
+        description="Maximum USD spend per local day for curiosity. 0 = only free routes (B4-03).",
+        ge=0.0,
+    )
+
     investigation_max_tokens: int = Field(
         default=20000,
         validation_alias="AURA_INVESTIGATION_MAX_TOKENS",
@@ -2143,6 +2168,53 @@ class Settings(BaseSettings):
         ge=0.0,
         validation_alias="AURA_DELIVERY_REFRACTORY_SECONDS",
         description="After a delivery, no other unprompted message for this long; items wait (B5-02).",
+    )
+
+    dismissal_ease_step: float = Field(
+        default=0.02,
+        ge=0.0,
+        validation_alias="AURA_DISMISSAL_EASE_STEP",
+        description="Threshold drop for a kind on acknowledgement (B5-03).",
+    )
+
+    dismissal_raise_step: float = Field(
+        default=0.05,
+        ge=0.0,
+        validation_alias="AURA_DISMISSAL_RAISE_STEP",
+        description="Threshold rise for a kind on dismissal or ignore (B5-03).",
+    )
+
+    dismissal_threshold_floor: float = Field(
+        default=-0.2,
+        validation_alias="AURA_DISMISSAL_THRESHOLD_FLOOR",
+        description="Lowest learned threshold delta (B5-03).",
+    )
+
+    dismissal_threshold_ceiling: float = Field(
+        default=0.4,
+        validation_alias="AURA_DISMISSAL_THRESHOLD_CEILING",
+        description="Highest learned threshold delta (B5-03).",
+    )
+
+    dismissal_mute_after: int = Field(
+        default=3,
+        ge=1,
+        validation_alias="AURA_DISMISSAL_MUTE_AFTER",
+        description="Consecutive dismissals that mute a kind (B5-03).",
+    )
+
+    dismissal_mute_seconds: float = Field(
+        default=86400.0,
+        ge=0.0,
+        validation_alias="AURA_DISMISSAL_MUTE_SECONDS",
+        description="How long a learned mute lasts (B5-03).",
+    )
+
+    agenda_ignore_hours: float = Field(
+        default=24.0,
+        ge=0.0,
+        validation_alias="AURA_AGENDA_IGNORE_HOURS",
+        description="A delivered item unanswered this long is expired and counted as ignored (B5-03).",
     )
 
     # Agenda priority decay per hour, per kind (B1-02)
@@ -2325,6 +2397,25 @@ class Settings(BaseSettings):
         default=0.002,
         validation_alias="AURA_DRIVE_DELTA_CONSOLIDATION_DEBT_REST",
         description="Change to the rest drive on event consolidation_debt.",
+    )
+
+    agenda_offer_limit: int = Field(
+        default=3,
+        ge=1,
+        validation_alias="AURA_AGENDA_OFFER_LIMIT",
+        description="Most pending agenda items offered inside one owner reply (B5-04).",
+    )
+    agenda_offer_timeout_ms: int = Field(
+        default=50,
+        ge=1,
+        validation_alias="AURA_AGENDA_OFFER_TIMEOUT_MS",
+        description="Time bound for the one indexed query that finds offerable items (B5-04).",
+    )
+    agenda_offer_scan: int = Field(
+        default=40,
+        ge=1,
+        validation_alias="AURA_AGENDA_OFFER_SCAN",
+        description="Most recent pending items scanned for overlap per owner turn (B5-04).",
     )
 
     # =========================================================================

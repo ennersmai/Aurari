@@ -22,8 +22,10 @@ from typing import Any, Literal
 
 # The four context blocks the L3 prompt renders today, in the order they appear
 # in the prompt and in which deduplication and the budget run (PRD 6.3 step 6).
-BlockKind = Literal["insights", "latent", "cold_start", "memories"]
-BLOCK_ORDER: tuple[BlockKind, ...] = ("insights", "latent", "cold_start", "memories")
+BlockKind = Literal["insights", "latent", "cold_start", "memories", "working_set"]
+BLOCK_ORDER: tuple[BlockKind, ...] = (
+    "insights", "latent", "cold_start", "memories", "working_set",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +67,9 @@ class RecallRequest:
     # W3-17: where the turn happens (app, dm:<user_id>, guild:<g>/channel:<c>),
     # used to filter facts by visibility before ranking.
     venue: str = "app"
+    # B5-04: pending agenda items offered for this owner turn, as (id, text).
+    # Empty unless the offer flags are on and the speaker is the owner.
+    working_set: list[tuple[str, str]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

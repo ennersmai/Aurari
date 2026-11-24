@@ -119,6 +119,16 @@ async def set_level(level: str, db: Any = None) -> Controls:
     return await _write(lambda c: setattr(c, "level", level), db)
 
 
+async def _learning_muted(kind: str, now: datetime | None, db: Any) -> bool:
+    from aura.autonomy import learning
+
+    try:
+        return await learning.is_muted(kind, now, db)
+    except Exception as e:  # noqa: BLE001 - the learning table must not break the gate
+        logger.warning("learned mute check failed: %s", e)
+        return False
+
+
 async def mute_kind(kind: str, db: Any = None) -> Controls:
     def m(c: Controls) -> None:
         if kind not in c.muted_kinds:
@@ -131,6 +141,12 @@ async def unmute_kind(kind: str, db: Any = None) -> Controls:
     def m(c: Controls) -> None:
         c.muted_kinds = [k for k in c.muted_kinds if k != kind]
 
+    from aura.autonomy import learning
+
+    try:
+        await learning.lift_mute(kind, db)  # the owner can lift a learned mute too
+    except Exception as e:  # noqa: BLE001
+        logger.warning("lifting learned mute failed: %s", e)
     return await _write(m, db)
 
 
@@ -188,6 +204,8 @@ async def may_initiate(
         d = Decision(False, "autonomy_disabled")
     elif kind in c.muted_kinds:
         d = Decision(False, "kind_muted")
+    elif await _learning_muted(kind, now, db):
+        d = Decision(False, "kind_muted_by_learning")
     elif c.level == "silent":
         d = Decision(False, "level_silent")
     elif c.level == "open":

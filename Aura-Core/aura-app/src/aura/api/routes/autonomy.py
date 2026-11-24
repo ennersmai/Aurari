@@ -5,7 +5,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from aura.autonomy import channel, controls, registry, trace
+from aura.autonomy import budget as curiosity_budget, channel, controls, learning, registry, trace
 from aura.autonomy.delivery import get_deliverer
 from aura.config import settings
 
@@ -78,3 +78,19 @@ async def kill() -> dict[str, Any]:
 async def resume() -> dict[str, Any]:
     """Clear the kill flag. Nothing that was cancelled is restarted."""
     return await _changed(await controls.set_killed(False), "resume", "kill cleared")
+
+
+@router.get("/autonomy/stats")
+async def autonomy_stats() -> dict[str, Any]:
+    """Per-kind delivery counters and reply rate (acknowledged over delivered)."""
+    return {"enabled": settings.dismissal_learning_enabled, "kinds": await learning.stats_report()}
+
+
+@router.get("/autonomy/budget")
+async def get_autonomy_budget() -> dict[str, Any]:
+    """Remaining curiosity daily budget for the mind panel (B4-03, B7)."""
+    if not settings.curiosity_enabled:
+        return {"enabled": False}
+    remaining = await curiosity_budget.get_remaining()
+    remaining["enabled"] = True
+    return remaining

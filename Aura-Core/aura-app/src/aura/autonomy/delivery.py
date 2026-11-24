@@ -13,6 +13,7 @@ from typing import Any
 
 from aura.autonomy import channel, trace
 from aura.autonomy import interruptibility as _interrupt
+from aura.autonomy import learning as _learning
 from aura.autonomy.agenda import AgendaItem, AgendaService, _rid, _to_item, effective_priority
 from aura.autonomy.controls import _parse_hhmm, may_initiate, quiet_hours_active
 from aura.clock import get_clock
@@ -31,8 +32,9 @@ def interruptibility(now: datetime) -> float:
 
 
 def threshold(kind: str) -> float:
-    """Delivery threshold for a kind. Config now; B5-03 learning state will override it."""
-    return float(getattr(settings, f"delivery_threshold_{kind}", 0.3))
+    """Delivery threshold for a kind: config plus the learned delta (B5-03, zero when off)."""
+    base = float(getattr(settings, f"delivery_threshold_{kind}", 0.3))
+    return max(0.0, base + _learning.threshold_delta(kind))
 
 
 def seconds_to_quiet_end(now: datetime) -> float:
@@ -198,6 +200,10 @@ class AgendaDeliverer:
         now = get_clock().now()
         if await self.service.expire_due(now):
             await channel.publish("agenda_update", {"reason": "expired"})
+        if settings.dismissal_learning_enabled:
+            if await _learning.sweep_ignored(now, db):
+                await channel.publish("agenda_update", {"reason": "ignored"})
+            await _learning.refresh(db)
         rows = extract_rows(
             await db.query(
                 "SELECT * FROM agenda_item WHERE state = 'pending' AND venue = 'app' "
@@ -265,6 +271,7 @@ class AgendaDeliverer:
             if not changed:
                 continue
             item = _to_item(changed[0])
+            await _learning.record_delivered(item.kind, db)
             delivered.append(item)
             last_delivery = now
             payload = item_to_dict(item)

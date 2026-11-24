@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from aura.autonomy import controls, drives, registry, trace
+from aura.autonomy import budget as curiosity_budget, controls, drives, registry, trace
 from aura.clock import get_clock
 from aura.config import settings
 from aura.models.messages import EngineMessage, MessageType
@@ -415,6 +415,11 @@ class Workspace:
             await trace.record("workspace", "attend:preempt", "user message pending", allowed=False, db=db)
             return None
 
+        # Load curiosity daily budget for investigate proposals
+        curiosity_budget_obj = None
+        if settings.curiosity_enabled:
+            curiosity_budget_obj = await curiosity_budget.load_budget(db=db, now=now)
+
         self.live(now)
         scored: list[tuple[float, datetime, Proposal, float, float]] = []
         for p in list(self._proposals.values()):
@@ -426,6 +431,11 @@ class Workspace:
                 reason = "over_budget"
             elif p.cost.risk != RiskLevel.READ and not budget.allow_risk:
                 reason = "risk_not_allowed"
+            elif p.kind == ProposalKind.INVESTIGATE and curiosity_budget_obj is not None and (
+                exhausted := curiosity_budget_obj.exhausted()
+            ):
+                # B4-03 (T6). Within budget, the proposal still goes through may_initiate below.
+                reason = f"daily budget reached: {exhausted}"
             else:
                 d = await controls.may_initiate(
                     KIND_TO_GATE[p.kind], now=now, source=p.source, refs=p.refs, db=db
