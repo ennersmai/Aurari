@@ -144,6 +144,12 @@ class DecisionService:
         
         await self._db.merge(decision_id, update_data)
 
+        # B3-05: an allowed pursuit decision is the only way a grant is created.
+        # answer() is reached from the owner's decision routes, never from a tool.
+        if (decision.get("kind") == "needs_decision" and decision.get("action") == "pursuit"
+                and allow and decided_by == "owner"):
+            await self._grant_pursuit(decision, now)
+
         # Then call the OpenCode client to answer the permission
         if decision.get("kind") == "needs_decision":
             # A blocker item (G4-02) has no OpenCode permission request to answer.
@@ -163,6 +169,31 @@ class DecisionService:
         # Return the updated decision
         updated = await self._db.select(decision_id)
         return updated[0] if updated else {**decision, **update_data}
+
+    async def _grant_pursuit(self, decision: dict[str, Any], now: datetime) -> None:
+        """Create the grant the decision describes. Its scope is the stored risk;
+        anything malformed creates nothing (fail closed)."""
+        from datetime import timedelta
+
+        from aura.autonomy import grants
+        from aura.config import settings
+
+        if not settings.goals_v2_enabled:
+            return
+        resources = list(decision.get("resources") or [])
+        scope = decision.get("risk")
+        if not resources or scope not in grants.SCOPES or f"scope:{scope}" not in resources:
+            logger.warning("pursuit decision malformed, no grant: %s", decision.get("id"))
+            return
+        budget: dict[str, int] = {}
+        for item in resources[1:]:
+            key, _, value = str(item).partition(":")
+            if key in ("minutes", "tokens") and value.isdigit():
+                budget[key] = int(value)
+        await grants.create(
+            resources[0], scope, now + timedelta(hours=settings.pursuit_grant_hours),
+            granted_by="owner", budget=budget, db=self._db,
+        )
 
     async def get(self, decision_id: Any) -> dict[str, Any] | None:
         """One decision record, or None (P2-10: a code node polls its merge decision)."""

@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from aura.autonomy import channel, trace
+from aura.autonomy import interruptibility as _interrupt
 from aura.autonomy.agenda import AgendaItem, AgendaService, _rid, _to_item, effective_priority
 from aura.autonomy.controls import may_initiate, quiet_hours_active
 from aura.clock import get_clock
@@ -21,8 +22,11 @@ logger = logging.getLogger(__name__)
 
 
 def interruptibility(now: datetime) -> float:
-    """Stub returning 1.0 (always interruptible). B5-01 replaces this one name."""
-    return 1.0
+    """B5-01 model when ``interruptibility_model_enabled``, else the fixed-cooldown control."""
+    signals = _interrupt.collect_signals(now)
+    if settings.interruptibility_model_enabled:
+        return _interrupt.interruptibility(signals, now)
+    return _interrupt.fixed_cooldown(signals, now)
 
 
 def item_to_dict(item: AgendaItem) -> dict[str, Any]:

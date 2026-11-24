@@ -2953,3 +2953,18 @@ TaskQueueService could not write to a database built from the real schema script
 - `GoalEngine.tick`: boredom/idle branches skipped when `workspace_enabled`, traced once (`tick:boredom_goals_disabled`).
 - Tests: `tests/unit/test_workspace_cycle.py` (18, incl. T1, T12, ablation, both entry points).
 - Notes: `tick` ends with `asyncio.sleep(30)` so tests must patch it. Nothing fires `question_resolved` or `agenda_due` yet. A user_message cycle runs while the flag is pending, so attend traces `attend:preempt`.
+
+## B5-01 Interruptibility model (worker)
+- New `autonomy/interruptibility.py`: pure `interruptibility(Signals, now)` (quiet hours 0; typing/active x `interrupt_typing_factor`; watched running delegation x `interrupt_watching_factor`; owner-message curve floor -> 1 over `interrupt_rise_seconds`, falls after `interrupt_absence_hours`; decaying dismissal penalty, zero until B5-03), `collect_signals` (in-memory only), `fixed_cooldown` (ablation control: 0 within `interrupt_fixed_cooldown_seconds` of owner activity, else 1.0). `delivery.interruptibility(now)` dispatches on `interruptibility_model_enabled`.
+- `channel.PresenceState` gains `watching` and `last_owner_message_at`; `channel.note_owner_message()` called in the coordinator turn wrapper next to the user_message event. Frontend `PresenceState` type has optional `watching` (chat.tsx does not send it yet).
+- Tests: `tests/unit/test_interruptibility.py`.
+
+## B4-01 Question scoring without learning value (worker)
+- New `autonomy/curiosity.py`: `learning_value` (constant 1.0, B6 replaces it), `relevance` (goal entities 1.0, recent-episode entities 0.5, averaged over the question's entities), `tractability` (`ask_user` for person entities or preference wording, `read` for registered workspace name/path, `search` for tool entities/urls, else `search` at `curiosity_search_low_tractability`), `pick_questions(now, limit, db, rng)` behind `curiosity_enabled`; writes `score/scored_at/tractability/parked_reason` back; scores below `curiosity_min_score` are parked and not returned. Ablation `curiosity_random_choice` samples among non-parked with the passed `random.Random`.
+- Question rows have no entity links, so entities are matched by name/alias in the question text. Owner-only means visibility `owner` or `private:owner`. `resolved_by` is declared but unused until B4-02.
+- Config: `curiosity_recent_episodes`, `curiosity_min_score`, `curiosity_search_low_tractability`, `curiosity_random_choice`. Tests: `tests/unit/test_question_scoring.py` (9).
+
+## B3-05 request_pursuit tool (2026-11-24)
+- New `src/aura/tools/request_pursuit.py` (owner only, goals_v2 only; read scope starts a read-only pursuit via the gated goal engine; other scopes create a `needs_decision` (action `pursuit`) + agenda item and never a grant).
+- `DecisionService.answer`: allowed pursuit decision answered by `owner` creates the grant (expiry `pursuit_grant_hours`); deny, non-owner or malformed decision creates nothing.
+- Config: `pursuit_max_minutes`, `pursuit_max_tokens`, `pursuit_grant_hours`. Registry hides the tool when goals_v2 is off. Tests: tests/unit/test_request_pursuit.py (10).

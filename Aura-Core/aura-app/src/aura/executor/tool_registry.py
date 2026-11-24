@@ -91,9 +91,10 @@ BUILTIN_RISK: dict[str, Risk] = {
     "execute_code": "execute",
     "delegate_work": "execute",
     "plan_task": "write",
+    "request_pursuit": "read",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "plan_task", "recall_tools", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "plan_task", "recall_tools", "request_pursuit", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:
@@ -271,9 +272,15 @@ class ToolRegistry:
         allows task graphs (P2-08); with the flags off the list is as before."""
         from aura.tiers import plan_task_enabled
 
-        hide_plan = not plan_task_enabled()
+        from aura.tools.request_pursuit import request_pursuit_enabled
+
+        hidden = set()
+        if not plan_task_enabled():
+            hidden.add("plan_task")
+        if not request_pursuit_enabled():  # B3-05: goals_v2 only
+            hidden.add("request_pursuit")
         return sorted(
-            (r for r in self._records.values() if not (hide_plan and r.name == "plan_task")),
+            (r for r in self._records.values() if r.name not in hidden),
             key=lambda r: r.name,
         )
 

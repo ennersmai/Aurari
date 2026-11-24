@@ -37,6 +37,8 @@ class PresenceState:
     typing: bool = False
     active_view: str | None = None
     last_interaction_at: datetime | None = None
+    watching: str | None = None  # id of the delegated task whose page is open (B5-01)
+    last_owner_message_at: datetime | None = None  # set by note_owner_message (B5-01)
 
 
 presence = PresenceState()
@@ -105,4 +107,14 @@ def update_presence(data: dict[str, Any]) -> None:
     if view is None or isinstance(view, str):
         if "active_view" in data:
             presence.active_view = view[:100] if view else None
+    if "watching" in data:
+        w = data["watching"]
+        presence.watching = w[:200] if isinstance(w, str) and w else None
     presence.last_interaction_at = get_clock().now()
+
+
+def note_owner_message() -> None:
+    """The owner sent a chat message (read by the interruptibility curve, B5-01)."""
+    now = get_clock().now()
+    presence.last_owner_message_at = now
+    presence.last_interaction_at = now

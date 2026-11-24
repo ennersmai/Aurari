@@ -1782,6 +1782,9 @@ Constraints:
         from aura.orchestrator import workspace as _workspace
 
         _workspace.fire_event("user_message")
+        from aura.autonomy import channel as _channel
+
+        _channel.note_owner_message()
         try:
             async for ev in stages:
                 yield ev

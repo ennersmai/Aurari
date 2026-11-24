@@ -67,3 +67,10 @@ DEFINE FIELD IF NOT EXISTS granted_at ON pursuit_grant TYPE datetime;
 DEFINE FIELD IF NOT EXISTS expires_at ON pursuit_grant TYPE datetime;
 DEFINE FIELD IF NOT EXISTS revoked_at ON pursuit_grant TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS pursuit_grant_goal ON pursuit_grant FIELDS goal_id;
+
+-- Question scoring (B4-01): option fields on the existing question table.
+DEFINE FIELD IF NOT EXISTS score ON question TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS scored_at ON question TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS tractability ON question TYPE option<float>;
+DEFINE FIELD IF NOT EXISTS parked_reason ON question TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS resolved_by ON question TYPE option<string>;

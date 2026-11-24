@@ -38,7 +38,7 @@ export function acceptBatch(lastSeq: number, events: AuraEnvelope[]): { fresh: A
   return { fresh, lastSeq: last };
 }
 
-export interface PresenceState { typing: boolean; active_view: string | null }
+export interface PresenceState { typing: boolean; active_view: string | null; watching?: string | null }
 
 /** At most one presence message per `minMs`; an unchanged state is not resent. */
 export function createPresenceThrottle(
@@ -49,7 +49,8 @@ export function createPresenceThrottle(
   let lastAt = -Infinity;
   let lastSent: PresenceState | null = null;
   return (state: PresenceState): boolean => {
-    if (lastSent && lastSent.typing === state.typing && lastSent.active_view === state.active_view) return false;
+    if (lastSent && lastSent.typing === state.typing && lastSent.active_view === state.active_view
+        && (lastSent.watching ?? null) === (state.watching ?? null)) return false;
     const t = now();
     if (t - lastAt < minMs) return false;
     lastAt = t;

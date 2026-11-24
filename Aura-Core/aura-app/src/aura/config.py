@@ -1915,10 +1915,59 @@ class Settings(BaseSettings):
         ge=1,
     )
 
+    pursuit_max_minutes: int = Field(
+        default=120,
+        validation_alias="AURA_PURSUIT_MAX_MINUTES",
+        description="Largest minutes budget request_pursuit accepts (B3-05).",
+        ge=1,
+    )
+
+    pursuit_max_tokens: int = Field(
+        default=200000,
+        validation_alias="AURA_PURSUIT_MAX_TOKENS",
+        description="Largest token budget request_pursuit accepts (B3-05).",
+        ge=1,
+    )
+
+    pursuit_grant_hours: int = Field(
+        default=24,
+        validation_alias="AURA_PURSUIT_GRANT_HOURS",
+        description="Hours an owner-approved pursuit grant lives (B3-05).",
+        ge=1,
+    )
+
     curiosity_enabled: bool = Field(
         default=False,
         validation_alias="AURA_CURIOSITY_ENABLED",
         description="Curiosity (B4).",
+    )
+
+    curiosity_recent_episodes: int = Field(
+        default=20,
+        validation_alias="AURA_CURIOSITY_RECENT_EPISODES",
+        description="Number of recent episodes whose entities count as recent topics (B4-01).",
+        ge=1,
+    )
+
+    curiosity_min_score: float = Field(
+        default=0.05,
+        validation_alias="AURA_CURIOSITY_MIN_SCORE",
+        description="Questions scoring below this are parked, not investigated (B4-01).",
+        ge=0.0,
+    )
+
+    curiosity_search_low_tractability: float = Field(
+        default=0.2,
+        validation_alias="AURA_CURIOSITY_SEARCH_LOW_TRACTABILITY",
+        description="Tractability of a question with no better route than search (B4-01).",
+        ge=0.0,
+        le=1.0,
+    )
+
+    curiosity_random_choice: bool = Field(
+        default=False,
+        validation_alias="AURA_CURIOSITY_RANDOM_CHOICE",
+        description="Ablation: choose among questions above the minimum at random, not by score (B4-01).",
     )
 
     interruptibility_model_enabled: bool = Field(
@@ -1931,6 +1980,83 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="AURA_DISMISSAL_LEARNING_ENABLED",
         description="Learn from dismissed items (B5).",
+    )
+
+    interrupt_typing_factor: float = Field(
+        default=0.1,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_TYPING_FACTOR",
+        description="Interruptibility factor while the owner is typing or active in the app (B5-01).",
+    )
+
+    interrupt_watching_factor: float = Field(
+        default=0.3,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_WATCHING_FACTOR",
+        description="Interruptibility factor while a delegated task runs and the owner watches its page (B5-01).",
+    )
+
+    interrupt_rise_seconds: float = Field(
+        default=300.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_RISE_SECONDS",
+        description="Seconds after an owner message over which the curve rises to 1 (B5-01).",
+    )
+
+    interrupt_absence_hours: float = Field(
+        default=8.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_ABSENCE_HOURS",
+        description="Hours of absence after which the curve starts to fall (B5-01).",
+    )
+
+    interrupt_absence_fall_hours: float = Field(
+        default=16.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_ABSENCE_FALL_HOURS",
+        description="Hours over which the curve falls to its floor once absence starts (B5-01).",
+    )
+
+    interrupt_curve_floor: float = Field(
+        default=0.2,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_CURVE_FLOOR",
+        description="Curve value just after an owner message and after a long absence (B5-01).",
+    )
+
+    interrupt_active_seconds: float = Field(
+        default=30.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_ACTIVE_SECONDS",
+        description="Seconds after the last app interaction that count as active now (B5-01).",
+    )
+
+    interrupt_typing_stale_seconds: float = Field(
+        default=60.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_TYPING_STALE_SECONDS",
+        description="A typing flag older than this is ignored (B5-01).",
+    )
+
+    interrupt_dismissal_penalty: float = Field(
+        default=0.3,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_DISMISSAL_PENALTY",
+        description="Penalty per recent dismissal, before decay (B5-01).",
+    )
+
+    interrupt_dismissal_halflife_seconds: float = Field(
+        default=3600.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_DISMISSAL_HALFLIFE_SECONDS",
+        description="Half-life of a dismissal penalty (B5-01).",
+    )
+
+    interrupt_fixed_cooldown_seconds: float = Field(
+        default=600.0,
+        ge=0.0,
+        validation_alias="AURA_INTERRUPT_FIXED_COOLDOWN_SECONDS",
+        description="Ablation control: no unprompted message within this many seconds of owner activity when the model is off (B5-01).",
     )
 
     # Agenda priority decay per hour, per kind (B1-02)
