@@ -614,7 +614,7 @@ export type AutonomyLevel = 'silent' | 'important' | 'open';
 export interface AutonomyState {
   level: AutonomyLevel; muted_kinds: string[]; killed: boolean; killed_at: string | null;
   quiet_hours?: { start: string | number; end: string | number; active: boolean };
-  autonomy_enabled?: boolean; workspace_enabled?: boolean;
+  autonomy_enabled?: boolean; workspace_enabled?: boolean; goals_v2_enabled?: boolean;
 }
 
 async function b1Json<T>(path: string, method = 'GET', body?: unknown): Promise<T> {

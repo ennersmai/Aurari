@@ -74,3 +74,7 @@ DEFINE FIELD IF NOT EXISTS scored_at ON question TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS tractability ON question TYPE option<float>;
 DEFINE FIELD IF NOT EXISTS parked_reason ON question TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS resolved_by ON question TYPE option<string>;
+
+-- Investigations (B4-02): progress and outcome on the question; sources on external facts.
+DEFINE FIELD IF NOT EXISTS investigation ON question TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS sources ON fact TYPE option<array<string>>;

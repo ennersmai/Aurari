@@ -33,6 +33,7 @@ def _state(c: controls.Controls) -> dict[str, Any]:
         },
         "autonomy_enabled": settings.autonomy_enabled,
         "workspace_enabled": settings.workspace_enabled,
+        "goals_v2_enabled": settings.goals_v2_enabled,
     }
 
 

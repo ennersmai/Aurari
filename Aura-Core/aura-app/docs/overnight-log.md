@@ -2968,3 +2968,31 @@ TaskQueueService could not write to a database built from the real schema script
 - New `src/aura/tools/request_pursuit.py` (owner only, goals_v2 only; read scope starts a read-only pursuit via the gated goal engine; other scopes create a `needs_decision` (action `pursuit`) + agenda item and never a grant).
 - `DecisionService.answer`: allowed pursuit decision answered by `owner` creates the grant (expiry `pursuit_grant_hours`); deny, non-owner or malformed decision creates nothing.
 - Config: `pursuit_max_minutes`, `pursuit_max_tokens`, `pursuit_grant_hours`. Registry hides the tool when goals_v2 is off. Tests: tests/unit/test_request_pursuit.py (10).
+
+## B5-02 Delivery decision and refractory period (worker)
+- `delivery.deliver_due` (when `interruptibility_model_enabled`) delivers when `effective_priority * interruptibility >= threshold(kind)`; config `delivery_threshold_<kind>` (needs_decision 0.15 lowest) and `delivery_refractory_seconds` (900). `delivery.threshold(kind)` is the single read point B5-03 should override. Model off: old behaviour (interruptibility > 0, no threshold, no refractory).
+- Refractory is read from the newest `agenda_item.delivered_at` (survives restart). Items wait; the deliverer arms one `_wake` timer for the refractory end or the quiet-hours end (`seconds_to_quiet_end`), re-armed in `rearm`.
+- Re-evaluation: `delivery.schedule_reevaluate()` (no-op with the model off) is called on typing True->False in `channel.update_presence` and in `note_owner_message`; item creation already calls `notify`; a finished task creates a `task_done` item, so it is covered.
+- Trace rows `deliver:<kind>` / `defer:<kind>` carry `cost` {product, threshold, interruptibility}. Quiet-hours and zero-interruptibility deferrals write no trace row (silent).
+- Tests: tests/unit/test_delivery_threshold.py (8), tests/scenarios/test_behavior_b5.py (2).
+
+## B4-02 Investigations (worker)
+- New `autonomy/investigation.py`: `InvestigationRunner.run(question, route, budget, pause_token)` reuses the task scheduler's `_research_round`, `_research_tool_definitions`, `run_tool_loop`, `find_refs`, `cap_report`. Limits `investigation_max_tokens` (estimated), `_max_tool_calls`, `_max_minutes` (active time, FakeClock-safe) stop it with the reason recorded. Every tool call goes through `execute_and_feedback(..., autonomous={"goal_id": None, "source": "investigation"})` (new optional passthrough in `ToolExecutor.execute_and_feedback`), so non-read tools are refused by the executor with one `needs_decision`.
+- Pause: token checked between steps plus a watcher (`investigation_pause_poll_seconds`) that cancels the loop; state `paused`, question stays `open` with progress in new `question.investigation` object (notes, counters), resumed by the next winning cycle. Loop task registered with `registry.register_autonomous_task` (kill -> state `cancelled`, question stays open).
+- Outcome: `resolved` (facts via `write_facts(provenance="external", sources=urls)`, new `fact.sources`, `memory_external_confidence`), `partial` (a limit hit; no facts, notes kept), `parked` (`no_findings`). Findings = bullet lines of the report, max `investigation_max_findings`. Trace row `investigation:<state>` carries cost. Handler `make_handler`/`register` (called from main.py; no handler when `curiosity_enabled` off); guest-visibility refused with no model call.
+- Tests: `tests/unit/test_investigation.py` (11). Note: `layers.py` was mid-edit (IndentationError) by another worker during my run.
+
+## B3-06 Remove the pursuit text tag; goal creation under the gate (2026-11-24)
+- **PRD:** 9 (last bullets), finding B4, principle 1
+- **Tier:** bulk
+- **Depends on:** B3-05, B2-04
+- **Files changed:**
+  - `src/aura/llm/layers.py`: The prompt section teaching the `[GOAL_PURSUIT_REQUEST:goal_id]` tag is replaced by two sentences telling Aura to use the `request_pursuit` tool when `goals_v2_enabled` is True. When the flag is off, the tag text is kept byte for byte. Two locations updated: the `goal_instructions` block and the `pursuit_suggestions` instruction block.
+  - `src/aura/api/routes/autonomy.py`: Added `goals_v2_enabled` to the state returned by `GET /autonomy`.
+  - `frontend/src/services/auraApiService.ts`: Added `goals_v2_enabled?: boolean` to `AutonomyState` interface.
+  - `frontend/src/pages/chat.tsx`: `checkForGoalPursuitRequest` now returns early when `agenda.state?.goals_v2_enabled` is true, skipping the tag regex and modal. A comment notes this path will be removed entirely in a later cleanup card after the flag defaults on.
+  - `src/aura/engines/goal/engine.py`: `_consider_new_goal` now accepts an `accepted_proposal` parameter (default False). Under `goals_v2_enabled`, it returns immediately for `boredom`, `idle_exploration`, `curiosity`, `creative_interest`, `wonder_driven` triggers unless called with `accepted_proposal=True`. `check_boredom` remains a read-only getter. Added docstring explaining P2-33 will re-add proposals at level 2 through `may_initiate`.
+  - `tests/unit/test_goal_tag_removed.py`: New test file with 11 tests covering prompt tag presence/absence, pursuit suggestions switching, `_consider_new_goal` gating, and `check_boredom` read-only behavior.
+  - `frontend/src/__tests__/ChatPage.goal_tag.test.tsx`: New frontend test file with 5 tests verifying the early-return logic.
+- **Test result:** All 11 new backend tests pass, all 5 new frontend tests pass, full backend suite 1425 passed (3 skipped), full frontend suite 115 passed, `npm run build` passes.
+- **Unsure about:** Nothing. The implementation follows the card exactly. The old tag prompt is preserved byte-for-byte when `goals_v2_enabled` is False. The `_consider_new_goal` gate correctly allows accepted proposals through while blocking autonomous goal creation from boredom/idle/curiosity triggers.

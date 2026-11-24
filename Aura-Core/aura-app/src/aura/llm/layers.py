@@ -1348,7 +1348,13 @@ CRITICAL REQUIREMENTS:
                     prompt += "  </goal>\n"
                 prompt += "</active_goals>\n"
                 
-                prompt += """<goal_instructions>
+                if settings.goals_v2_enabled:
+                    prompt += """<goal_instructions>
+To pursue a goal autonomously, use the request_pursuit tool with the goal_id and desired scope (read, write, execute, or send). Read scope starts immediately; other scopes require owner approval.
+</goal_instructions>
+"""
+                else:
+                    prompt += """<goal_instructions>
 If you want to pursue a goal autonomously, you MUST use this tag: [GOAL_PURSUIT_REQUEST:goal_id]
 Examples:
 - "I'd like to work on [GOAL_PURSUIT_REQUEST:goal:abc123] independently. May I?"
@@ -1381,7 +1387,14 @@ The marker MUST use the EXACT goal_id from the active_goals list above.
                 prompt += "<pursuit_suggestions>\n"
                 for s in pursuit_suggestions:
                     prompt += f"  <suggestion goal_id='{s['goal_id']}' goal_name='{s['goal_name']}'>{s['reason']}</suggestion>\n"
-                prompt += """  <instruction>
+                if settings.goals_v2_enabled:
+                    prompt += """  <instruction>
+To pursue these goals autonomously, use the request_pursuit tool with the goal_id and desired scope (read, write, execute, or send). Read scope starts immediately; other scopes require owner approval.
+</instruction>
+</pursuit_suggestions>
+"""
+                else:
+                    prompt += """  <instruction>
 ⚠️ ACTION REQUIRED: You MUST ask the user for permission to pursue these goals autonomously.
 To do this, you MUST include the marker [GOAL_PURSUIT_REQUEST:goal_id] in your response.
 The marker MUST use the EXACT goal_id from the suggestions above.

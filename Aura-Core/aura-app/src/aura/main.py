@@ -246,6 +246,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await get_workspace(message_bus).start()
 
+    # Investigations (B4-02): handler for winning `investigate` proposals (flag off: none)
+    from aura.autonomy import investigation
+
+    investigation.register(get_workspace())
+
     # Initialize LLM Layers and Orchestrator
     # Use UnifiedLLMClient if local LLM is enabled (routes to Ollama or OpenRouter per model)
     if settings.local_llm_enabled:

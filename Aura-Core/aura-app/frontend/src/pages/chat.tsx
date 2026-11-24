@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { goalPursuitTagId } from '@/utils/goalPursuitTag';
 import {
   Box,
   Typography,
@@ -1330,10 +1331,9 @@ export default function ChatPage() {
   
   // Check for goal pursuit request marker in Aura's response
   const checkForGoalPursuitRequest = useCallback(async (responseText: string) => {
-    // Look for the marker: [GOAL_PURSUIT_REQUEST:goal_id]
-    const match = responseText.match(/\[GOAL_PURSUIT_REQUEST:([^\]]+)\]/);
-    if (match) {
-      const goalId = match[1];
+    // goals_v2 on: the request_pursuit tool replaces the tag (see goalPursuitTag.ts).
+    const goalId = goalPursuitTagId(responseText, agenda.state?.goals_v2_enabled);
+    if (goalId) {
       
       // Fetch the goal to show in modal
       try {
@@ -1370,7 +1370,7 @@ export default function ChatPage() {
         console.error('Error fetching goal for pursuit request:', error);
       }
     }
-  }, []);
+  }, [agenda.state?.goals_v2_enabled]);
 
   // Check for restart-required marker in Aura's response (self-modification safety)
   const checkForRestartRequired = useCallback((responseText: string) => {

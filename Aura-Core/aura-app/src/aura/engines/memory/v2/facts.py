@@ -53,6 +53,7 @@ _CONFIDENCE_SETTINGS = {
     "observed": "memory_observed_confidence",
     "hearsay": "memory_hearsay_confidence",
     "inferred": "memory_inferred_confidence",
+    "external": "memory_external_confidence",
 }
 
 
@@ -114,8 +115,15 @@ async def write_facts(
     embeddings: Any,
     episode: dict[str, Any],
     extraction: Extraction | dict[str, Any],
+    *,
+    provenance: str | None = None,
+    sources: list[str] | None = None,
 ) -> list[RecordID]:
     """Store the facts of one successful extraction and link them.
+
+    ``provenance`` (only ``"external"``, B4-02) replaces the derived provenance
+    for every fact and ``sources`` (URLs) is stored on each fact; both are
+    unused for conversation extractions.
 
     ``episode`` is the stored episode row (with ``speaker`` and ``venue``) and
     ``extraction`` is the validated result of the extraction call. Returns the
@@ -176,13 +184,15 @@ async def write_facts(
             seen_about.add(str(subject_id))
             about_ids.append(subject_id)
 
-        provenance = await _provenance(db, fact, subject_id, speaker_id)
+        fact_provenance = await _provenance(db, fact, subject_id, speaker_id)
+        if provenance == "external":
+            fact_provenance = "external"
         # Rule 6: nothing a guest says changes what the owner said about
         # themselves. A guest's statement about the owner is always hearsay,
         # even when it was marked implied.
         if speaker != "owner" and subject_id is not None:
             if str(subject_id) == "entity:owner":
-                provenance = "hearsay"
+                fact_provenance = "hearsay"
 
         now = get_clock().now()
         data = {
@@ -191,13 +201,15 @@ async def write_facts(
             "subject": fact.subject,
             "predicate": fact.predicate,
             "object": fact.object,
-            "provenance": provenance,
+            "provenance": fact_provenance,
             "visibility": visibility_for_venue(venue, speaker),
-            "confidence": getattr(settings, _CONFIDENCE_SETTINGS[provenance]),
+            "confidence": getattr(settings, _CONFIDENCE_SETTINGS[fact_provenance]),
             "valid_from": now,
             "recorded_at": now,
             "embedding": await embeddings.embed(fact.content),
         }
+        if sources:
+            data["sources"] = list(sources)
         classification, existing_id = await classify(
             db,
             {**data, "subject_id": subject_id, "negates": fact.negates},

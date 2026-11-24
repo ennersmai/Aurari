@@ -816,8 +816,23 @@ Return ONLY a JSON object with:
         # This is updated via message bus from emotion engine
         return self.current_boredom_level
 
-    async def _consider_new_goal(self, trigger: str) -> None:
-        """Consider creating a new goal based on trigger."""
+    async def _consider_new_goal(self, trigger: str, accepted_proposal: bool = False) -> None:
+        """Consider creating a new goal based on trigger.
+
+        Under goals_v2_enabled, goal creation by Aura is gated: goals come from
+        the owner, from an accepted drive proposal, or (at open) from a
+        read-only curiosity question. This method returns immediately for
+        boredom/idle_exploration/curiosity triggers unless called with
+        accepted_proposal=True. P2-33 will re-add proposals at level 2
+        through may_initiate.
+        """
+        # B3-06: under goals_v2_enabled, autonomous goal creation from
+        # boredom, idle_exploration, curiosity, etc. is disabled.
+        # Goals come from the owner, accepted drive proposals, or read-only
+        # curiosity questions at open autonomy level.
+        if settings.goals_v2_enabled and not accepted_proposal:
+            return
+
         now = datetime.now(timezone.utc)
         
         # Rate limit: Max 1 new goal per hour (3600 seconds)

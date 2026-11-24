@@ -988,6 +988,7 @@ class ToolExecutor:
         venue: str = "app",
         session: Any = None,
         conversation_id: str | None = None,
+        autonomous: Dict[str, Any] | None = None,
     ) -> str:
         """
         Execute multiple tool calls and format results for L3 feedback.
@@ -1011,6 +1012,7 @@ class ToolExecutor:
             result = await self.execute_tool_call(
                 tool_call, requester_role=requester_role, venue=venue, session=session,
                 **({"conversation_id": conversation_id} if conversation_id else {}),
+                **({"autonomous": autonomous} if autonomous is not None else {}),
             )
             self.logger.info(f"🔧 Tool execution result - success: {result.get('success')}, result length: {len(str(result.get('result', '')))}, error: {result.get('error')}")
             results.append(result)

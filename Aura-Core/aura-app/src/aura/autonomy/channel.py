@@ -101,6 +101,7 @@ async def publish(
 
 def update_presence(data: dict[str, Any]) -> None:
     """Store the known presence fields from a client message."""
+    was_typing = presence.typing
     if isinstance(data.get("typing"), bool):
         presence.typing = data["typing"]
     view = data.get("active_view")
@@ -111,6 +112,10 @@ def update_presence(data: dict[str, Any]) -> None:
         w = data["watching"]
         presence.watching = w[:200] if isinstance(w, str) and w else None
     presence.last_interaction_at = get_clock().now()
+    if was_typing and not presence.typing:
+        from aura.autonomy.delivery import schedule_reevaluate
+
+        schedule_reevaluate()  # typing stopped (B5-02)
 
 
 def note_owner_message() -> None:
@@ -118,3 +123,6 @@ def note_owner_message() -> None:
     now = get_clock().now()
     presence.last_owner_message_at = now
     presence.last_interaction_at = now
+    from aura.autonomy.delivery import schedule_reevaluate
+
+    schedule_reevaluate()  # the owner replied (B5-02)

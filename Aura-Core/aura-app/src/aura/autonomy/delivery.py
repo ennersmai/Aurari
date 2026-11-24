@@ -7,13 +7,14 @@ a slow fallback check that only catches stuck items. Venue is always ``app``.
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from aura.autonomy import channel, trace
 from aura.autonomy import interruptibility as _interrupt
 from aura.autonomy.agenda import AgendaItem, AgendaService, _rid, _to_item, effective_priority
-from aura.autonomy.controls import may_initiate, quiet_hours_active
+from aura.autonomy.controls import _parse_hhmm, may_initiate, quiet_hours_active
 from aura.clock import get_clock
 from aura.config import settings
 from aura.db.query_utils import extract_rows
@@ -27,6 +28,51 @@ def interruptibility(now: datetime) -> float:
     if settings.interruptibility_model_enabled:
         return _interrupt.interruptibility(signals, now)
     return _interrupt.fixed_cooldown(signals, now)
+
+
+def threshold(kind: str) -> float:
+    """Delivery threshold for a kind. Config now; B5-03 learning state will override it."""
+    return float(getattr(settings, f"delivery_threshold_{kind}", 0.3))
+
+
+def seconds_to_quiet_end(now: datetime) -> float:
+    """Seconds from ``now`` to the next quiet-hours end boundary (one timer)."""
+    try:
+        tz = ZoneInfo(settings.app_timezone)
+    except Exception:  # noqa: BLE001 - same fallback as quiet_hours_active
+        tz = ZoneInfo("UTC")
+    end = _parse_hhmm(settings.quiet_hours_end)
+    local = now.astimezone(tz)
+    target = local.replace(hour=end.hour, minute=end.minute, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return max(0.0, (target - local).total_seconds())
+
+
+_reeval_tasks: set[asyncio.Task] = set()
+
+
+def schedule_reevaluate() -> None:
+    """Re-evaluate deferred items after an input changed (typing stopped, owner reply).
+
+    No-op unless the model is on and an event loop is running. No polling.
+    """
+    if not settings.interruptibility_model_enabled:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _go() -> None:
+        try:
+            await get_deliverer().notify()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("agenda re-evaluation failed: %s", e)
+
+    task = loop.create_task(_go())
+    _reeval_tasks.add(task)
+    task.add_done_callback(_reeval_tasks.discard)
 
 
 def item_to_dict(item: AgendaItem) -> dict[str, Any]:
@@ -55,6 +101,8 @@ class AgendaDeliverer:
         self.service = service or AgendaService()
         self._timer: asyncio.Task | None = None
         self._fallback: asyncio.Task | None = None
+        self._wake: asyncio.Task | None = None
+        self._next_wake: float | None = None  # seconds; set by deliver_due when items wait
         self._running = False
 
     async def start(self) -> None:
@@ -66,7 +114,7 @@ class AgendaDeliverer:
 
     async def stop(self) -> None:
         self._running = False
-        tasks = [t for t in (self._timer, self._fallback) if t is not None]
+        tasks = [t for t in (self._timer, self._fallback, self._wake) if t is not None]
         for t in tasks:
             t.cancel()
         for t in tasks:
@@ -74,7 +122,7 @@ class AgendaDeliverer:
                 await t
             except asyncio.CancelledError:
                 pass
-        self._timer = self._fallback = None
+        self._timer = self._fallback = self._wake = None
 
     async def notify(self) -> None:
         """Item created or controls changed: deliver what is due, re-arm."""
@@ -101,10 +149,26 @@ class AgendaDeliverer:
         if self._timer is not None and self._timer is not asyncio.current_task():
             self._timer.cancel()
         self._timer = None
+        if self._wake is not None and self._wake is not asyncio.current_task():
+            self._wake.cancel()
+        self._wake = None
+        if self._next_wake is not None and self._running:
+            self._wake = asyncio.create_task(self._wake_and_deliver(self._next_wake))
         delay = await self.next_delay()
         if delay is not None and self._running:
             self._timer = asyncio.create_task(self._wait_and_deliver(delay))
         return delay
+
+    async def _wake_and_deliver(self, delay: float) -> None:
+        """Refractory end or quiet hours end: one timer, then re-evaluate."""
+        await asyncio.sleep(delay)
+        self._wake = None  # finishing; do not cancel itself in rearm
+        try:
+            await self.deliver_due()
+            if self._running:
+                await self.rearm()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("agenda wake failed: %s", e)
 
     async def _wait_and_deliver(self, delay: float) -> None:
         await asyncio.sleep(delay)
@@ -142,10 +206,45 @@ class AgendaDeliverer:
             )
         )
         delivered: list[AgendaItem] = []
+        model = settings.interruptibility_model_enabled
+        self._next_wake = None
+        last_delivery = await self._last_delivery() if model and rows else None
         for row in rows:
             item = _to_item(row)
-            if quiet_hours_active(now) or interruptibility(now) <= 0:
+            if quiet_hours_active(now):
+                if model:
+                    self._wake_in(seconds_to_quiet_end(now))
                 continue
+            level = interruptibility(now)
+            if level <= 0:
+                continue
+            if model:
+                product = effective_priority(item, now) * level
+                limit = threshold(item.kind)
+                cost = {"product": product, "threshold": limit, "interruptibility": level}
+                if product < limit:
+                    await trace.record(
+                        "agenda_delivery",
+                        f"defer:{item.kind}",
+                        f"product {product:.3f} below threshold {limit:.3f}",
+                        cost=cost,
+                        refs=[item.id],
+                        db=db,
+                    )
+                    continue
+                if last_delivery is not None:
+                    wait = settings.delivery_refractory_seconds - (now - last_delivery).total_seconds()
+                    if wait > 0:
+                        self._wake_in(wait)
+                        await trace.record(
+                            "agenda_delivery",
+                            f"defer:{item.kind}",
+                            f"refractory, {wait:.0f}s left; product {product:.3f}, threshold {limit:.3f}",
+                            cost=cost,
+                            refs=[item.id],
+                            db=db,
+                        )
+                        continue
             decision = await may_initiate(
                 item.kind,
                 now=now,
@@ -167,14 +266,38 @@ class AgendaDeliverer:
                 continue
             item = _to_item(changed[0])
             delivered.append(item)
+            last_delivery = now
             payload = item_to_dict(item)
             if effective_priority(item, now) >= settings.agenda_message_priority:
                 await channel.publish("aura_message", payload)
             await channel.publish("agenda_update", payload)
-            await trace.record(
-                "agenda_delivery", f"deliver:{item.kind}", "due and allowed", refs=[item.id], db=db
-            )
+            if model:
+                await trace.record(
+                    "agenda_delivery",
+                    f"deliver:{item.kind}",
+                    f"product {product:.3f} met threshold {limit:.3f}",
+                    cost=cost,
+                    refs=[item.id],
+                    db=db,
+                )
+            else:
+                await trace.record(
+                    "agenda_delivery", f"deliver:{item.kind}", "due and allowed", refs=[item.id], db=db
+                )
         return delivered
+
+    def _wake_in(self, seconds: float) -> None:
+        if self._next_wake is None or seconds < self._next_wake:
+            self._next_wake = max(0.0, seconds)
+
+    async def _last_delivery(self) -> datetime | None:
+        rows = extract_rows(
+            await self.service.db.query(
+                "SELECT delivered_at FROM agenda_item WHERE delivered_at != NONE "
+                "ORDER BY delivered_at DESC LIMIT 1"
+            )
+        )
+        return rows[0]["delivered_at"] if rows else None
 
 
 _deliverer: AgendaDeliverer | None = None

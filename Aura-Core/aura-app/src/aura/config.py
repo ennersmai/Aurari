@@ -1970,6 +1970,49 @@ class Settings(BaseSettings):
         description="Ablation: choose among questions above the minimum at random, not by score (B4-01).",
     )
 
+    investigation_max_tokens: int = Field(
+        default=20000,
+        validation_alias="AURA_INVESTIGATION_MAX_TOKENS",
+        description="Estimated token ceiling for one investigation (B4-02).",
+        ge=1,
+    )
+    investigation_max_tool_calls: int = Field(
+        default=8,
+        validation_alias="AURA_INVESTIGATION_MAX_TOOL_CALLS",
+        description="Tool call ceiling for one investigation (B4-02).",
+        ge=1,
+    )
+    investigation_max_minutes: float = Field(
+        default=5.0,
+        validation_alias="AURA_INVESTIGATION_MAX_MINUTES",
+        description="Active-time ceiling for one investigation, pauses excluded (B4-02).",
+        gt=0.0,
+    )
+    investigation_model: str = Field(
+        default="",
+        validation_alias="AURA_INVESTIGATION_MODEL",
+        description="Model for investigations. Empty uses the active L2 model (B4-02).",
+    )
+    investigation_pause_poll_seconds: float = Field(
+        default=0.1,
+        validation_alias="AURA_INVESTIGATION_PAUSE_POLL_SECONDS",
+        description="How often a running investigation checks its pause token (B4-02).",
+        gt=0.0,
+    )
+    investigation_max_findings: int = Field(
+        default=5,
+        validation_alias="AURA_INVESTIGATION_MAX_FINDINGS",
+        description="Most facts one investigation report is split into (B4-02).",
+        ge=1,
+    )
+    memory_external_confidence: float = Field(
+        default=0.6,
+        validation_alias="AURA_MEMORY_EXTERNAL_CONFIDENCE",
+        description="Confidence for a fact found by an investigation outside the conversation (B4-02).",
+        ge=0.0,
+        le=1.0,
+    )
+
     interruptibility_model_enabled: bool = Field(
         default=False,
         validation_alias="AURA_INTERRUPTIBILITY_MODEL_ENABLED",
@@ -2057,6 +2100,49 @@ class Settings(BaseSettings):
         ge=0.0,
         validation_alias="AURA_INTERRUPT_FIXED_COOLDOWN_SECONDS",
         description="Ablation control: no unprompted message within this many seconds of owner activity when the model is off (B5-01).",
+    )
+
+    delivery_threshold_finding: float = Field(
+        default=0.3,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_FINDING",
+        description="Deliver a finding item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_threshold_task_done: float = Field(
+        default=0.25,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_TASK_DONE",
+        description="Deliver a task_done item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_threshold_needs_decision: float = Field(
+        default=0.15,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_NEEDS_DECISION",
+        description="Deliver a needs_decision item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_threshold_question_for_you: float = Field(
+        default=0.3,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_QUESTION_FOR_YOU",
+        description="Deliver a question_for_you item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_threshold_reminder: float = Field(
+        default=0.2,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_REMINDER",
+        description="Deliver a reminder item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_threshold_observation: float = Field(
+        default=0.4,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_THRESHOLD_OBSERVATION",
+        description="Deliver a observation item when effective priority x interruptibility reaches this (B5-02).",
+    )
+    delivery_refractory_seconds: float = Field(
+        default=900.0,
+        ge=0.0,
+        validation_alias="AURA_DELIVERY_REFRACTORY_SECONDS",
+        description="After a delivery, no other unprompted message for this long; items wait (B5-02).",
     )
 
     # Agenda priority decay per hour, per kind (B1-02)
