@@ -53,6 +53,20 @@ EVENT_TO_DRIVE = {
 Handler = Callable[["Winner"], Awaitable[None]]
 
 
+# -- B4-04: SHARE and ASK_USER handlers ------------------------------------------
+
+async def _handle_agenda_proposal(winner: "Winner") -> None:
+    """Winning SHARE / ASK_USER proposal: wake the B1-05 deliverer.
+
+    The item already exists; the deliverer applies may_initiate, quiet hours
+    and interruptibility, so nothing here sends anything itself.
+    """
+    from aura.autonomy.delivery import get_deliverer
+
+    if any(str(r).startswith("agenda_item:") for r in winner.proposal.refs):
+        await get_deliverer().notify()
+
+
 class PauseToken:
     """Cooperative pause flag for long autonomous work (T12; B4-02 uses it).
 
@@ -507,11 +521,19 @@ class Workspace:
 _workspace: Workspace | None = None
 
 
+def _register_finding_handlers(workspace: Workspace) -> None:
+    """Register SHARE and ASK_USER handlers (B4-04)."""
+    from aura.models.proposal import ProposalKind
+    workspace.register_handler(ProposalKind.SHARE, _handle_agenda_proposal)
+    workspace.register_handler(ProposalKind.ASK_USER, _handle_agenda_proposal)
+
+
 def get_workspace(bus: MessageBus | None = None) -> Workspace:
     """Get or create the global workspace instance."""
     global _workspace
     if _workspace is None:
         _workspace = Workspace(bus)
+        _register_finding_handlers(_workspace)
     elif bus is not None and _workspace._bus is None:
         _workspace._bus = bus
     return _workspace

@@ -76,6 +76,8 @@ class InvestigationResult:
     tool_calls: int = 0
     seconds: float = 0.0
     cost_usd: float = 0.0
+    route: str = "search"
+    owner_only: bool = False
 
 
 class _Stop(Exception):
@@ -152,6 +154,11 @@ class InvestigationRunner:
             await trace.record("investigation", "investigation:refused", "not an owner-visible question",
                                allowed=False, refs=[qid], db=self.db)
             return InvestigationResult(qid, "refused", "not_owner_visible")
+        if route == "ask_user":
+            # Only the owner can answer: no facts, no guessing; publish a question_for_you (B4-04).
+            result = InvestigationResult(qid, "owner_only", "ask_user", route=route, owner_only=True)
+            await self._publish(question, result)
+            return result
         if route not in ("search", "read"):
             return InvestigationResult(qid, "refused", f"route_{route}")
 
@@ -179,7 +186,7 @@ class InvestigationRunner:
         finally:
             if watcher is not None:
                 watcher.cancel()
-        return await self._finish(question, st, reason, final_text)
+        return await self._finish(question, st, reason, final_text, route)
 
     async def _watch(self, token: Any, task: asyncio.Task, st: _Run) -> None:
         while not task.done():
@@ -233,11 +240,12 @@ class InvestigationRunner:
                 final_text = ev.text
         return final_text
 
-    async def _finish(self, question: dict[str, Any], st: _Run, reason: str, final_text: str) -> InvestigationResult:
+    async def _finish(self, question: dict[str, Any], st: _Run, reason: str, final_text: str, route: str) -> InvestigationResult:
         qid = question["id"]
         notes = cap_report("\n\n".join(p for p in (st.prior_notes, *st.results) if p))
         result = InvestigationResult(str(qid), "", reason, tokens=st.tokens, tool_calls=st.calls,
-                                     seconds=st.seconds(), cost_usd=st.cost, sources=find_refs(notes))
+                                     seconds=st.seconds(), cost_usd=st.cost, sources=find_refs(notes),
+                                     route=route)
         if reason in ("paused", "cancelled"):
             result.state = reason
         elif reason:
@@ -275,7 +283,17 @@ class InvestigationRunner:
             cost={"tokens": result.tokens, "tool_calls": result.tool_calls,
                   "seconds": result.seconds, "usd": result.cost_usd},
         )
+        await self._publish(question, result)
         return result
+
+    async def _publish(self, question: dict[str, Any], result: InvestigationResult) -> None:
+        """Findings to the agenda (B4-04). Never breaks the investigation."""
+        from aura.autonomy import findings
+
+        try:
+            await findings.publish(question, result, self.db)
+        except Exception:
+            logger.warning("publishing findings failed for %s", question.get("id"), exc_info=True)
 
     async def _store(self, question: dict[str, Any], report: str, lines: list[str], sources: list[str]) -> list[Any]:
         embeddings = self._embeddings

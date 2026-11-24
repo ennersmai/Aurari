@@ -2030,6 +2030,19 @@ class Settings(BaseSettings):
         description="Most facts one investigation report is split into (B4-02).",
         ge=1,
     )
+    finding_share_relevance: float = Field(
+        default=0.5,
+        validation_alias="AURA_FINDING_SHARE_RELEVANCE",
+        description="Minimum relevance score for a finding to create a share proposal (B4-04).",
+        ge=0.0,
+        le=1.0,
+    )
+    finding_expiry_hours: int = Field(
+        default=72,
+        validation_alias="AURA_FINDING_EXPIRY_HOURS",
+        description="Hours after which finding agenda items expire (B4-04).",
+        ge=1,
+    )
     memory_external_confidence: float = Field(
         default=0.6,
         validation_alias="AURA_MEMORY_EXTERNAL_CONFIDENCE",
