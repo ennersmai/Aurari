@@ -5,7 +5,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 
-from aura.models.goal import Goal, GoalContext
+from aura.clock import get_clock
+from aura.config import settings
+from aura.db.query_utils import to_record_id
+from aura.models.goal import Criterion, Goal, GoalContext
 
 
 router = APIRouter()
@@ -172,6 +175,86 @@ async def generate_goal(request: GenerateGoalRequest) -> GoalResponse:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate goal: {str(e)}",
         )
+
+
+class CriteriaRequest(BaseModel):
+    """Owner adds or edits criteria; entries with a known id replace that criterion."""
+
+    criteria: list[Criterion] = Field(..., min_length=1)
+
+
+def _require_v2() -> None:
+    if not settings.goals_v2_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Goals v2 is not enabled"
+        )
+
+
+def _find_goal(goal_engine: Any, goal_id: str) -> Goal:
+    goal = next((g for g in goal_engine.active_goals if g.goal_id == goal_id), None)
+    if not goal:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Goal {goal_id} not found"
+        )
+    return goal
+
+
+async def _save_criteria(goal_engine: Any, goal: Goal) -> None:
+    await goal_engine.db.query(
+        "UPDATE $rid SET criteria = $criteria, evidence = $evidence, "
+        "last_evidence_at = $lea, updated = $now",
+        {
+            "rid": to_record_id(goal.goal_id),
+            "criteria": goal.criteria,
+            "evidence": goal.evidence,
+            "lea": goal.last_evidence_at,
+            "now": get_clock().now(),
+        },
+    )
+
+
+@router.post("/{goal_id}/criteria", response_model=GoalResponse)
+async def set_goal_criteria(goal_id: str, request: CriteriaRequest) -> GoalResponse:
+    """Owner adds or edits completion criteria (replaces by criterion id)."""
+    _require_v2()
+    goal_engine = get_goal_engine()
+    goal = _find_goal(goal_engine, goal_id)
+    by_id = {c["id"]: c for c in (goal.criteria or [])}
+    for crit in request.criteria:
+        by_id[crit.id] = crit.model_dump()
+    goal.criteria = list(by_id.values())
+    await _save_criteria(goal_engine, goal)
+    return GoalResponse(success=True, goal=goal, message="Criteria saved")
+
+
+@router.post("/{goal_id}/criteria/{criterion_id}/confirm", response_model=GoalResponse)
+async def confirm_goal_criterion(goal_id: str, criterion_id: str) -> GoalResponse:
+    """The owner confirms an ``owner_confirms`` criterion (no other kind)."""
+    _require_v2()
+    goal_engine = get_goal_engine()
+    goal = _find_goal(goal_engine, goal_id)
+    crit = next((c for c in (goal.criteria or []) if c["id"] == criterion_id), None)
+    if crit is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Criterion {criterion_id} not found"
+        )
+    if crit["kind"] != "owner_confirms":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only owner_confirms criteria can be confirmed by the owner",
+        )
+    if crit["status"] != "met":
+        now = get_clock().now()
+        crit["status"] = "met"
+        crit["met_at"] = now
+        crit["evidence_ref"] = "owner"
+        goal.evidence = [
+            *(goal.evidence or []),
+            {"criterion_id": criterion_id, "kind": "owner_confirms", "ref": "owner", "at": now},
+        ]
+        goal.last_evidence_at = now
+        await _save_criteria(goal_engine, goal)
+    return GoalResponse(success=True, goal=goal, message="Criterion confirmed")
 
 
 @router.get("/{goal_id}", response_model=GoalResponse)

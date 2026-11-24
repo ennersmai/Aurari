@@ -1847,6 +1847,12 @@ class Settings(BaseSettings):
         validation_alias="AURA_WORKSPACE_ENABLED",
         description="Behaviour workspace (B2).",
     )
+    workspace_max_proposals: int = Field(
+        default=50,
+        validation_alias="AURA_WORKSPACE_MAX_PROPOSALS",
+        description="Maximum number of proposals to keep in the workspace.",
+        ge=1,
+    )
 
     drives_enabled: bool = Field(
         default=False,
@@ -1946,6 +1952,118 @@ class Settings(BaseSettings):
         gt=0.0,
         validation_alias="AURA_CHANNEL_PING_SECONDS",
         description="Idle seconds before /ws/aura sends a ping.",
+    )
+
+    # Drives (B2-01): per-event deltas, drift and emotion modulation
+    drive_baseline: float = Field(
+        default=0.3, ge=0.0, le=1.0,
+        validation_alias="AURA_DRIVE_BASELINE",
+        description="Level every drive drifts toward (also the initial level).",
+    )
+    drive_decay_per_hour: float = Field(
+        default=0.1, ge=0.0,
+        validation_alias="AURA_DRIVE_DECAY_PER_HOUR",
+        description="Hourly exponential rate at which a drive drifts back to baseline.",
+    )
+    drive_emotion_modulation_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_DRIVE_EMOTION_MODULATION_ENABLED",
+        description="Let emotions scale drive gains by a factor in [0.8, 1.2].",
+    )
+    drive_emotion_span: float = Field(
+        default=0.4, ge=0.0,
+        validation_alias="AURA_DRIVE_EMOTION_SPAN",
+        description="Width of the emotion factor around 1.0 (0.4 gives 0.8 to 1.2; clamped in code).",
+    )
+    drive_consolidation_debt_cap: int = Field(
+        default=50, ge=1,
+        validation_alias="AURA_DRIVE_CONSOLIDATION_DEBT_CAP",
+        description="Most pending episodes counted per consolidation_debt event.",
+    )
+    drive_delta_question_opened_curiosity: float = Field(
+        default=0.05,
+        validation_alias="AURA_DRIVE_DELTA_QUESTION_OPENED_CURIOSITY",
+        description="Change to the curiosity drive on event question_opened.",
+    )
+    drive_delta_question_resolved_curiosity: float = Field(
+        default=-0.08,
+        validation_alias="AURA_DRIVE_DELTA_QUESTION_RESOLVED_CURIOSITY",
+        description="Change to the curiosity drive on event question_resolved.",
+    )
+    drive_delta_question_resolved_competence: float = Field(
+        default=0.05,
+        validation_alias="AURA_DRIVE_DELTA_QUESTION_RESOLVED_COMPETENCE",
+        description="Change to the competence drive on event question_resolved.",
+    )
+    drive_delta_prediction_failed_curiosity: float = Field(
+        default=0.06,
+        validation_alias="AURA_DRIVE_DELTA_PREDICTION_FAILED_CURIOSITY",
+        description="Change to the curiosity drive on event prediction_failed.",
+    )
+    drive_delta_prediction_failed_coherence: float = Field(
+        default=0.04,
+        validation_alias="AURA_DRIVE_DELTA_PREDICTION_FAILED_COHERENCE",
+        description="Change to the coherence drive on event prediction_failed.",
+    )
+    drive_delta_prediction_failed_competence: float = Field(
+        default=-0.05,
+        validation_alias="AURA_DRIVE_DELTA_PREDICTION_FAILED_COMPETENCE",
+        description="Change to the competence drive on event prediction_failed.",
+    )
+    drive_delta_goal_unfinished_tick_competence: float = Field(
+        default=0.02,
+        validation_alias="AURA_DRIVE_DELTA_GOAL_UNFINISHED_TICK_COMPETENCE",
+        description="Change to the competence drive on event goal_unfinished_tick.",
+    )
+    drive_delta_task_done_competence: float = Field(
+        default=-0.06,
+        validation_alias="AURA_DRIVE_DELTA_TASK_DONE_COMPETENCE",
+        description="Change to the competence drive on event task_done.",
+    )
+    drive_delta_task_done_rest: float = Field(
+        default=0.03,
+        validation_alias="AURA_DRIVE_DELTA_TASK_DONE_REST",
+        description="Change to the rest drive on event task_done.",
+    )
+    drive_delta_finding_pending_connection: float = Field(
+        default=0.04,
+        validation_alias="AURA_DRIVE_DELTA_FINDING_PENDING_CONNECTION",
+        description="Change to the connection drive on event finding_pending.",
+    )
+    drive_delta_finding_delivered_connection: float = Field(
+        default=-0.08,
+        validation_alias="AURA_DRIVE_DELTA_FINDING_DELIVERED_CONNECTION",
+        description="Change to the connection drive on event finding_delivered.",
+    )
+    drive_delta_exchange_happened_connection: float = Field(
+        default=-0.05,
+        validation_alias="AURA_DRIVE_DELTA_EXCHANGE_HAPPENED_CONNECTION",
+        description="Change to the connection drive on event exchange_happened.",
+    )
+    drive_delta_contradiction_open_coherence: float = Field(
+        default=0.06,
+        validation_alias="AURA_DRIVE_DELTA_CONTRADICTION_OPEN_COHERENCE",
+        description="Change to the coherence drive on event contradiction_open.",
+    )
+    drive_delta_contradiction_settled_coherence: float = Field(
+        default=-0.08,
+        validation_alias="AURA_DRIVE_DELTA_CONTRADICTION_SETTLED_COHERENCE",
+        description="Change to the coherence drive on event contradiction_settled.",
+    )
+    drive_delta_dream_completed_rest: float = Field(
+        default=-0.15,
+        validation_alias="AURA_DRIVE_DELTA_DREAM_COMPLETED_REST",
+        description="Change to the rest drive on event dream_completed.",
+    )
+    drive_delta_dream_completed_coherence: float = Field(
+        default=-0.03,
+        validation_alias="AURA_DRIVE_DELTA_DREAM_COMPLETED_COHERENCE",
+        description="Change to the coherence drive on event dream_completed.",
+    )
+    drive_delta_consolidation_debt_rest: float = Field(
+        default=0.002,
+        validation_alias="AURA_DRIVE_DELTA_CONSOLIDATION_DEBT_REST",
+        description="Change to the rest drive on event consolidation_debt.",
     )
 
     # =========================================================================

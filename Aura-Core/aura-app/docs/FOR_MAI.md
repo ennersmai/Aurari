@@ -89,3 +89,9 @@ Settings go in Aura's `.env` unless noted.
 - The recall gate's cache is per user, not per session, because the pipeline does not pass a session id.
 - `AURA_OWNER_ALIASES` is parsed as a JSON list, not comma-separated as its description says.
 - Aura's HTTP API has no authentication on any route, including the new `/decisions` approval routes (W3-30). Fine while it only listens on localhost; needs an owner check before the API is ever exposed beyond this machine.
+
+## 2026-11-24 — B2-01 drives, B3-01 goal schema
+- **To tune (no decision blocking):** the 21 `AURA_DRIVE_DELTA_<event>_<drive>` defaults in config.py are worker guesses (decay 0.1/h toward 0.3). Behind `drives_enabled` (off).
+- **Fixed during review:** stored goals never loaded (the `goal` table has no `goal_id` field, the model requires it); the loader now takes it from the record id. Also a stray `n` on line 2 of `schema_behavior.surql`.
+- **B3-02 (goal progress from evidence):** goal progress no longer comes from mood when `goals_v2_enabled` is on. Fixed in passing: `update_goal_progress` had never saved anything (the table rejected the whole-model write).
+- **Follow-up (supervisor will card it):** `test_pass` criteria can't be met in production yet, because nothing sets `task.goal_id` or `task.tests_passed`. `delegation._finalize_task` should set them after review.

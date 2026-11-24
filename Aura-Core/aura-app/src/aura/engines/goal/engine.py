@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
+from aura.clock import get_clock
+from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
 from aura.models.goal import Goal, GoalContext, Task
@@ -127,46 +129,53 @@ class GoalEngine(BaseEngine):
         # Update goal progress and check for completion
         for goal in self.active_goals:
             if goal.status == "active":
-                # Update progress based on emotional alignment
-                # If current emotions match the goal's emotional_alignment, progress increases
-                if self._emotion_engine and goal.emotional_alignment:
-                    try:
-                        current_emotions = await self._emotion_engine.get_current_state()
-                        emotion_vector = current_emotions.vector.model_dump()
+                if settings.goals_v2_enabled:
+                    await self._evidence_step(goal)
+                else:
+                    # Update progress based on emotional alignment
+                    # If current emotions match the goal's emotional_alignment, progress increases
+                    if self._emotion_engine and goal.emotional_alignment:
+                        try:
+                            current_emotions = await self._emotion_engine.get_current_state()
+                            emotion_vector = current_emotions.vector.model_dump()
                         
-                        # Calculate alignment score (how well current emotions match goal's alignment)
-                        alignment_score = 0.0
-                        total_weight = 0.0
-                        for emotion_name, target_value in goal.emotional_alignment.items():
-                            if emotion_name in emotion_vector:
-                                current_value = emotion_vector[emotion_name]
-                                # Score is higher when current emotion is close to or exceeds target
-                                similarity = 1.0 - abs(current_value - target_value)
-                                alignment_score += similarity * target_value
-                                total_weight += target_value
+                            # Calculate alignment score (how well current emotions match goal's alignment)
+                            alignment_score = 0.0
+                            total_weight = 0.0
+                            for emotion_name, target_value in goal.emotional_alignment.items():
+                                if emotion_name in emotion_vector:
+                                    current_value = emotion_vector[emotion_name]
+                                    # Score is higher when current emotion is close to or exceeds target
+                                    similarity = 1.0 - abs(current_value - target_value)
+                                    alignment_score += similarity * target_value
+                                    total_weight += target_value
                         
-                        if total_weight > 0:
-                            alignment_score = alignment_score / total_weight
+                            if total_weight > 0:
+                                alignment_score = alignment_score / total_weight
                             
-                            # Progress increases slowly when emotions align (0.1% per tick if well-aligned)
-                            if alignment_score > 0.7:
-                                progress_increment = 0.001 * alignment_score  # 0.1% per tick max
-                                new_progress = min(1.0, goal.progress + progress_increment)
-                                if new_progress > goal.progress:
-                                    await self.update_goal_progress(
-                                        goal.goal_id, 
-                                        new_progress, 
-                                        f"Progress updated - emotional alignment: {alignment_score:.2f}"
-                                    )
-                    except Exception as e:
-                        self.logger.debug(f"Error updating goal progress from emotions: {e}")
+                                # Progress increases slowly when emotions align (0.1% per tick if well-aligned)
+                                if alignment_score > 0.7:
+                                    progress_increment = 0.001 * alignment_score  # 0.1% per tick max
+                                    new_progress = min(1.0, goal.progress + progress_increment)
+                                    if new_progress > goal.progress:
+                                        await self.update_goal_progress(
+                                            goal.goal_id, 
+                                            new_progress, 
+                                            f"Progress updated - emotional alignment: {alignment_score:.2f}"
+                                        )
+                        except Exception as e:
+                            self.logger.debug(f"Error updating goal progress from emotions: {e}")
                 
                 # Check if goal should be completed
                 # Goals can be completed when:
                 # 1. Progress reaches 1.0 (100%)
                 # 2. Goal has been active for a long time with no progress (stale)
                 
-                if goal.progress >= 1.0:
+                # v2: completion needs every criterion met (progress only reaches 1.0 then)
+                if goal.progress >= 1.0 and not (
+                    settings.goals_v2_enabled
+                    and goal.progress_from_criteria() not in (None, 1.0)
+                ):
                     await self.update_goal_progress(goal.goal_id, 1.0, "Goal completed - progress reached 100%")
                 
                 # Check for stale goals (active for >24 hours with no progress)
@@ -177,11 +186,68 @@ class GoalEngine(BaseEngine):
                     # If goal.created is naive, assume it's UTC
                     goal_created = goal_created.replace(tzinfo=timezone.utc)
                 age_hours = (now - goal_created).total_seconds() / 3600
-                if age_hours > 24 and goal.progress < 0.1:
+                # v2: stale-complete is gone; B3-03 replaces it with abandonment
+                if age_hours > 24 and goal.progress < 0.1 and not settings.goals_v2_enabled:
                     self.logger.info(f"Marking stale goal as completed: {goal.name}")
                     await self.update_goal_progress(goal.goal_id, 1.0, "Goal completed - was stale with no progress")
 
         await asyncio.sleep(30.0)  # Check every 30 seconds
+
+    async def _evidence_step(self, goal: Goal) -> None:
+        """B3-02: progress comes from criteria met by code-checked evidence only.
+
+        A goal without criteria keeps its progress unchanged.
+        """
+        if not goal.criteria:
+            return
+        from aura.engines.goal import evidence
+
+        try:
+            now = get_clock().now()
+            met = await evidence.check(goal, now, self.db)
+            if not met:
+                return
+            by_id = {m.criterion_id: m for m in met}
+            for crit in goal.criteria:
+                m = by_id.get(crit.get("id"))
+                if m:
+                    crit["status"] = "met"
+                    crit["met_at"] = m.at
+                    crit["evidence_ref"] = m.ref
+            goal.evidence = [
+                *(goal.evidence or []),
+                *({"criterion_id": m.criterion_id, "kind": m.kind, "ref": m.ref, "at": m.at}
+                  for m in met),
+            ]
+            goal.last_evidence_at = now
+            new_progress = goal.progress_from_criteria()
+            if new_progress is not None and new_progress != goal.progress:
+                await self.update_goal_progress(
+                    goal.goal_id, new_progress, f"criterion met: {met[-1].name}"
+                )
+            else:
+                await self._persist_goal(goal)
+        except Exception as e:
+            self.logger.warning(f"Evidence check failed for {goal.goal_id}: {e}")
+
+    async def _persist_goal(self, goal: Goal) -> None:
+        """Write the mutable goal fields. ``goal_id`` is the record id, not a stored field,
+        and the SCHEMAFULL goal table has no ``metadata`` field: the old whole-model
+        ``update`` always failed on both."""
+        from aura.engines.goal.evidence import goal_rid
+
+        fields = ("status", "progress", "updated", "completed", "criteria", "evidence",
+                  "last_evidence_at", "abandon_reason")
+        data = {k: v for k, v in goal.model_dump().items() if k in fields and v is not None}
+        await self.db.query("UPDATE $rid MERGE $data", {"rid": goal_rid(goal.goal_id), "data": data})
+
+    async def check_evidence(self) -> None:
+        """Event-driven check (task node finished, task_result), outside the tick."""
+        if not settings.goals_v2_enabled:
+            return
+        for goal in self.active_goals:
+            if goal.status == "active":
+                await self._evidence_step(goal)
 
     async def shutdown(self) -> None:
         """Clean up engine resources."""
@@ -606,7 +672,7 @@ Return ONLY a JSON object with:
 
                 # Persist
                 try:
-                    await self.db.update(goal_id, goal.model_dump())
+                    await self._persist_goal(goal)
                 except Exception as e:
                     self.logger.error(f"Failed to update goal: {e}")
 
@@ -708,7 +774,21 @@ Return ONLY a JSON object with:
             )
 
             if result:
-                goals = [Goal(**goal_data) for goal_data in result]
+                # The goal table has no goal_id field (SCHEMAFULL drops it), so the
+                # id comes from the record id (2026-11-24, found in B3-01 review).
+                from aura.db.query_utils import extract_rows
+                from aura.engines.learning.skill_store import rid_str
+
+                goals = []
+                for goal_data in extract_rows(result):
+                    row = dict(goal_data)
+                    rid = row.pop("id", None)
+                    if not row.get("goal_id") and rid is not None:
+                        row["goal_id"] = rid_str(rid).partition(":")[2] or rid_str(rid)
+                    try:
+                        goals.append(Goal(**row))
+                    except Exception as e:
+                        self.logger.warning(f"Skipping unloadable goal {rid}: {e}")
                 
                 # Deduplicate goals by name and description (prevent exact duplicates)
                 seen = set()
@@ -932,6 +1012,8 @@ Return ONLY a JSON object with:
 
     async def _handle_message(self, message: EngineMessage) -> None:
         """Handle incoming messages from other engines."""
+        if message.data.get("kind") in ("task_node_done", "task_result"):
+            await self.check_evidence()
         if message.source == "emotion_engine":
             # Update boredom level from emotion state
             data = message.data

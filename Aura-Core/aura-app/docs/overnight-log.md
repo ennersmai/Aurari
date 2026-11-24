@@ -2895,3 +2895,30 @@ TaskQueueService could not write to a database built from the real schema script
 - Scoping: workspace = basename of `task.workspace_path`. Turn-based uses (no workspace) give an unscoped lesson; a group of mixed workspaces is unscoped. A scoped line is unscoped when a similar lesson (embeddings, `skill_dup_similarity`) comes from another workspace or an unscoped source; same-workspace repeats change nothing.
 - The new version copies body and tools of the latest version, pitfalls are the merged list (oldest dropped at the cap), via `propose_skill(source="corrected")`.
 - Tests: tests/unit/test_skill_correction.py (8).
+
+## B3-01 Goal schema v2: criteria, evidence, abandoned (worker)
+- `Goal.status` gains `abandoned`; new optional `criteria`, `evidence`, `abandon_reason`, `last_evidence_at` on the model and (as `option<...>` fields appended to `schema_behavior.surql`) on the `goal` table. New `Criterion` model and `Goal.progress_from_criteria()`.
+- Routes: `POST /goal/{id}/criteria` (upsert by criterion id) and `POST /goal/{id}/criteria/{cid}/confirm` (only `owner_confirms`, else 400). Both return 409 unless `goals_v2_enabled`; no new config numbers. List and get routes return the new fields via the model. Confirm stamps `met_at`, `evidence_ref="owner"`, an `evidence` entry and `last_evidence_at`; it does not touch `progress` (B3-02).
+- Tests: tests/unit/test_goal_criteria_model.py (7, real schema, flag-off ablation).
+
+## B2-01 Drives as persisted scalars (worker)
+- New `autonomy/drives.py` (`DriveModel`, `on_event`, `gain`, `emotion_factor`, `load`), `drive_state` table appended to `schema_behavior.surql` (singleton `drive_state:main`), config block (baseline, decay, emotion span, debt cap, 21 `drive_delta_<event>_<drive>` fields). Flags `drives_enabled`, `drive_emotion_modulation_enabled` (both off).
+- Choices: decay is exponential toward `drive_baseline` (0.3) at `drive_decay_per_hour` (0.1), applied from `now - updated_at` on each event. `consolidation_debt` applies its rest delta times pending-episode count (capped by `drive_consolidation_debt_cap`, 50), counted from `episode` unless the payload gives `count`. Emotion factor = `1 + span*(signal-0.5)` clamped to [0.8, 1.2] (signal: max of curiosity/fascination, or boredom). `gain` returns 0.0 with drives off. Delta values are my defaults, tune later. `on_event` publishes `drive_state` through `channel.publish`, which already honours `aura_ws_aura_enabled`.
+- Tests: `tests/unit/test_drives.py` (8).
+- Possible existing bug: `scripts/schema_behavior.surql` line 2 reads `nUSE NS aura DB main;` (stray `n`), not touched.
+
+## B3-02 Criteria checker and evidence-based progress (worker)
+- New `engines/goal/evidence.py`: `check(goal, now, db) -> list[Met]`, code only. `file_exists` (spec `workspace`, `path`; refused unless inside a registered workspace via `executor.policy`), `test_pass` (a `task` row with `goal_id`, status `complete`, new `tests_passed = true`), `task_node_done` (all nodes of `task_graph.goal == goal id` done, or the one `spec.node_id`), `question_resolved` (spec `question_id`, status `resolved`). `owner_confirms` is never decided by the checker.
+- `GoalEngine.tick` with `goals_v2_enabled`: mood block replaced by `_evidence_step` (progress = met/total only on change, reason "criterion met: <name>", `last_evidence_at` stamped); no criteria means progress unchanged; completion at 1.0 needs all criteria met; the 24 h stale-complete block is skipped (B3-03 adds abandonment). Flag off: old code unchanged. `check_evidence()` runs on engine messages with `data.kind` in (`task_node_done`, `task_result`); nothing publishes those yet (B2-04).
+- No new config numbers (reuses `goals_v2_enabled`). Schema: `task.tests_passed option<bool>` appended to `schema_behavior.surql`.
+- Follow-up: nothing sets `task.goal_id` or `tests_passed` yet (delegation `_finalize_task` should, when `reviewed`), so `test_pass` cannot be met in production until then.
+- Bug found and fixed: `update_goal_progress` persisted `goal.model_dump()` with `db.update`, which the SCHEMAFULL goal table rejects (`goal_id`, `metadata` have no field), so progress was never saved. New `_persist_goal` writes only the mutable fields by parameterised `UPDATE ... MERGE`.
+- Tests: `tests/unit/test_goal_evidence.py` (9).
+
+## B2-02 Proposals and the workspace registry (worker)
+- New `src/aura/models/proposal.py`: `ProposalKind` enum (7 kinds: `skill_gap`, `memory_consolidation`, `goal_progress`, `fact_correction`, `drive_rebalance`, `user_intent`, `external_trigger`), `RiskLevel` enum (low/medium/high/critical), `Cost` model (tokens: int, seconds: float, risk: RiskLevel), `Proposal` model (id, source, kind, summary, refs, urgency, value, cost, expires_at, created_at). Validation: non-empty refs list (whitespace-trimmed), single-line summary.
+- New `src/aura/orchestrator/workspace.py`: `Workspace` class with `post()` (validates, stores, returns id), `live()` (drops expired), `get()`, `all()`, `clear()`. Bounded in-memory dict (`workspace_max_proposals`, default 50) with oldest-expired-first eviction, then oldest-overall. Duplicate key = (source, kind, sorted refs) replaces older entry.
+- Config: `workspace_enabled` (default True), `workspace_max_proposals` (default 50) in `src/aura/config.py`. When disabled: `post()` returns None, no message bus subscription.
+- Message bus: `Workspace` subscribes to `MessageType.PROPOSAL` on construction (if enabled); async handler calls `post()`.
+- Tests: `tests/unit/test_workspace_proposals.py` (24 tests covering validation, expiry, duplicate replacement, bound eviction, bus integration, flag-off).
+- Test result: 1488 passed, 3 skipped (full suite, no regressions).
