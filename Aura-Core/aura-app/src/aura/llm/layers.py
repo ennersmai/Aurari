@@ -692,6 +692,30 @@ If you must explain, include it in a "comment" field within the JSON object.""",
                     
         return {}
 
+    async def plain_call(
+        self,
+        model: str,
+        system: str,
+        user: str,
+        max_tokens: int,
+        temperature: float,
+    ) -> str:
+        """One plain text call to ``model`` for the consult helpers (P2-27, D12).
+
+        No tools, no JSON mode, no reasoning toggle: the helper answers in text and
+        the caller treats the text as data. Raises whatever the client raises.
+        """
+        result = await self.client.complete(
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        return result if isinstance(result, str) else str(getattr(result, "text", "") or "")
+
     async def l1_instinct(
         self,
         prompt: str,

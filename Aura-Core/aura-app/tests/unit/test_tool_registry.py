@@ -90,7 +90,7 @@ def test_load_builtin_tools_returns_the_15_builtin_records():
     records = load_builtin_tools()
     names = sorted(r.name for r in records)
     assert names == sorted(BUILTIN_RISK.keys())
-    assert len(records) == 23  # 15 + six recall tools (W4-05) + plan_task (P2-08) + request_pursuit (B3-05); the last two hidden by all() unless enabled
+    assert len(records) == 24  # 15 + six recall tools (W4-05) + plan_task (P2-08) + request_pursuit (B3-05) + consult (P2-27); the last three hidden by all() unless enabled
     assert all(r.transport == "builtin" for r in records)
     assert all(r.health.status == "online" for r in records)
     # Every record comes from one of the builtin modules.

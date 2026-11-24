@@ -312,6 +312,29 @@ class Settings(BaseSettings):
         description="Stack 2: L5 Structure Layer",
     )
 
+    # --- SWIFT AND SAGE helper models (P2-27, D11) ---
+    # Unset: Swift = the stack's L4 model, Sage = the stack's L2 model. Used only by
+    # the consult tool; nothing else reads them.
+    swift_model: str | None = Field(default=None, validation_alias="AURA_SWIFT_MODEL",
+        description="Stack 0: Swift helper model. Unset: the stack's L4 model (D11).")
+    swift_model1: str | None = Field(default=None, validation_alias="AURA_SWIFT_MODEL1",
+        description="Stack 1: Swift helper model. Unset: the stack's L4 model (D11).")
+    swift_model2: str | None = Field(default=None, validation_alias="AURA_SWIFT_MODEL2",
+        description="Stack 2: Swift helper model. Unset: the stack's L4 model (D11).")
+    sage_model: str | None = Field(default=None, validation_alias="AURA_SAGE_MODEL",
+        description="Stack 0: Sage helper model. Unset: the stack's L2 model (D11).")
+    sage_model1: str | None = Field(default=None, validation_alias="AURA_SAGE_MODEL1",
+        description="Stack 1: Sage helper model. Unset: the stack's L2 model (D11).")
+    sage_model2: str | None = Field(default=None, validation_alias="AURA_SAGE_MODEL2",
+        description="Stack 2: Sage helper model. Unset: the stack's L2 model (D11).")
+    swift_pool: list[str] = Field(default_factory=list, validation_alias="AURA_SWIFT_POOL",
+        description="Stack 0: models from different families for consult(diverse=true), as a JSON "
+                    "list. Empty: the Swift model only.")
+    swift_pool1: list[str] = Field(default_factory=list, validation_alias="AURA_SWIFT_POOL1",
+        description="Stack 1: the diverse Swift pool. Empty: the Swift model only.")
+    swift_pool2: list[str] = Field(default_factory=list, validation_alias="AURA_SWIFT_POOL2",
+        description="Stack 2: the diverse Swift pool. Empty: the Swift model only.")
+
     # =========================================================================
     # Embeddings Configuration
     # SOVEREIGN-NATIVE: All stacks use local nomic-embed-text-v1.5 (768D).
@@ -529,6 +552,25 @@ class Settings(BaseSettings):
                 "AURA_%s_MODEL_FALLBACK.", layer.upper(), stack, stack, layer.upper(),
             )
         return shared
+
+    def swift_model_for(self, index: int | None = None) -> str:
+        """The Swift helper model of stack ``index`` (default: active). Unset: its L4 model (D11)."""
+        index = self.model_stack_index if index is None else index
+        suffix = {1: "1", 2: "2"}.get(index, "")
+        return getattr(self, f"swift_model{suffix}") or self.models_for_stack(index)["l4"]
+
+    def sage_model_for(self, index: int | None = None) -> str:
+        """The Sage helper model of stack ``index`` (default: active). Unset: its L2 model (D11)."""
+        index = self.model_stack_index if index is None else index
+        suffix = {1: "1", 2: "2"}.get(index, "")
+        return getattr(self, f"sage_model{suffix}") or self.models_for_stack(index)["l2"]
+
+    def swift_pool_for(self, index: int | None = None) -> list[str]:
+        """The diverse Swift pool of stack ``index`` (default: active). Empty: the Swift model only."""
+        index = self.model_stack_index if index is None else index
+        suffix = {1: "1", 2: "2"}.get(index, "")
+        pool = [m for m in getattr(self, f"swift_pool{suffix}") if isinstance(m, str) and m.strip()]
+        return pool or [self.swift_model_for(index)]
 
     @property
     def active_l1_model(self) -> str:
@@ -1417,6 +1459,36 @@ class Settings(BaseSettings):
         description="When true, the active tier's profile (aura.tiers) governs L3 reasoning, "
                     "L2 post-analysis, tools offered, tool gating and the context budget. "
                     "Off means the pre-tier behaviour exactly.",
+    )
+    consult_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_CONSULT_ENABLED",
+        description="P2-27: offer the consult tool (L3 calls Swift or Sage helper models). Needs "
+                    "tier_profiles_enabled; Lean never has it. Off means the tool list is exactly as before.",
+    )
+    consult_ref_max_tokens: int = Field(
+        default=2000, ge=100, le=50000, validation_alias="AURA_CONSULT_REF_MAX_TOKENS",
+        description="Most tokens of one ref (file, memory, goal, node, url) put into a helper prompt.",
+    )
+    consult_task_max_chars: int = Field(
+        default=4000, ge=100, le=100000, validation_alias="AURA_CONSULT_TASK_MAX_CHARS",
+        description="Longest task or lens text a consult call may carry.",
+    )
+    consult_max_refs: int = Field(
+        default=8, ge=0, le=50, validation_alias="AURA_CONSULT_MAX_REFS",
+        description="Most refs one consult call may carry.",
+    )
+    consult_helper_max_tokens: int = Field(
+        default=800, ge=50, le=8000, validation_alias="AURA_CONSULT_HELPER_MAX_TOKENS",
+        description="Most tokens a helper may answer with.",
+    )
+    consult_helper_temperature: float = Field(
+        default=0.7, ge=0.0, le=2.0, validation_alias="AURA_CONSULT_HELPER_TEMPERATURE",
+        description="Sampling temperature of helper calls.",
+    )
+    consult_helper_timeout_seconds: float = Field(
+        default=60.0, gt=0.0, le=600.0, validation_alias="AURA_CONSULT_HELPER_TIMEOUT_SECONDS",
+        description="Time limit of one helper call.",
     )
     task_graphs_enabled: bool = Field(
         default=False,

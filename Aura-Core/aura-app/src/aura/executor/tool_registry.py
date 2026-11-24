@@ -92,9 +92,10 @@ BUILTIN_RISK: dict[str, Risk] = {
     "delegate_work": "execute",
     "plan_task": "write",
     "request_pursuit": "read",
+    "consult": "read",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "delegate", "filesystem", "plan_task", "recall_tools", "request_pursuit", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "consult", "delegate", "filesystem", "plan_task", "recall_tools", "request_pursuit", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:
@@ -270,13 +271,15 @@ class ToolRegistry:
         """Every registered tool, by name. ``plan_task`` is listed (and so offered)
         only under task_graphs_enabled AND tier_profiles_enabled AND a profile that
         allows task graphs (P2-08); with the flags off the list is as before."""
-        from aura.tiers import plan_task_enabled
+        from aura.tiers import consult_enabled, plan_task_enabled
 
         from aura.tools.request_pursuit import request_pursuit_enabled
 
         hidden = set()
         if not plan_task_enabled():
             hidden.add("plan_task")
+        if not consult_enabled():  # P2-27: consult flag, tier profiles, and a non-Lean tier
+            hidden.add("consult")
         if not request_pursuit_enabled():  # B3-05: goals_v2 only
             hidden.add("request_pursuit")
         return sorted(

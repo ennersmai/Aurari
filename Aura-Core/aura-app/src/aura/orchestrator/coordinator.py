@@ -1985,6 +1985,11 @@ Constraints:
         # The session scope travels like the venue (G4-04a); None for main.
         ctx.session = turn_session
         ctx.conversation_id = conversation_id
+        if settings.consult_enabled:
+            # P2-27: fresh consult limits and trace for this turn (no model call).
+            from aura.tools.consult import begin_turn as begin_consult_turn
+
+            begin_consult_turn()
         # Stage 6.5: select the tools to offer the model this turn (W2-35).
         try:
             tier_args = (

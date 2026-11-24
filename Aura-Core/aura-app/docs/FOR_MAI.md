@@ -1,8 +1,47 @@
-# For Mai: decisions, settings and checks waiting for you
+# For Mai
 
-Kept current by the supervisor. Everything that needs you goes here instead of the chat. Tick items off or leave notes inline; we go through it together at the end of the work.
+Read only "Decide" and "Check". Everything under "Reference" is background: details, settings and done notes, kept so nothing is lost. Development never waits on these; until you answer, the default in brackets is used.
 
-Settings go in Aura's `.env` unless noted.
+## Decide (one line each)
+
+**UI (blocks the rest of the UI work)**
+- [ ] Approve the visual style: open `/design` in the app (P2-13).
+- [ ] Approve the Mission Control layout: docs/ui/mission_control.md (P2-14 A).
+
+**Money and models**
+- [ ] Curiosity daily spend cap `AURA_CURIOSITY_DAILY_SPEND_USD` [0 = she never investigates on her own; e.g. 0.50 to turn it on].
+- [ ] Memory extraction model `memory_extraction_model` [your L2 model].
+- [ ] Swift/Sage helper models for consult [your L4/L2 models].
+- [ ] Embedding model: keep local nomic-embed-text-v1.5? [keep].
+
+**Identity and people**
+- [ ] Set `AURA_OWNER_NAME=Mai` [unset].
+- [ ] System prompt says "Conscious AI ... Not simulated": keep or rephrase for public Discord? [keep].
+- [ ] Trusted Discord users and `discord_owner_ids` [none].
+- [ ] Only owner questions feed curiosity, never guests' [yes].
+
+**Behaviour**
+- [ ] Autonomy level [`important`: only decisions and finished tasks] and quiet hours [22:00-08:00].
+- [ ] Emotion: how long moments colour her [minutes]; show mood in the app? [no]; temperament drift? [off].
+- [ ] Pinned facts on day one [none].
+
+**Work and safety**
+- [ ] Register workspaces for delegation `AURA_WORKSPACES` [none]. Aura's own repo too? [no].
+- [ ] Approval step for `execute_code`? [no, owner only].
+- [ ] OpenCode browser: wait, Playwright MCP, or upgrade the pin (docs/opencode/browser.md) [wait].
+
+## Check (when you have time with the app running)
+
+- [ ] `/chat`: spiral bottom right; no repeated text with `AURA_L3_NATIVE_TOOLS=true`.
+- [ ] `/workbench` with one real delegation (G4-03/G4-04).
+- [ ] Chat drawer next to the tier chip: agenda, mute, kill switch (B1-07).
+- [ ] OpenCode live checks in docs/opencode/subagents.md before code nodes are used.
+- [ ] L1 route fixtures per stack (docs/metrics/l1_routes.md).
+- [ ] Sluice: unblock LLM7 on the dashboard; Pollinations key spend cap 0.
+
+---
+
+# Reference (no action needed)
 
 ## 1. Turn features on (all off by default)
 
@@ -21,7 +60,7 @@ Settings go in Aura's `.env` unless noted.
 | Delegating work to OpenCode (G3) | `AURA_DELEGATION_ENABLED=true` | Register workspaces and confirm the policy (section 2). |
 | Avatar stage with a placeholder head (V1 without MetaHuman, V2 to V4) | `NEXT_PUBLIC_AVATAR_STAGE=1` in the frontend environment | It is a code-built placeholder head, not the real character. The three.js upgrade, WebGPU and the asset build script (budgets, shape pruning) wait for the real asset. |
 
-## 2. Decisions
+## 2. Decisions (full detail; the short list is at the top)
 
 - [ ] **Owner name.** Set `AURA_OWNER_NAME=Mai` (optionally `AURA_OWNER_ALIASES=["nickname"]`, a JSON list) so a guest saying "Mai ..." is recognised as talking about you.
 - [ ] **Extraction model** (memory PRD 12.1): `memory_extraction_model`; empty means your L2 model. The PRD recommends a mid-tier model, not the cheapest.
@@ -43,7 +82,7 @@ Settings go in Aura's `.env` unless noted.
 - [ ] **Behaviour PRD open items (B1..B5 cards use these defaults until you decide):** autonomy default level `important` (proactive messages only for decisions and finished tasks); quiet hours 22:00 to 08:00; curiosity daily spend ceiling **0** (no paid spend on investigations until you set one; B4-03 is blocked on this for anything beyond free models); guests can never trigger investigations.
 - [x] OpenCode version pin: v2.3.2, Aura runs her own server (decided 2026-11-20).
 
-## 3. Checks only you can do
+## 3. Checks (full detail)
 
 - [ ] With `AURA_L3_NATIVE_TOOLS=true`, chat on each stack and check for repeated text; record which stack L3 models support native tools here (P2-07).
 - [ ] Open `/chat` and check the spiral shows at the bottom right (W2-25, VRM removed).
@@ -90,7 +129,7 @@ Settings go in Aura's `.env` unless noted.
 - `AURA_OWNER_ALIASES` is parsed as a JSON list, not comma-separated as its description says.
 - Aura's HTTP API has no authentication on any route, including the new `/decisions` approval routes (W3-30). Fine while it only listens on localhost; needs an owner check before the API is ever exposed beyond this machine.
 
-## 2026-11-24 — B2-01 drives, B3-01 goal schema
+## 6. Build notes, 2026-11-24
 - **To tune (no decision blocking):** the 21 `AURA_DRIVE_DELTA_<event>_<drive>` defaults in config.py are worker guesses (decay 0.1/h toward 0.3). Behind `drives_enabled` (off).
 - **Fixed during review:** stored goals never loaded (the `goal` table has no `goal_id` field, the model requires it); the loader now takes it from the record id. Also a stray `n` on line 2 of `schema_behavior.surql`.
 - **B3-02 (goal progress from evidence):** goal progress no longer comes from mood when `goals_v2_enabled` is on. Fixed in passing: `update_goal_progress` had never saved anything (the table rejected the whole-model write).
@@ -102,3 +141,7 @@ Settings go in Aura's `.env` unless noted.
 - **B5-02 delivery thresholds (to tune):** with `interruptibility_model_enabled` on, an item is delivered when priority × interruptibility ≥ the threshold for its kind. Worker defaults: finding 0.3, task_done 0.25, needs_decision 0.15, question_for_you 0.3, reminder 0.2, observation 0.4. A 15-minute refractory period applies between deliveries.
 
 - **B4-04 (2026-11-24):** findings now reach the agenda. Fixed on review: `ask_user` questions were refused before the finish hook, so no `question_for_you` was ever made; now the runner publishes one and stores no fact. Share/ask handlers just wake the deliverer (which applies the gate and quiet hours). Plain version of the spend setting: `AURA_CURIOSITY_DAILY_SPEND_USD` caps what Aura's *own unprompted curiosity* (investigations she starts by herself) may spend per day on your OpenRouter models. It has nothing to do with Sluice (Sluice is only how I run cheap worker sessions). The build plan set it to 0, which means "no paid self-started investigations"; since Aura runs on paid OpenRouter models, at 0 she will effectively never investigate on her own. Chat and tasks you ask for are not affected. If you want curiosity active, set a small daily cap (e.g. 0.50). I will also count the per-finding summary call against that cap (follow-up card).
+
+- [ ] **P2-38 browser for OpenCode (decision for you):** see docs/opencode/browser.md. Recommendation: wait. v2.4.0 (2026-11-23) has a built-in browser but it looks desktop-app only; the 2.3.2 pin has none. The option today is Playwright MCP (needs Node and a browser), coder agent only. Aura's own web_search already covers research. Say "enable Playwright MCP" or "upgrade the pin" if you want either.
+
+- **P2-27 consult (2026-11-24):** behind `AURA_CONSULT_ENABLED` (off). Swift/Sage models default to your stack's L4/L2 models (D11); set `AURA_SWIFT_MODEL`, `AURA_SAGE_MODEL`, `AURA_SWIFT_POOL` if you want others. Follow-ups I will card: helper costs are estimated tokens only (no real USD yet, and not counted in the turn's USD budget); `url:` refs need a hook in web_search; inspector display is P2-39.

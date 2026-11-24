@@ -44,6 +44,9 @@ TIER_GATED_TOOLS: dict[str, str] = {
     "plan_task": "allow_task_graph",
 }
 
+# ``consult`` (P2-27) is allowed when the profile grants any helper calls (Lean: none).
+CONSULT_TOOL = "consult"
+
 TIER_UNAVAILABLE_ERROR = "not available on this tier"
 
 
@@ -237,8 +240,22 @@ def l2_reasoning_allowed(profile: TierProfile) -> bool:
 
 def tool_allowed(profile: TierProfile, tool_name: str) -> bool:
     """False only for a tier-gated tool the profile does not allow."""
+    if tool_name == CONSULT_TOOL:
+        return consult_allowed_by_profile(profile)
     knob = TIER_GATED_TOOLS.get(tool_name)
     return knob is None or bool(getattr(profile, knob))
+
+
+def consult_allowed_by_profile(profile: TierProfile) -> bool:
+    return profile.consult_swift_per_turn + profile.consult_sage_per_turn > 0
+
+
+def consult_enabled(profile: TierProfile | None = None) -> bool:
+    """consult is offered and callable only with consult_enabled AND tier_profiles_enabled
+    AND a profile with helper calls per turn (P2-27). Lean has none."""
+    if not (settings.consult_enabled and settings.tier_profiles_enabled):
+        return False
+    return consult_allowed_by_profile(profile or active_profile())
 
 
 def plan_task_enabled(profile: TierProfile | None = None) -> bool:
@@ -251,7 +268,10 @@ def plan_task_enabled(profile: TierProfile | None = None) -> bool:
 
 def gated_tools_denied(profile: TierProfile) -> set[str]:
     """Names of the tier-gated tools this profile may not offer."""
-    return {name for name in TIER_GATED_TOOLS if not tool_allowed(profile, name)}
+    denied = {name for name in TIER_GATED_TOOLS if not tool_allowed(profile, name)}
+    if settings.consult_enabled and not consult_allowed_by_profile(profile):
+        denied.add(CONSULT_TOOL)
+    return denied
 
 
 def recall_budget_tokens(profile: TierProfile) -> int:
