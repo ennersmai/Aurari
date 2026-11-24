@@ -96,6 +96,16 @@ class GoalEngine(BaseEngine):
             f"Goal Engine initialized - {len(self.active_goals)} active goals"
         )
 
+    async def _note_workspace_mode(self) -> None:
+        """Say once in the trace that boredom/idle goal creation is off."""
+        if getattr(self, "_workspace_noted", False):
+            return
+        self._workspace_noted = True
+        from aura.autonomy import trace
+
+        await trace.record("goal_engine", "tick:boredom_goals_disabled",
+                           "workspace_enabled: boredom and idle no longer create goals", allowed=False)
+
     async def tick(self) -> None:
         """
         Execute one goal engine cycle.
@@ -113,7 +123,10 @@ class GoalEngine(BaseEngine):
             
         idle_seconds = (datetime.now(timezone.utc) - last_interaction).total_seconds()
 
-        if self.current_boredom_level > self.boredom_threshold:
+        if settings.workspace_enabled:
+            # B2-04 (finding B1): the workspace cycle is the only self-start path.
+            await self._note_workspace_mode()
+        elif self.current_boredom_level > self.boredom_threshold:
             self.logger.info(
                 f"High boredom detected ({self.current_boredom_level:.2f}) - "
                 "considering goal generation"

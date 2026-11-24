@@ -2929,7 +2929,7 @@ TaskQueueService could not write to a database built from the real schema script
 - Tests: `tests/unit/test_goal_evidence.py` (9).
 
 ## B2-02 Proposals and the workspace registry (worker)
-- New `src/aura/models/proposal.py`: `ProposalKind` enum (7 kinds: `skill_gap`, `memory_consolidation`, `goal_progress`, `fact_correction`, `drive_rebalance`, `user_intent`, `external_trigger`), `RiskLevel` enum (low/medium/high/critical), `Cost` model (tokens: int, seconds: float, risk: RiskLevel), `Proposal` model (id, source, kind, summary, refs, urgency, value, cost, expires_at, created_at). Validation: non-empty refs list (whitespace-trimmed), single-line summary.
+- New `src/aura/models/proposal.py`: `ProposalKind` enum (7 kinds: `investigate`, `pursue_goal`, `practice`, `share`, `ask_user`, `consolidate`, `respond`), `RiskLevel` enum (read/write/execute/send), `Cost` model (tokens: int, seconds: float, risk: RiskLevel), `Proposal` model (id, source, kind, summary, refs, urgency, value, cost, expires_at, created_at). Validation: non-empty refs list (whitespace-trimmed), single-line summary.
 - New `src/aura/orchestrator/workspace.py`: `Workspace` class with `post()` (validates, stores, returns id), `live()` (drops expired), `get()`, `all()`, `clear()`. Bounded in-memory dict (`workspace_max_proposals`, default 50) with oldest-expired-first eviction, then oldest-overall. Duplicate key = (source, kind, sorted refs) replaces older entry.
 - Config: `workspace_enabled` (default True), `workspace_max_proposals` (default 50) in `src/aura/config.py`. When disabled: `post()` returns None, no message bus subscription.
 - Message bus: `Workspace` subscribes to `MessageType.PROPOSAL` on construction (if enabled); async handler calls `post()`.
@@ -2943,3 +2943,13 @@ TaskQueueService could not write to a database built from the real schema script
 - Config (append-style, 6 new): `workspace_cost_weight_tokens/seconds/risk`, `workspace_cost_ref_tokens/seconds`, `workspace_cost_epsilon` (all `AURA_WORKSPACE_COST_*`). `trace.py` unchanged (existing `record` suffices).
 - Note: `may_initiate` writes its own trace row too, so a gate refusal has two rows (gate and attend).
 - Tests: `tests/unit/test_workspace_attention.py` (14).
+
+- B3-04 pursuit grants: `pursuit_grant` table, `aura/autonomy/grants.py` (check/create/refuse/revoke_expired/revoke_all), `execute_tool_call(autonomous=...)` gate after role, tier, session; behind `goals_v2_enabled`; fails closed (unknown or unregistered risk needs an `execute` grant, DB error refuses). Kill switch revokes grants. Tests: tests/unit/test_pursuit_grants.py.
+
+## B2-04 Event triggers, cycle runner, pre-emption hook (worker)
+- `orchestrator/workspace.py`: `EVENT_NAMES`, `Workspace.on_event` (sync, never awaits; background task via `_spawn` with logged exceptions), `run_cycle` (attend, dispatch to `register_handler(kind, coro)`, unhandled winner traced `cycle:no_handler:<kind>` and dropped; winners are consumed either way), `check_stuck` + `start/stop` slow fallback (`workspace_fallback_seconds`=300: clears a user flag stuck past the interval, drops expired, runs attend only; posts nothing, no model), `PauseToken`, `pause_token()`, module hooks `fire_event` / `turn_finished`. `registry.interrupt_for_user_nowait()` added (sync callbacks now, coroutine callbacks scheduled).
+- Hooks: one in `_turn_pipeline` (fires `user_message`; `turn_finished` in its `finally` resumes tokens and clears the pending flag when no turn is active), `dream_completed` after journal store, `task_result` in `TaskQueueService.complete_task/fail_task` and `TaskGraphScheduler._finalise`. `task_result` also publishes a STATE_UPDATE `kind=task_result` targeted at `goal_engine` so `check_evidence()` runs. `main.py` starts/stops the workspace.
+- Drives: user_message->exchange_happened, task_result->task_done, question_resolved, dream_completed; agenda_due and prediction_settled move no drive.
+- `GoalEngine.tick`: boredom/idle branches skipped when `workspace_enabled`, traced once (`tick:boredom_goals_disabled`).
+- Tests: `tests/unit/test_workspace_cycle.py` (18, incl. T1, T12, ablation, both entry points).
+- Notes: `tick` ends with `asyncio.sleep(30)` so tests must patch it. Nothing fires `question_resolved` or `agenda_due` yet. A user_message cycle runs while the flag is pending, so attend traces `attend:preempt`.

@@ -16,6 +16,7 @@ from uuid import uuid4
 from aura.clock import get_clock
 from aura.db.client import get_db_client
 from aura.db.query_utils import extract_rows
+from aura.orchestrator.workspace import fire_event
 from aura.models.task import BlockerInfo, Task, TaskStatus, TaskStepRecord
 
 logger = logging.getLogger(__name__)
@@ -245,6 +246,7 @@ class TaskQueueService:
             "blocker": None,
         })
         logger.info(f"Task completed: {task_id}")
+        fire_event("task_result", {"task_id": str(task_id), "status": "complete"})
         return await self.get_task(task_id)
 
     async def fail_task(self, task_id: str, reason: str = "") -> Task | None:
@@ -257,6 +259,7 @@ class TaskQueueService:
             "blocker": reason or None,
         })
         logger.info(f"Task failed: {task_id} — {reason[:100]}")
+        fire_event("task_result", {"task_id": str(task_id), "status": "failed"})
         return await self.get_task(task_id)
 
     async def set_waiting_approval(self, task_id: str, blocker: str) -> None:

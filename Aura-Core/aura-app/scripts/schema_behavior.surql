@@ -53,3 +53,17 @@ DEFINE FIELD IF NOT EXISTS updated_at ON drive_state TYPE datetime;
 
 -- Goal evidence (B3-02): set true on a task whose tests passed (test_pass criteria).
 DEFINE FIELD IF NOT EXISTS tests_passed ON task TYPE option<bool>;
+
+-- Pursuit grants (B3-04): owner permission for autonomous work above read.
+DEFINE TABLE IF NOT EXISTS pursuit_grant SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS goal_id ON pursuit_grant TYPE string;
+DEFINE FIELD IF NOT EXISTS scope ON pursuit_grant TYPE string ASSERT $value IN ['write', 'execute', 'send'];
+DEFINE FIELD IF NOT EXISTS budget ON pursuit_grant TYPE object DEFAULT {};
+DEFINE FIELD IF NOT EXISTS budget.tokens ON pursuit_grant TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS budget.minutes ON pursuit_grant TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS budget.calls ON pursuit_grant TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS granted_by ON pursuit_grant TYPE string;
+DEFINE FIELD IF NOT EXISTS granted_at ON pursuit_grant TYPE datetime;
+DEFINE FIELD IF NOT EXISTS expires_at ON pursuit_grant TYPE datetime;
+DEFINE FIELD IF NOT EXISTS revoked_at ON pursuit_grant TYPE option<datetime>;
+DEFINE INDEX IF NOT EXISTS pursuit_grant_goal ON pursuit_grant FIELDS goal_id;

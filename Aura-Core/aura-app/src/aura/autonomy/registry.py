@@ -19,6 +19,7 @@ from collections.abc import Callable
 from typing import Any
 
 from aura.autonomy import controls, trace
+from aura.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,18 @@ async def interrupt_for_user() -> None:
             if asyncio.iscoroutine(res):
                 await res
         except Exception as e:  # noqa: BLE001 - one hook must not block the rest
+            logger.warning("interrupt callback failed: %s", e)
+
+
+def interrupt_for_user_nowait() -> None:
+    """Synchronous variant for the chat hot path: sync callbacks run now,
+    coroutine callbacks are scheduled (never awaited here)."""
+    for cb in list(_interrupt_callbacks):
+        try:
+            res = cb()
+            if asyncio.iscoroutine(res):
+                asyncio.get_running_loop().create_task(res)
+        except Exception as e:  # noqa: BLE001
             logger.warning("interrupt callback failed: %s", e)
 
 
@@ -123,6 +136,13 @@ async def kill(db: Any = None) -> dict[str, Any]:
             controls._cache.killed = True
         else:
             controls._cache = controls.Controls(killed=True)
+    if settings.goals_v2_enabled:
+        try:
+            from aura.autonomy import grants
+
+            await grants.revoke_all(db)
+        except Exception as e:  # noqa: BLE001 - the kill must still proceed
+            logger.error("kill switch could not revoke grants: %s", e)
     stopped = await cancel_all("kill_switch")
     stopped += await _abort_delegations()
     graphs, kept = await _cancel_autonomous_graphs()

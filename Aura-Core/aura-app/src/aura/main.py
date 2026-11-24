@@ -241,6 +241,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     await get_deliverer().start()
 
+    # Behaviour workspace (B2-04): event-driven cycles plus a slow stuck-check
+    from aura.orchestrator.workspace import get_workspace
+
+    await get_workspace(message_bus).start()
+
     # Initialize LLM Layers and Orchestrator
     # Use UnifiedLLMClient if local LLM is enabled (routes to Ollama or OpenRouter per model)
     if settings.local_llm_enabled:
@@ -398,6 +403,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await _gd().stop()
     except Exception as e:  # noqa: BLE001
         logger.warning(f"Agenda deliverer stop failed: {e}")
+
+    try:
+        from aura.orchestrator.workspace import get_workspace
+
+        await get_workspace().stop()
+    except Exception as e:
+        logger.warning(f"Workspace stop failed: {e}")
 
     # Stop engines (in reverse order)
     if dreaming_engine:

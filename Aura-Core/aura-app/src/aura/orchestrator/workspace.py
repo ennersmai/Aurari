@@ -1,6 +1,9 @@
 """Behaviour workspace: proposal registry and attention (B2-02, PRD 4.1)."""
 
+import asyncio
 import logging
+import weakref
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -33,6 +36,48 @@ KIND_TO_DRIVES: dict[ProposalKind, tuple[str, ...]] = {
     ProposalKind.ASK_USER: ("connection", "coherence"),
     ProposalKind.CONSOLIDATE: ("rest",),
 }
+
+# Events that wake the workspace (B2-04). prediction_settled is reserved for B6.
+EVENT_NAMES = (
+    "user_message", "task_result", "question_resolved",
+    "prediction_settled", "dream_completed", "agenda_due",
+)
+# Workspace event -> drive event (B2-01); events absent here move no drive.
+EVENT_TO_DRIVE = {
+    "user_message": "exchange_happened",
+    "task_result": "task_done",
+    "question_resolved": "question_resolved",
+    "dream_completed": "dream_completed",
+}
+
+Handler = Callable[["Winner"], Awaitable[None]]
+
+
+class PauseToken:
+    """Cooperative pause flag for long autonomous work (T12; B4-02 uses it).
+
+    The work calls ``await token.wait_if_paused()`` between steps. The
+    workspace pauses every live token when the owner speaks and resumes them
+    when the turn ends. Wraps an ``asyncio.Event`` that is set while running.
+    """
+
+    def __init__(self) -> None:
+        self._running = asyncio.Event()
+        self._running.set()
+
+    @property
+    def paused(self) -> bool:
+        return not self._running.is_set()
+
+    def pause(self) -> None:
+        self._running.clear()
+
+    def resume(self) -> None:
+        self._running.set()
+
+    async def wait_if_paused(self) -> None:
+        await self._running.wait()
+
 
 _RISK_RANK = {RiskLevel.READ: 0.0, RiskLevel.WRITE: 1 / 3, RiskLevel.EXECUTE: 2 / 3, RiskLevel.SEND: 1.0}
 
@@ -94,6 +139,14 @@ class Workspace:
         self._proposals: dict[str, Proposal] = {}
         self._subscribed = False
         self._user_pending = False
+        self._pending_since: datetime | None = None
+        self._active_turns = 0
+        self._handlers: dict[ProposalKind, Handler] = {}
+        self._tokens: "weakref.WeakSet[PauseToken]" = weakref.WeakSet()
+        self._bg: set[asyncio.Task] = set()
+        self._cycle_lock = asyncio.Lock()
+        self._fallback_task: asyncio.Task | None = None
+        self.db: Any = None
         if bus is not None:
             self._ensure_subscribed()
 
@@ -218,10 +271,139 @@ class Workspace:
     def note_user_message(self) -> None:
         """A user message is waiting; the next attend pre-empts autonomous work."""
         self._user_pending = True
+        self._pending_since = get_clock().now()
 
     def clear_user_message(self) -> None:
         """The user message was handled."""
         self._user_pending = False
+        self._pending_since = None
+
+    # -- B2-04: events, cycle, pre-emption --------------------------------------
+
+    def pause_token(self) -> PauseToken:
+        """A token that pauses when the owner speaks (held weakly)."""
+        token = PauseToken()
+        self._tokens.add(token)
+        return token
+
+    def register_handler(self, kind: ProposalKind, handler: Handler) -> None:
+        """Handler coroutine for winners of ``kind`` (B4 and B5 register them)."""
+        self._handlers[kind] = handler
+
+    def _spawn(self, coro: Any) -> None:
+        """create_task with a strong reference and logged exceptions."""
+        try:
+            task = asyncio.get_running_loop().create_task(coro)
+        except RuntimeError:
+            coro.close()
+            logger.warning("workspace event dropped: no running loop")
+            return
+        self._bg.add(task)
+
+        def _done(t: asyncio.Task) -> None:
+            self._bg.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.warning("workspace task failed: %s", t.exception(), exc_info=t.exception())
+
+        task.add_done_callback(_done)
+
+    def on_event(self, name: str, payload: dict[str, Any] | None = None) -> None:
+        """Synchronous, non-blocking event hook. Never awaits slow work.
+
+        user_message pre-empts here, before the reply is generated; everything
+        else (drives, the cycle) runs in a background task.
+        """
+        if not settings.workspace_enabled or name not in EVENT_NAMES:
+            return
+        if name == "user_message":
+            self._active_turns += 1
+            self.note_user_message()
+            for token in list(self._tokens):
+                token.pause()
+            registry.interrupt_for_user_nowait()
+        self._spawn(self._process_event(name, dict(payload or {})))
+
+    def turn_finished(self) -> None:
+        """The reply path ended: resume paused work once no turn is active."""
+        if self._active_turns > 0:
+            self._active_turns -= 1
+        if self._active_turns == 0:
+            self.clear_user_message()
+            for token in list(self._tokens):
+                token.resume()
+
+    async def _process_event(self, name: str, payload: dict[str, Any]) -> None:
+        drive_event = EVENT_TO_DRIVE.get(name)
+        if drive_event is not None:
+            try:
+                await drives.on_event(drive_event, payload, db=self.db)
+            except Exception:
+                logger.warning("drive update failed for %s", name, exc_info=True)
+        if name == "task_result" and self._bus is not None and "goal_engine" in self._bus._subscribers:
+            # Bus messages only reach their targets; the goal engine checks evidence on this.
+            await self._bus.publish(EngineMessage(
+                source="workspace",
+                message_type=MessageType.STATE_UPDATE,
+                data={"kind": "task_result", **payload},
+                targets=["goal_engine"],
+            ))
+        await self.run_cycle()
+
+    async def run_cycle(self, budget: Budget | None = None) -> Winner | None:
+        """One attention cycle: attend, dispatch the winner. No model call here."""
+        if not settings.workspace_enabled:
+            return None
+        async with self._cycle_lock:
+            now = get_clock().now()
+            winner = await self.attend(now, budget or Budget(), db=self.db)
+            if winner is None:
+                return None
+            p = winner.proposal
+            self._proposals.pop(p.id, None)  # consumed either way
+            handler = self._handlers.get(p.kind)
+            if handler is None:
+                await trace.record(p.source, f"cycle:no_handler:{p.kind.value}", "no handler",
+                                   allowed=False, refs=p.refs, db=self.db)
+                return winner
+            try:
+                await handler(winner)
+            except Exception:
+                logger.warning("handler for %s failed", p.kind.value, exc_info=True)
+            return winner
+
+    async def check_stuck(self) -> None:
+        """Slow fallback: nothing may stay stuck. Posts nothing, calls no model."""
+        if not settings.workspace_enabled:
+            return
+        now = get_clock().now()
+        limit = settings.workspace_fallback_seconds
+        if self._user_pending and self._pending_since is not None \
+                and (now - self._pending_since).total_seconds() > limit:
+            logger.warning("user message flag stuck for over %ss; clearing", limit)
+            self._active_turns = 0
+            self.turn_finished()
+        self.live(now)
+        if self._proposals:
+            await self.run_cycle()
+
+    async def start(self, db: Any = None) -> None:
+        self.db = db
+        if self._fallback_task is None:
+            self._fallback_task = asyncio.create_task(self._fallback_loop())
+
+    async def stop(self) -> None:
+        if self._fallback_task is not None:
+            self._fallback_task.cancel()
+            await asyncio.gather(self._fallback_task, return_exceptions=True)
+            self._fallback_task = None
+
+    async def _fallback_loop(self) -> None:
+        while True:
+            await asyncio.sleep(settings.workspace_fallback_seconds)
+            try:
+                await self.check_stuck()
+            except Exception:
+                logger.warning("workspace fallback failed", exc_info=True)
 
     async def attend(self, now: datetime, budget: Budget, db: Any = None) -> Winner | None:
         """Pick one proposal to act on, or None. Never reads wall time or config budgets."""
@@ -329,3 +511,23 @@ def set_workspace(workspace: Workspace | None) -> None:
     """Replace the global workspace (for testing)."""
     global _workspace
     _workspace = workspace
+
+
+def fire_event(name: str, payload: dict[str, Any] | None = None) -> None:
+    """Hook for callers: sync, cheap, never raises. No-op when workspace is off."""
+    if not settings.workspace_enabled:
+        return
+    try:
+        get_workspace().on_event(name, payload)
+    except Exception:
+        logger.warning("workspace event %s failed", name, exc_info=True)
+
+
+def turn_finished() -> None:
+    """Hook for the end of a turn (resumes paused autonomous work)."""
+    if not settings.workspace_enabled:
+        return
+    try:
+        get_workspace().turn_finished()
+    except Exception:
+        logger.warning("workspace turn_finished failed", exc_info=True)

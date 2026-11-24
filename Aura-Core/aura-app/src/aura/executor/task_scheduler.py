@@ -32,6 +32,7 @@ from aura.config import settings
 from aura.engines.recall.assembly import estimate_tokens
 from aura.executor import task_graph as task_graph_module
 from aura.executor.task_graph import TaskGraphStore
+from aura.orchestrator.workspace import fire_event
 from aura.models.task_graph import GraphStatus, NodeStatus, TaskGraph, TaskNode
 from aura.orchestrator.tool_loop import NativeCalls, RoundUsage, run_tool_loop
 
@@ -421,6 +422,7 @@ class TaskGraphScheduler:
             final = GraphStatus.FAILED
         await self.store.update_graph(graph_id, status=final, spent_usd=spent)
         logger.info("task graph %s finished: %s", graph_id, final.value)
+        fire_event("task_result", {"graph_id": str(graph_id), "status": final.value})
         await self.reporter.final(graph_id)
 
     # -- nodes ------------------------------------------------------------------

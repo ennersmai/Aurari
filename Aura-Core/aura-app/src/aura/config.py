@@ -1889,6 +1889,12 @@ class Settings(BaseSettings):
         description="Floor for cost_score so free proposals do not score infinitely (B2-03).",
         gt=0.0,
     )
+    workspace_fallback_seconds: float = Field(
+        default=300.0,
+        validation_alias="AURA_WORKSPACE_FALLBACK_SECONDS",
+        description="Slow fallback interval: only checks nothing is stuck, posts nothing, no model (B2-04).",
+        gt=0.0,
+    )
 
     drives_enabled: bool = Field(
         default=False,

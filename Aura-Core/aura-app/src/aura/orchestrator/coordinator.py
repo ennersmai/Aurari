@@ -406,6 +406,9 @@ class Orchestrator:
                 session_end=session_end,
                 metadata=journal_meta,
             )
+            from aura.orchestrator import workspace as _workspace
+
+            _workspace.fire_event("dream_completed", {"journal_id": str(journal_id)})
 
         except asyncio.CancelledError:
             was_cancelled = True
@@ -1775,10 +1778,15 @@ Constraints:
         """
         handle = _AppraisalHandle()
         stages = self._turn_stages(*args, appraisal=handle, **kwargs)
+        # B2-04: the one place both entry points pass. Sync, no await; pre-empts autonomous work.
+        from aura.orchestrator import workspace as _workspace
+
+        _workspace.fire_event("user_message")
         try:
             async for ev in stages:
                 yield ev
         finally:
+            _workspace.turn_finished()
             if handle.task is not None and not handle.handed_off:
                 handle.task.cancel()
             await stages.aclose()

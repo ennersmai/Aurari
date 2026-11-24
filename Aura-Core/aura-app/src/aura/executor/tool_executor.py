@@ -139,6 +139,36 @@ class ToolExecutor:
         
         return tool_calls
     
+    async def _check_pursuit_grant(
+        self, tool_name: str, autonomous: Any
+    ) -> Dict[str, Any] | None:
+        """None when the autonomous call may run, else the refusal result."""
+        from aura.autonomy import grants
+
+        goal_id = autonomous.get("goal_id") if isinstance(autonomous, dict) else None
+        source = (autonomous.get("source") if isinstance(autonomous, dict) else None) or "autonomy"
+        risk: Any = None
+        try:
+            record = get_tool_registry().get(tool_name)
+            risk = record.risk if record is not None else None
+            if await grants.check(goal_id, risk):
+                return None
+        except Exception as e:  # noqa: BLE001 - fail closed
+            self.logger.warning(f"pursuit grant check failed for {tool_name}: {e}")
+        try:
+            await grants.refuse(goal_id, tool_name, risk, str(source))
+        except Exception as e:  # noqa: BLE001 - the refusal holds regardless
+            self.logger.warning(f"pursuit grant refusal record failed: {e}")
+        return {
+            "success": False,
+            "result": "",
+            "error": (
+                f"Tool '{tool_name}' needs an owner grant for autonomous work on this goal. "
+                "A decision has been raised for the owner."
+            ),
+            "tool_name": tool_name,
+        }
+
     async def execute_tool_call(
         self,
         tool_call: Dict[str, Any],
@@ -148,6 +178,7 @@ class ToolExecutor:
         venue: str = "app",
         session: Any = None,
         conversation_id: str | None = None,
+        autonomous: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """
         Execute a single tool call.
@@ -158,6 +189,10 @@ class ToolExecutor:
                 other roles are refused before any tool is run.
             venue: Venue of the call. With ``requester_role`` it reaches the
                 tool in the reserved ``_venue`` / ``_requester_role`` arguments.
+            autonomous: Reserved ``_autonomous`` context (B3-04), set only by
+                autonomous callers: ``{"goal_id": ..., "source": ...}``. Never
+                part of the model-visible schema. Under ``goals_v2_enabled``
+                a call above ``read`` risk needs a live pursuit grant.
             approved: When true, the runtime has already obtained user
                 approval for this call (e.g. a previously-gated terminal or
                 filesystem write). The executor sets the reserved
@@ -241,6 +276,30 @@ class ToolExecutor:
                     "success": False,
                     "result": "",
                     "error": reason,
+                    "tool_name": tool_name,
+                }
+
+        # Pursuit grant gate (B3-04). After role, tier and session; only for
+        # autonomous calls. Fails closed: any error or unknown risk refuses.
+        if autonomous is not None and settings.goals_v2_enabled:
+            refusal = await self._check_pursuit_grant(tool_name, autonomous)
+            if refusal is not None:
+                return refusal
+        elif autonomous is not None:
+            # Without grants there is nothing to authorise autonomous side effects:
+            # read tools only (supervisor review, 2026-11-24).
+            from aura.autonomy.grants import required_scope
+
+            try:
+                record = get_tool_registry().get(tool_name)
+                scope = required_scope(record.risk if record is not None else None)
+            except Exception:  # noqa: BLE001 - fail closed
+                scope = "execute"
+            if scope is not None:
+                return {
+                    "success": False,
+                    "result": "",
+                    "error": f"Tool '{tool_name}' is not allowed for autonomous work.",
                     "tool_name": tool_name,
                 }
 
