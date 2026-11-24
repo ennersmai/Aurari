@@ -1121,6 +1121,43 @@ class Settings(BaseSettings):
         description="Longest skill body accepted from a draft or import (G6-01).",
     )
 
+    skill_correction_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILL_CORRECTION_ENABLED",
+        description="Turn repeated owner-counted failures or an explicit owner correction "
+        "into an unapproved corrected skill version while dreaming (G6-03). Also needs "
+        "skills_v2_enabled.",
+    )
+    skill_correct_min_negatives: int = Field(
+        default=2,
+        validation_alias="AURA_SKILL_CORRECT_MIN_NEGATIVES",
+        description="Counted negative uses of one skill version, not yet corrected, that "
+        "make it a correction candidate (G6-03).",
+    )
+    skill_correct_max_per_cycle: int = Field(
+        default=2,
+        validation_alias="AURA_SKILL_CORRECT_MAX_PER_CYCLE",
+        description="Most skill versions corrected in one dreaming cycle (G6-03).",
+    )
+    skill_correct_lookback_hours: float = Field(
+        default=720.0,
+        validation_alias="AURA_SKILL_CORRECT_LOOKBACK_HOURS",
+        description="How far back negative skill uses are scanned for correction (G6-03).",
+    )
+    skill_pitfalls_max: int = Field(
+        default=10,
+        validation_alias="AURA_SKILL_PITFALLS_MAX",
+        description="Most pitfall lines a skill version keeps; the oldest drop first (G6-03).",
+    )
+
+    skill_taught_enabled: bool = Field(
+        default=False,
+        validation_alias="AURA_SKILL_TAUGHT_ENABLED",
+        description="Turn an owner teaching turn that describes a procedure into a trusted "
+        "skill; guest teaching becomes an unapproved candidate (G6-02). Also needs "
+        "skills_v2_enabled.",
+    )
+
     recall_feedback_enabled: bool = Field(
         default=False,
         validation_alias="AURA_RECALL_FEEDBACK_ENABLED",

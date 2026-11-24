@@ -50,8 +50,15 @@ async def propose_skill(
     source_task: str | None = None,
     origin_speaker: str = "owner",
     decisions: DecisionService | None = None,
+    pre_approved: bool = False,
 ) -> tuple[SkillDoc, SkillVersion, bool]:
-    """Store ``draft`` as an unapproved version and ask the owner. Returns (doc, version, merged)."""
+    """Store ``draft`` as an unapproved version and ask the owner. Returns (doc, version, merged).
+
+    ``pre_approved`` (G6-02) is honoured only for ``source="taught"`` with
+    ``origin_speaker="owner"``: the version is approved and active at once, a new
+    doc is ``trusted``, and no decision is created. Any other call is unapproved.
+    """
+    owner_taught = pre_approved and source == "taught" and origin_speaker == "owner"
     name = draft["name"]
     when = draft["when_to_use"]
     vec = await embeddings.embed(when)
@@ -65,7 +72,8 @@ async def propose_skill(
     merged = doc is not None
     if doc is None:
         doc = await store.create_doc(
-            name, when, tags=draft.get("tags"), state="candidate",
+            name, when, tags=draft.get("tags"),
+            state="trusted" if owner_taught else "candidate",
             origin_speaker=origin_speaker, when_embedding=vec or None,
         )
     version = await store.add_version(
@@ -73,7 +81,11 @@ async def propose_skill(
         pitfalls=draft.get("pitfalls"), source_task=source_task,
         examples=[source_task] if source_task else None,
         change_note=draft.get("change_note") or (f"merged into '{doc.name}'" if merged else None),
+        approved=owner_taught, approved_by="owner-taught" if owner_taught else None,
     )
+    if owner_taught:
+        await store.set_active(doc.id, version.version)
+        return doc, version, merged
     await _ask_owner(decisions or get_decision_service(), doc, version, origin_speaker)
     return doc, version, merged
 

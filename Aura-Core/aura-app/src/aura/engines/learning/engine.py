@@ -14,6 +14,7 @@ from typing import Any, Deque, TYPE_CHECKING
 from uuid import uuid4
 from collections import deque
 
+from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
 from aura.llm.embeddings import get_embeddings_client
@@ -167,6 +168,7 @@ class LearningEngine(BaseEngine):
 
             # --- ROUTE B: Skill/Tool Compilation ---
             if experience.task_type == "instruction" or experience.metadata.get("intent") == "teaching":
+                await self._propose_taught_skill(experience)
                 await self._compile_new_skill(experience)
                 return
                 
@@ -177,6 +179,23 @@ class LearningEngine(BaseEngine):
             self.logger.error(f"❌ Background extraction failed: {e}", exc_info=True)
             # Re-raise so the caller knows it failed
             raise
+
+    async def _propose_taught_skill(self, experience: Experience) -> None:
+        """G6-02: a teaching turn that describes a procedure becomes a skill.
+
+        Flag off: returns at once. A missing speaker is treated as a guest (never trusted).
+        """
+        if not (settings.skills_v2_enabled and settings.skill_taught_enabled):
+            return
+        try:
+            from aura.engines.learning.skill_store import SkillStore
+            from aura.engines.learning.skill_taught import propose_taught
+
+            speaker = str((experience.metadata or {}).get("speaker") or "guest")
+            text = str(experience.context.get("user_query", ""))
+            await propose_taught(SkillStore(self.db), self.embeddings, text, speaker)
+        except Exception as e:
+            self.logger.warning(f"Taught skill proposal failed: {e}")
 
     async def _process_direct_instruction(self, experience: Experience) -> None:
         """

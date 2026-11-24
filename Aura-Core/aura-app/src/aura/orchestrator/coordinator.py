@@ -850,7 +850,7 @@ Constraints:
         return None
 
     async def _classify_intent(
-        self, user_input: str, user_id: str, stream: bool
+        self, user_input: str, user_id: str, stream: bool, speaker: str = "owner"
     ) -> tuple[dict[str, Any], str, str | None]:
         """
         L1 intent classification, telemetry, and the teaching fast lane.
@@ -887,7 +887,7 @@ Constraints:
                 "task_type": "instruction",  # Matches the fix we made in Learning Engine
                 "domain": "coding",  # Or infer from L1
                 "context": {"user_query": user_input},
-                "metadata": {"intent": "teaching"}
+                "metadata": {"intent": "teaching", "speaker": speaker},
             }
 
             # Send directly to Learning Engine (The "Fast Lane" we discussed)
@@ -1880,7 +1880,7 @@ Constraints:
 
         # Stage 4: L1 intent classification, telemetry, teaching lane.
         intent_data, intent, teaching_reply = await self._classify_intent(
-            user_input, user_id, stream=stream
+            user_input, user_id, stream=stream, speaker=speaker
         )
         if teaching_reply is not None:
             if stream:

@@ -211,3 +211,12 @@ DEFINE FIELD IF NOT EXISTS task_id ON skill_distill_log TYPE string;
 DEFINE FIELD IF NOT EXISTS outcome ON skill_distill_log TYPE string;
 DEFINE FIELD IF NOT EXISTS distilled_at ON skill_distill_log TYPE datetime;
 DEFINE INDEX IF NOT EXISTS skill_distill_log_task ON skill_distill_log FIELDS task_id UNIQUE;
+
+-- Negative skill uses already fed to a correction (G6-03). use_ids is the watermark.
+DEFINE TABLE IF NOT EXISTS skill_correction_log SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS skill ON skill_correction_log TYPE record<skill_doc>;
+DEFINE FIELD IF NOT EXISTS version ON skill_correction_log TYPE int;
+DEFINE FIELD IF NOT EXISTS use_ids ON skill_correction_log TYPE array<string>;
+DEFINE FIELD IF NOT EXISTS outcome ON skill_correction_log TYPE string;
+DEFINE FIELD IF NOT EXISTS new_version ON skill_correction_log TYPE option<int>;
+DEFINE FIELD IF NOT EXISTS corrected_at ON skill_correction_log TYPE datetime;

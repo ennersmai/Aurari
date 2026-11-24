@@ -2,6 +2,7 @@
 
 GET  /skills                              - docs with active version summary and stats
 GET  /skills/{name}                       - one doc with all its versions
+POST /skills/import                       - body {"name"?, "text"}: inert candidate + decision (G6-02)
 POST /skills/{name}/versions/{n}/approve  - body {"trusted": bool}
 POST /skills/{name}/versions/{n}/reject
 
@@ -14,9 +15,11 @@ from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
 
-from aura.engines.learning import skill_proposals
+from aura.config import settings
+from aura.engines.learning import skill_proposals, skill_taught
 from aura.engines.learning.skill_store import SkillStore, rid_str
 from aura.executor.decisions import get_decision_service
+from aura.llm.embeddings import get_embeddings_client
 
 router = APIRouter(prefix="/skills", tags=["skills"])
 
@@ -41,6 +44,23 @@ async def list_skills() -> dict[str, Any]:
     store = SkillStore()
     docs = await store.list_docs(include_unapproved=True)
     return {"skills": [_doc_json(d, await store.list_versions(d.id)) for d in docs]}
+
+
+@router.post("/import")
+async def import_skill(body: dict[str, Any] = Body(...)) -> dict[str, Any]:
+    if not settings.skills_v2_enabled:
+        raise HTTPException(status_code=404, detail="skills are not enabled")
+    name = body.get("name")
+    if name is not None and not isinstance(name, str):
+        raise HTTPException(status_code=422, detail="name must be a string")
+    try:
+        draft = skill_taught.parse_import(name, body.get("text"))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    doc, version, merged = await skill_proposals.propose_skill(
+        SkillStore(), get_embeddings_client(), draft, source="imported", origin_speaker="owner"
+    )
+    return {"skill": doc.name, "version": version.version, "merged": merged, "state": doc.state}
 
 
 @router.get("/{name}")

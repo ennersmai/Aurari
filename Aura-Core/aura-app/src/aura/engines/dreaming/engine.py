@@ -163,6 +163,12 @@ class DreamingEngine(BaseEngine):
             except Exception as e:
                 self.logger.error(f"Skill distillation phase failed: {e}", exc_info=True)
 
+        if settings.skills_v2_enabled and settings.skill_correction_enabled:
+            try:
+                await self._correct_skills()
+            except Exception as e:
+                self.logger.error(f"Skill correction phase failed: {e}", exc_info=True)
+
         # Phase 1: Tiered Pruning
         try:
             report.pruned = await self._tiered_pruning()
@@ -903,6 +909,18 @@ What did I learn? Extract a one-sentence rule or pattern from this trial-and-err
 
         count = await distill_cycle(self.db, client, get_embeddings_client())
         self.logger.info(f"[DREAM] Skill distillation: proposed={count}")
+
+    async def _correct_skills(self) -> None:
+        """G6-03: lessons from counted failures and owner corrections, as unapproved versions."""
+        client = getattr(self._llm_layers, "client", None)
+        if client is None:
+            self.logger.warning("No model client available; skipping skill correction")
+            return
+        from aura.engines.learning.skill_correct import correct_cycle
+        from aura.llm.embeddings import get_embeddings_client
+
+        count = await correct_cycle(self.db, client, get_embeddings_client())
+        self.logger.info(f"[DREAM] Skill correction: proposed={count}")
 
     # =========================================================================
     # HELPERS
