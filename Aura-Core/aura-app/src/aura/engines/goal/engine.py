@@ -180,7 +180,7 @@ class GoalEngine(BaseEngine):
                 
                 # Check for stale goals (active for >24 hours with no progress)
                 # Ensure both datetimes are timezone-aware
-                now = datetime.now(timezone.utc)
+                now = get_clock().now()
                 goal_created = goal.created
                 if goal_created.tzinfo is None:
                     # If goal.created is naive, assume it's UTC
@@ -190,6 +190,10 @@ class GoalEngine(BaseEngine):
                 if age_hours > 24 and goal.progress < 0.1 and not settings.goals_v2_enabled:
                     self.logger.info(f"Marking stale goal as completed: {goal.name}")
                     await self.update_goal_progress(goal.goal_id, 1.0, "Goal completed - was stale with no progress")
+
+                # B3-03: abandonment check (goals_v2_enabled only)
+                if settings.goals_v2_enabled:
+                    await self._check_abandonment(goal, now)
 
         await asyncio.sleep(30.0)  # Check every 30 seconds
 
@@ -248,6 +252,99 @@ class GoalEngine(BaseEngine):
         for goal in self.active_goals:
             if goal.status == "active":
                 await self._evidence_step(goal)
+
+    async def _check_abandonment(self, goal: Goal, now: datetime) -> None:
+        """B3-03: Check if an active goal should be abandoned due to lack of evidence.
+
+        A goal whose last_evidence_at (or created when none) is older than
+        goal_stall_days and which is not complete becomes abandoned with
+        abandon_reason "no evidence for N days", a completed stamp left empty,
+        and progress unchanged. An agenda observation item is created once.
+        """
+        # Determine the reference time: last_evidence_at or created
+        ref_time = goal.last_evidence_at or goal.created
+        if ref_time.tzinfo is None:
+            ref_time = ref_time.replace(tzinfo=timezone.utc)
+
+        stall_days = settings.goal_stall_days
+        age_days = (now - ref_time).total_seconds() / 86400
+
+        if age_days >= stall_days:
+            # Goal is abandoned
+            goal.status = "abandoned"
+            goal.abandon_reason = f"no evidence for {int(age_days)} days"
+            goal.updated = now
+            # Note: completed is left as None (empty), progress unchanged
+
+            try:
+                await self._persist_goal(goal)
+                self.logger.info(f"Goal abandoned: {goal.name} ({goal.abandon_reason})")
+                # Told once: the tick only visits active goals, so this runs at the transition only.
+                await self._create_abandonment_agenda_item(goal, now)
+            except Exception as e:
+                self.logger.error(f"Failed to abandon goal {goal.goal_id}: {e}")
+
+    async def _create_abandonment_agenda_item(self, goal: Goal, now: datetime) -> None:
+        """Create an agenda observation item for an abandoned goal."""
+        from aura.autonomy.agenda import AgendaService
+        from aura.autonomy.controls import may_initiate
+
+        # Check if we may initiate (subject to autonomy controls)
+        decision = await may_initiate(
+            "observation", now=now, source="goal_engine", refs=[goal.goal_id], db=self.db
+        )
+        if not decision.allowed:
+            self.logger.debug(f"Abandonment notification not sent: {decision.reason}")
+            return
+
+        agenda = AgendaService(self.db)
+        try:
+            await agenda.create(
+                kind="observation",
+                content=f"Goal '{goal.name}' has been abandoned due to lack of evidence.",
+                refs=[goal.goal_id],
+                priority=0.5,
+                venue="app",
+                source="goal_engine",
+            )
+            self.logger.info(f"Created abandonment agenda item for goal {goal.goal_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to create abandonment agenda item: {e}")
+
+    async def reopen_goal(self, goal_id: str) -> Goal | None:
+        """B3-03: Reopen an abandoned goal, resetting last_evidence_at to now.
+
+        Abandoned goals are not loaded at startup, so the goal is read from the
+        database when it is not in memory. Returns the goal, or None when it is
+        unknown or not abandoned.
+        """
+        goal = next((g for g in self.active_goals if g.goal_id == goal_id), None)
+        if goal is None:
+            from aura.db.query_utils import extract_rows
+            from aura.engines.goal.evidence import goal_rid
+
+            rows = extract_rows(await self.db.query("SELECT * FROM $rid", {"rid": goal_rid(goal_id)}))
+            if not rows:
+                return None
+            row = dict(rows[0])
+            row.pop("id", None)
+            row["goal_id"] = goal_id.partition(":")[2] if goal_id.startswith("goal:") else goal_id
+            goal = Goal(**row)
+            self.active_goals.append(goal)
+        if goal.status != "abandoned":
+            return None
+        now = get_clock().now()
+        goal.status = "active"
+        goal.abandon_reason = None
+        goal.last_evidence_at = now
+        goal.updated = now
+        await self._persist_goal(goal)
+        from aura.engines.goal.evidence import goal_rid
+
+        # _persist_goal skips None values, so clear the reason explicitly.
+        await self.db.query("UPDATE $rid SET abandon_reason = NONE", {"rid": goal_rid(goal.goal_id)})
+        self.logger.info(f"Goal reopened: {goal.name}")
+        return goal
 
     async def shutdown(self) -> None:
         """Clean up engine resources."""

@@ -1853,6 +1853,42 @@ class Settings(BaseSettings):
         description="Maximum number of proposals to keep in the workspace.",
         ge=1,
     )
+    workspace_cost_weight_tokens: float = Field(
+        default=0.4,
+        validation_alias="AURA_WORKSPACE_COST_WEIGHT_TOKENS",
+        description="Weight of normalised token cost in the attention cost score (B2-03).",
+        ge=0.0,
+    )
+    workspace_cost_weight_seconds: float = Field(
+        default=0.3,
+        validation_alias="AURA_WORKSPACE_COST_WEIGHT_SECONDS",
+        description="Weight of normalised seconds cost in the attention cost score (B2-03).",
+        ge=0.0,
+    )
+    workspace_cost_weight_risk: float = Field(
+        default=0.3,
+        validation_alias="AURA_WORKSPACE_COST_WEIGHT_RISK",
+        description="Weight of the risk rank in the attention cost score (B2-03).",
+        ge=0.0,
+    )
+    workspace_cost_ref_tokens: int = Field(
+        default=4000,
+        validation_alias="AURA_WORKSPACE_COST_REF_TOKENS",
+        description="Token cost that normalises to 1.0 in the attention cost score (B2-03).",
+        ge=1,
+    )
+    workspace_cost_ref_seconds: float = Field(
+        default=120.0,
+        validation_alias="AURA_WORKSPACE_COST_REF_SECONDS",
+        description="Seconds cost that normalises to 1.0 in the attention cost score (B2-03).",
+        gt=0.0,
+    )
+    workspace_cost_epsilon: float = Field(
+        default=0.05,
+        validation_alias="AURA_WORKSPACE_COST_EPSILON",
+        description="Floor for cost_score so free proposals do not score infinitely (B2-03).",
+        gt=0.0,
+    )
 
     drives_enabled: bool = Field(
         default=False,
@@ -1864,6 +1900,13 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="AURA_GOALS_V2_ENABLED",
         description="Goals v2 (B3).",
+    )
+
+    goal_stall_days: int = Field(
+        default=7,
+        validation_alias="AURA_GOAL_STALL_DAYS",
+        description="Days without evidence after which an active goal becomes abandoned (B3-03).",
+        ge=1,
     )
 
     curiosity_enabled: bool = Field(

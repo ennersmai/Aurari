@@ -437,3 +437,33 @@ async def pursue_goal_autonomously(request: PursueGoalRequest) -> PursueGoalResp
             detail=f"Failed to pursue goal: {str(e)}",
         )
 
+
+@router.post("/{goal_id}/reopen", response_model=GoalResponse)
+async def reopen_goal(goal_id: str) -> GoalResponse:
+    """B3-03: Reopen an abandoned goal, resetting last_evidence_at to now.
+
+    Args:
+        goal_id: Goal identifier
+
+    Returns:
+        Updated goal
+    """
+    try:
+        goal_engine = get_goal_engine()
+        goal = await goal_engine.reopen_goal(goal_id)
+        if goal is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Goal {goal_id} not found or not abandoned",
+            )
+
+        return GoalResponse(success=True, goal=goal, message=f"Goal reopened: {goal.name}")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to reopen goal: {str(e)}",
+        )
+

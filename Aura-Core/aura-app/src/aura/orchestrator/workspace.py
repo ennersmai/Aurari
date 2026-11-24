@@ -1,9 +1,11 @@
 """Behaviour workspace: proposal registry and attention (B2-02, PRD 4.1)."""
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from aura.autonomy import controls, drives, registry, trace
 from aura.clock import get_clock
 from aura.config import settings
 from aura.models.messages import EngineMessage, MessageType
@@ -11,6 +13,71 @@ from aura.models.proposal import Cost, Proposal, ProposalKind, RiskLevel
 from aura.orchestrator.message_bus import MessageBus
 
 logger = logging.getLogger(__name__)
+
+# Proposal kind -> gate kind for may_initiate. `respond` is never autonomous.
+KIND_TO_GATE: dict[ProposalKind, str] = {
+    ProposalKind.INVESTIGATE: "investigate",
+    ProposalKind.PURSUE_GOAL: "pursue_goal",
+    ProposalKind.PRACTICE: "practice",
+    ProposalKind.SHARE: "share",
+    ProposalKind.ASK_USER: "needs_decision",
+    ProposalKind.CONSOLIDATE: "consolidate",
+}
+
+# Proposal kind -> drives that raise its score (PRD section 5); max is taken.
+KIND_TO_DRIVES: dict[ProposalKind, tuple[str, ...]] = {
+    ProposalKind.INVESTIGATE: ("curiosity",),
+    ProposalKind.PURSUE_GOAL: ("competence",),
+    ProposalKind.PRACTICE: ("competence",),
+    ProposalKind.SHARE: ("connection",),
+    ProposalKind.ASK_USER: ("connection", "coherence"),
+    ProposalKind.CONSOLIDATE: ("rest",),
+}
+
+_RISK_RANK = {RiskLevel.READ: 0.0, RiskLevel.WRITE: 1 / 3, RiskLevel.EXECUTE: 2 / 3, RiskLevel.SEND: 1.0}
+
+
+@dataclass
+class Budget:
+    """What the caller can afford right now (rule 4; B4-03 fills it)."""
+
+    tokens: int = 0
+    seconds: float = 0.0
+    allow_risk: bool = False
+
+
+@dataclass
+class Winner:
+    """The proposal attention picked, with its score."""
+
+    proposal: Proposal
+    score: float
+    cost_score: float
+    drive_gain: float
+
+
+def cost_score(cost: Cost) -> float:
+    """Normalised weighted cost in 0..1 (weights and references from config)."""
+    wt = settings.workspace_cost_weight_tokens
+    ws = settings.workspace_cost_weight_seconds
+    wr = settings.workspace_cost_weight_risk
+    total = wt + ws + wr
+    if total <= 0:
+        return 0.0
+    tokens = min(1.0, cost.tokens / settings.workspace_cost_ref_tokens)
+    seconds = min(1.0, cost.seconds / settings.workspace_cost_ref_seconds)
+    return (wt * tokens + ws * seconds + wr * _RISK_RANK[cost.risk]) / total
+
+
+def drive_gain(kind: ProposalKind) -> float:
+    """Max gain over the kind's drives; exactly 1.0 when drives are off."""
+    if not settings.drives_enabled:
+        return 1.0
+    names = KIND_TO_DRIVES.get(kind, ())
+    if not names:
+        return 1.0
+    model = drives.current()
+    return max(drives.gain(n, model=model) for n in names)
 
 
 class Workspace:
@@ -26,6 +93,7 @@ class Workspace:
         self._bus = bus
         self._proposals: dict[str, Proposal] = {}
         self._subscribed = False
+        self._user_pending = False
         if bus is not None:
             self._ensure_subscribed()
 
@@ -146,6 +214,89 @@ class Workspace:
                 logger.debug(f"Dropped expired proposal {pid}")
 
         return evicted
+
+    def note_user_message(self) -> None:
+        """A user message is waiting; the next attend pre-empts autonomous work."""
+        self._user_pending = True
+
+    def clear_user_message(self) -> None:
+        """The user message was handled."""
+        self._user_pending = False
+
+    async def attend(self, now: datetime, budget: Budget, db: Any = None) -> Winner | None:
+        """Pick one proposal to act on, or None. Never reads wall time or config budgets."""
+        if not settings.workspace_enabled:
+            return None
+
+        if self._user_pending:
+            await registry.interrupt_for_user()
+            await trace.record("workspace", "attend:preempt", "user message pending", allowed=False, db=db)
+            return None
+
+        self.live(now)
+        scored: list[tuple[float, datetime, Proposal, float, float]] = []
+        for p in list(self._proposals.values()):
+            cost = {"tokens": p.cost.tokens, "seconds": p.cost.seconds, "risk": p.cost.risk.value}
+            reason = None
+            if p.kind not in KIND_TO_GATE:
+                reason = "respond_never_autonomous"
+            elif p.cost.tokens > budget.tokens or p.cost.seconds > budget.seconds:
+                reason = "over_budget"
+            elif p.cost.risk != RiskLevel.READ and not budget.allow_risk:
+                reason = "risk_not_allowed"
+            else:
+                d = await controls.may_initiate(
+                    KIND_TO_GATE[p.kind], now=now, source=p.source, refs=p.refs, db=db
+                )
+                if not d.allowed:
+                    reason = f"gate_refused:{d.reason}"
+            if reason is not None:
+                await trace.record(
+                    p.source, f"attend:reject:{p.kind.value}", reason,
+                    allowed=False, cost=cost, refs=p.refs, db=db,
+                )
+                continue
+            cs = cost_score(p.cost)
+            gain = drive_gain(p.kind)
+            score = p.urgency * p.value * gain / max(cs, settings.workspace_cost_epsilon)
+            scored.append((score, p.created_at, p, cs, gain))
+
+        if not scored:
+            return None
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        score, _, p, cs, gain = scored[0]
+        winner = Winner(proposal=p, score=score, cost_score=cs, drive_gain=gain)
+        await trace.record(
+            p.source, f"attend:winner:{p.kind.value}", f"score={score:.4f} drive_gain={gain:.4f}",
+            allowed=True,
+            cost={"tokens": p.cost.tokens, "seconds": p.cost.seconds, "risk": p.cost.risk.value},
+            refs=p.refs, db=db,
+        )
+        await self._publish_winner(winner)
+        return winner
+
+    async def _publish_winner(self, winner: Winner) -> None:
+        """Broadcast the winner to every subscribed engine except the workspace."""
+        if self._bus is None:
+            return
+        targets = [e for e in self._bus._subscribers if e != "workspace"]
+        if not targets:
+            return
+        p = winner.proposal
+        await self._bus.publish(EngineMessage(
+            source="workspace",
+            message_type=MessageType.STATE_UPDATE,
+            data={
+                "kind": "workspace_winner",
+                "proposal_id": p.id,
+                "proposal_kind": p.kind.value,
+                "source": p.source,
+                "summary": p.summary,
+                "refs": p.refs,
+                "score": winner.score,
+            },
+            targets=targets,
+        ))
 
     def get(self, proposal_id: str) -> Proposal | None:
         """Get a proposal by id."""

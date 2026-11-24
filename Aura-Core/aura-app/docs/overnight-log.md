@@ -202,6 +202,19 @@
   - Therefore the card's database requirement cannot be satisfied on this machine under the card's own constraints. Per the card's own instruction ("stop and report") and the build-plan's "If the code does not match what the card describes: do not commit the card", I stopped without writing `runner.py` / `test_runner_smoke.py` or touching anything under `src/`.
 - **Unsure about:** Nothing code-level — the stop is forced by the environment, not by an ambiguity in the card. For Mai / the reviewer: to unblock W2-01 you must either (a) install the embedded engine (`pip install surrealdb[embedded]`) on a machine whose platform supports the native binary, or (b) relax the card to permit `fake_db` for the runner, or (c) permit starting a local SurrealDB server. None of those were allowed by this card.
 
+## B3-03: Stall and abandonment, remove stale-complete (T8)
+- **Status:** DONE
+- **Files changed:** `src/aura/config.py`, `src/aura/engines/goal/engine.py`, `src/aura/api/routes/goal.py`, `tests/unit/test_goal_abandonment.py`
+- **Test result:** Not run (supervisor runs tests and commits)
+- **Notes:** 
+  1. Added `goal_stall_days: int = Field(default=7, validation_alias="AURA_GOAL_STALL_DAYS", ...)` to Settings in `config.py`.
+  2. In `engine.py` `tick()`, replaced the stale-complete block (lines 189-192) with a call to new `_check_abandonment(goal, now)` when `goals_v2_enabled`. The new logic: for active goals, compute age from `last_evidence_at` (or `created` when none); if age >= `goal_stall_days`, set status to `abandoned`, `abandon_reason = "no evidence for N days"`, leave `completed` as None, progress unchanged. An agenda `observation` item with the goal id in `refs` is created once via `AgendaService`, subject to `may_initiate`. Added `_check_abandonment()`, `_create_abandonment_agenda_item()`, and `reopen_goal(goal_id)` methods.
+  3. In `goal.py` routes, added `POST /goal/{goal_id}/reopen` endpoint that calls `goal_engine.reopen_goal()` and returns the updated goal.
+  4. Created `tests/unit/test_goal_abandonment.py` with tests for: abandonment after stall days (not completed, progress unchanged), fresh evidence prevents abandonment, agenda item created once, reopen resets `last_evidence_at`, flag off keeps old stale-complete behaviour (ablation), only active goals can be abandoned, reopen on non-abandoned returns False. Uses `FakeClock` and `EmbeddedSurrealDB` per the card's test requirements and W4-01 lessons.
+- **Unsure about:** Nothing. The implementation follows the card exactly. The old stale-complete branch is preserved exactly when `goals_v2_enabled` is False.
+
+---
+
 ## W1-14: A changed fact replaces the old one
 - **Status:** DONE
 - **PRD:** memory F5
@@ -2922,3 +2935,11 @@ TaskQueueService could not write to a database built from the real schema script
 - Message bus: `Workspace` subscribes to `MessageType.PROPOSAL` on construction (if enabled); async handler calls `post()`.
 - Tests: `tests/unit/test_workspace_proposals.py` (24 tests covering validation, expiry, duplicate replacement, bound eviction, bus integration, flag-off).
 - Test result: 1488 passed, 3 skipped (full suite, no regressions).
+
+## B2-03 The attention step (worker)
+- `Workspace.attend(now, budget, db=None) -> Winner | None` in `orchestrator/workspace.py`, plus `Budget` (tokens, seconds, allow_risk), `Winner`, `cost_score`, `drive_gain`, `KIND_TO_GATE`, `KIND_TO_DRIVES`. Pending user message is a flag set by `note_user_message()` / `clear_user_message()` (B2-04's hook will call it); it calls `registry.interrupt_for_user()`, traces `attend:preempt` and returns None.
+- Order: respond refused, over budget (tokens or seconds), risk without `allow_risk`, then `may_initiate` (ask_user maps to gate kind `needs_decision`, so it passes at level important). Score = urgency * value * gain / max(cost_score, epsilon); ties by `created_at`. Rejections and the winner write `autonomy_trace` rows (`attend:reject:<kind>`, `attend:winner:<kind>`). Winner broadcast as STATE_UPDATE `data.kind="workspace_winner"` to every bus subscriber except `workspace`.
+- Drives off: gain exactly 1.0. Drives on: max of the kind's drive gains (cached model, baseline if none).
+- Config (append-style, 6 new): `workspace_cost_weight_tokens/seconds/risk`, `workspace_cost_ref_tokens/seconds`, `workspace_cost_epsilon` (all `AURA_WORKSPACE_COST_*`). `trace.py` unchanged (existing `record` suffices).
+- Note: `may_initiate` writes its own trace row too, so a gate refusal has two rows (gate and attend).
+- Tests: `tests/unit/test_workspace_attention.py` (14).
