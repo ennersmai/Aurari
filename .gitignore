@@ -72,3 +72,6 @@ temp_interactive_push.bat
 .venv/
 # Local database (W0-01): never committed
 Aura-Core/aura-app/.aura/
+
+# Frontend TypeScript build cache
+*.tsbuildinfo
