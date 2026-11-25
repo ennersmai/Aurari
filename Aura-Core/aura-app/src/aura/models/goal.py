@@ -28,6 +28,24 @@ class Criterion(BaseModel):
     evidence_ref: str | None = None
 
 
+GoalStage = Literal["seed", "forming", "crystal", "active", "closed"]
+STAGE_ORDER: dict[str, int] = {"seed": 0, "forming": 1, "crystal": 2, "active": 3, "closed": 4}
+GoalOwner = Literal["mai", "aura", "shared"]
+OriginKind = Literal["mai_said", "aura_curiosity", "aura_drive", "parent", "extraction"]
+# The five items a goal needs before it can crystallize.
+CHECKLIST_FIELDS = ("outcome", "done_criteria", "owner", "horizon", "first_action")
+
+
+class Milestone(BaseModel):
+    """One milestone of an active goal (P2-32 fills these). ``evidence_spec`` reuses the
+    criterion kinds and spec shapes of B3 (see ``Criterion``)."""
+
+    name: str
+    evidence_spec: dict[str, Any] = Field(default_factory=dict)
+    status: Literal["open", "done"] = "open"
+    evidence_refs: list[str] = Field(default_factory=list)
+
+
 class Goal(BaseModel):
     """
     Goal node with hierarchical structure.
@@ -44,6 +62,7 @@ class Goal(BaseModel):
         "maintenance",
         "learning_gap",
         "creative",
+        "self_improvement",  # P2-33: graphs only on Mai's registered Aura workspace (D16)
     ]
     status: Literal["active", "completed", "cancelled", "paused", "abandoned"] = "active"
     priority: float = Field(default=0.5, ge=0.0, le=1.0)
@@ -75,6 +94,45 @@ class Goal(BaseModel):
     abandon_reason: str | None = None
     last_evidence_at: datetime | None = None
     evidence: list[dict[str, Any]] | None = None
+
+    # Goals v3 (P2-31). The legacy ``origin`` string stays; ``origin_link`` is the typed
+    # {kind, ref} lineage. All optional so legacy rows load; ``stage`` is stored.
+    stage: GoalStage = "seed"
+    stage_changed: datetime | None = None
+    outcome: str | None = None
+    done_criteria: list[str] | None = None
+    owner: GoalOwner | None = None
+    horizon: str | None = None
+    first_action: str | None = None
+    origin_link: dict[str, Any] | None = None
+    milestones: list[dict[str, Any]] | None = None
+    close_reason: str | None = None
+    # P2-32 (all stored, so they survive a restart)
+    proposed: dict[str, Any] | None = None  # outcome / done_criteria L3 proposed on Mai's goal
+    outcome_changed_at: datetime | None = None  # Mai changed a crystal outcome: only an explicit refine re-crystallizes
+    plan_requested_at: datetime | None = None  # last Sage milestone-plan call
+    swift_checked_at: datetime | None = None  # last Swift call about this goal
+    orphan_flagged_at: datetime | None = None  # orphan flag raised (once)
+    conflict_flags: list[str] | None = None  # goal ids this goal was flagged against (once)
+    conflict_checked: list[str] | None = None  # goal ids already compared by Swift
+
+    def crystallization(self) -> dict[str, Any]:
+        """The crystal checklist: per item whether it is filled, and what is missing.
+
+        ``done_criteria`` also counts as filled when the goal has B3 ``criteria``
+        (those are checkable by construction).
+        """
+        filled = {
+            "outcome": bool(self.outcome and self.outcome.strip()),
+            "done_criteria": bool(
+                [d for d in (self.done_criteria or []) if d and d.strip()] or self.criteria
+            ),
+            "owner": self.owner is not None,
+            "horizon": bool(self.horizon and self.horizon.strip()),
+            "first_action": bool(self.first_action and self.first_action.strip()),
+        }
+        missing = [f for f in CHECKLIST_FIELDS if not filled[f]]
+        return {"stage": self.stage, "items": filled, "missing": missing, "complete": not missing}
 
     def progress_from_criteria(self) -> float | None:
         """Met criteria over total, or None when the goal has no criteria."""

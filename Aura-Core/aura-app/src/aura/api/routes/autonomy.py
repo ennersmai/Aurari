@@ -1,58 +1,48 @@
-"""Owner controls and kill switch (B1-06). Owner-only by posture: the API is unauthenticated."""
+"""Owner controls and kill switch (B1-06), autonomy slider (P2-33).
+Owner-only by posture: the API is unauthenticated."""
 
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from aura.autonomy import budget as curiosity_budget, channel, controls, learning, registry, trace
-from aura.autonomy.delivery import get_deliverer
+from aura.autonomy import budget as curiosity_budget
+from aura.autonomy import (
+    command,
+    controls,
+    initiative,  # noqa: F401 - registers the proposal answer hooks
+    learning,
+    registry,
+)
 from aura.config import settings
 
 router = APIRouter()
 
 
 class LevelBody(BaseModel):
-    level: Literal["silent", "important", "open"]
+    # P2-33: 0..3; the B1-01 names are still accepted (silent 0, important 1, open 3).
+    level: int | Literal["silent", "important", "open"] = Field(...)
 
 
 class KindBody(BaseModel):
     kind: str
 
 
-def _state(c: controls.Controls) -> dict[str, Any]:
-    return {
-        "level": c.level,
-        "muted_kinds": list(c.muted_kinds),
-        "killed": c.killed,
-        "killed_at": c.killed_at.isoformat() if c.killed_at else None,
-        "quiet_hours": {
-            "start": settings.quiet_hours_start,
-            "end": settings.quiet_hours_end,
-            "active": controls.quiet_hours_active(),
-        },
-        "autonomy_enabled": settings.autonomy_enabled,
-        "workspace_enabled": settings.workspace_enabled,
-        "goals_v2_enabled": settings.goals_v2_enabled,
-    }
-
-
 async def _changed(c: controls.Controls, action: str, why: str) -> dict[str, Any]:
-    state = _state(c)
-    await trace.record("owner", f"controls:{action}", why)
-    await channel.publish("autonomy_state", state)
-    await get_deliverer().notify()
-    return state
+    return await command.announce(c, action, why)
 
 
 @router.get("/autonomy")
 async def get_autonomy() -> dict[str, Any]:
-    return _state(await controls.get_controls())
+    return await command.state_for(await controls.get_controls())
 
 
 @router.put("/autonomy/level")
 async def put_level(body: LevelBody) -> dict[str, Any]:
-    return await _changed(await controls.set_level(body.level), "level", f"level set to {body.level}")
+    try:
+        return await command.change_level(body.level, "dashboard")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from None
 
 
 @router.post("/autonomy/mute")

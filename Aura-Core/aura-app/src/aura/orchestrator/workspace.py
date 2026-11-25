@@ -451,8 +451,10 @@ class Workspace:
                 # B4-03 (T6). Within budget, the proposal still goes through may_initiate below.
                 reason = f"daily budget reached: {exhausted}"
             else:
+                # P2-33: scoring only checks the budget; the act that follows (the
+                # deliverer sending an item) passes the gate again and spends it.
                 d = await controls.may_initiate(
-                    KIND_TO_GATE[p.kind], now=now, source=p.source, refs=p.refs, db=db
+                    KIND_TO_GATE[p.kind], now=now, source=p.source, refs=p.refs, spend=False, db=db
                 )
                 if not d.allowed:
                     reason = f"gate_refused:{d.reason}"

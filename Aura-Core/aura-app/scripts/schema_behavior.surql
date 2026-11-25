@@ -42,6 +42,27 @@ DEFINE FIELD IF NOT EXISTS abandon_reason ON goal TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS last_evidence_at ON goal TYPE option<datetime>;
 DEFINE FIELD IF NOT EXISTS evidence ON goal TYPE option<array<object>> FLEXIBLE;
 
+-- Goals v3 (P2-31): stage and the crystal checklist. All option<...>: the goal table has rows.
+-- (The legacy `origin` string is kept; the typed lineage is `origin_link`.)
+DEFINE FIELD IF NOT EXISTS stage ON goal TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS stage_changed ON goal TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS outcome ON goal TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS done_criteria ON goal TYPE option<array<string>>;
+DEFINE FIELD IF NOT EXISTS owner ON goal TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS horizon ON goal TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS first_action ON goal TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS origin_link ON goal TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS milestones ON goal TYPE option<array<object>> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS close_reason ON goal TYPE option<string>;
+-- P2-32: proposals, milestone planning, flags (all option<...>: the goal table has rows)
+DEFINE FIELD IF NOT EXISTS proposed ON goal TYPE option<object> FLEXIBLE;
+DEFINE FIELD IF NOT EXISTS outcome_changed_at ON goal TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS plan_requested_at ON goal TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS swift_checked_at ON goal TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS orphan_flagged_at ON goal TYPE option<datetime>;
+DEFINE FIELD IF NOT EXISTS conflict_flags ON goal TYPE option<array<string>>;
+DEFINE FIELD IF NOT EXISTS conflict_checked ON goal TYPE option<array<string>>;
+
 -- Drives (B2-01): singleton drive_state:main
 DEFINE TABLE IF NOT EXISTS drive_state SCHEMAFULL;
 DEFINE FIELD IF NOT EXISTS curiosity ON drive_state TYPE float DEFAULT 0.3;
@@ -128,3 +149,14 @@ DEFINE FIELD IF NOT EXISTS offered ON lens_yield TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS survived ON lens_yield TYPE int DEFAULT 0;
 DEFINE FIELD IF NOT EXISTS updated_at ON lens_yield TYPE option<datetime>;
 DEFINE INDEX IF NOT EXISTS lens_yield_key ON lens_yield FIELDS model, lens UNIQUE;
+
+-- Autonomy slider (P2-33): numeric level 0..3 on the control row (the B1-01 name row is
+-- migrated on load), daily budget counters per local day, and the origin of a task.
+DEFINE FIELD IF NOT EXISTS autonomy_level ON autonomy_control TYPE option<int>;
+DEFINE TABLE IF NOT EXISTS autonomy_budget SCHEMAFULL;
+DEFINE FIELD IF NOT EXISTS day ON autonomy_budget TYPE string;
+DEFINE FIELD IF NOT EXISTS messages ON autonomy_budget TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS sage_calls ON autonomy_budget TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS task_graphs ON autonomy_budget TYPE int DEFAULT 0;
+DEFINE FIELD IF NOT EXISTS updated_at ON autonomy_budget TYPE datetime;
+DEFINE FIELD IF NOT EXISTS origin ON task TYPE option<string>;

@@ -92,6 +92,7 @@ BUILTIN_RISK: dict[str, Risk] = {
     "delegate_work": "execute",
     "plan_task": "write",
     "request_pursuit": "read",
+    "refine_goal": "read",
     "consult": "read",
     "council": "read",
     "record_seed_ideas": "read",
@@ -99,7 +100,7 @@ BUILTIN_RISK: dict[str, Risk] = {
     "record_final_ideas": "read",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "consult", "council", "delegate", "diverge", "filesystem", "plan_task", "recall_tools", "record_final_ideas", "record_seed_ideas", "request_pursuit", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "consult", "council", "delegate", "diverge", "filesystem", "plan_task", "recall_tools", "record_final_ideas", "record_seed_ideas", "refine_goal", "request_pursuit", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:
@@ -294,6 +295,8 @@ class ToolRegistry:
             hidden.update(("record_seed_ideas", "diverge", "record_final_ideas"))
         if not request_pursuit_enabled():  # B3-05: goals_v2 only
             hidden.add("request_pursuit")
+        if not settings.goals_v3_enabled:  # P2-32
+            hidden.add("refine_goal")
         return sorted(
             (r for r in self._records.values() if r.name not in hidden),
             key=lambda r: r.name,

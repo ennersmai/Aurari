@@ -610,9 +610,13 @@ export interface AgendaItem {
   state: string; source?: string; created_at?: string | null; due_at?: string | null;
   expires_at?: string | null; delivered_at?: string | null; resolved_at?: string | null;
 }
-export type AutonomyLevel = 'silent' | 'important' | 'open';
+/** P2-33 slider: 0 reactive, 1 attentive, 2 proactive, 3 autonomous. */
+export type AutonomyLevel = 0 | 1 | 2 | 3;
+export interface AutonomyBudgetUse { used: number; limit: number }
 export interface AutonomyState {
   level: AutonomyLevel; muted_kinds: string[]; killed: boolean; killed_at: string | null;
+  level_name?: string; effective_level?: AutonomyLevel; tier_cap?: number;
+  budget?: { day: string; resources: Record<string, AutonomyBudgetUse> } | null;
   quiet_hours?: { start: string | number; end: string | number; active: boolean };
   autonomy_enabled?: boolean; workspace_enabled?: boolean; goals_v2_enabled?: boolean;
 }

@@ -7,9 +7,9 @@ delegations and autonomous task graphs.
 
 Scope (PRD 8.3: "A kill switch that stops all autonomous activity
 immediately"): work the owner asked for is not autonomous and is left
-running. A delegation counts as autonomous only when its config carries a
-truthy ``autonomous`` attribute (nothing sets it today); a task graph is
-autonomous when it has neither ``created_by_turn`` nor ``conversation_id``
+running. A delegation counts as autonomous when its config has
+``origin == "autonomous"`` (P2-33); a task graph when its ``origin`` is
+``"autonomous"`` or it has neither ``created_by_turn`` nor ``conversation_id``
 (owner chat planning always sets the conversation).
 """
 
@@ -84,11 +84,22 @@ def reset() -> None:
     _interrupt_callbacks.clear()
 
 
+def _is_autonomous_config(config: Any) -> bool:
+    return getattr(config, "origin", None) == "autonomous" or bool(getattr(config, "autonomous", False))
+
+
+def is_autonomous_graph(graph: Any) -> bool:
+    """Self-started (P2-33 origin) or with no owner turn and no conversation (B1-06)."""
+    if getattr(graph, "origin", None) == "autonomous":
+        return True
+    return not (graph.created_by_turn or graph.conversation_id)
+
+
 async def _abort_delegations() -> list[dict[str, str]]:
     from aura.executor import delegation
 
     stopped: list[dict[str, str]] = []
-    targets = [r for r in delegation.running_runners() if getattr(r.config, "autonomous", False)]
+    targets = [r for r in delegation.running_runners() if _is_autonomous_config(r.config)]
     results = await asyncio.gather(*(r.abort() for r in targets), return_exceptions=True)
     for r, res in zip(targets, results):
         if isinstance(res, BaseException):
@@ -116,7 +127,7 @@ async def _cancel_autonomous_graphs() -> tuple[list[dict[str, str]], list[str]]:
             logger.warning("graph lookup failed for %s: %s", gid, e)
             kept.append(gid)
             continue
-        if graph is not None and (graph.created_by_turn or graph.conversation_id):
+        if graph is not None and not is_autonomous_graph(graph):
             kept.append(gid)
             continue
         task.cancel()

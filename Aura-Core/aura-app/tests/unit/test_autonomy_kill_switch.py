@@ -134,18 +134,19 @@ async def test_resume_clears_without_restarting(env):
 
 async def test_level_mute_and_get(env):
     r = await env.client.get("/autonomy")
-    assert r.json()["level"] == "important" and r.json()["autonomy_enabled"] is True
-    assert (await env.client.put("/autonomy/level", json={"level": "open"})).json()["level"] == "open"
+    assert r.json()["level"] == 1 and r.json()["autonomy_enabled"] is True
+    # legacy names still work (P2-33 mapping: open = 3)
+    assert (await env.client.put("/autonomy/level", json={"level": "open"})).json()["level"] == 3
     assert (await env.client.put("/autonomy/level", json={"level": "loud"})).status_code == 422
     await env.client.post("/autonomy/mute", json={"kind": "curiosity"})
     got = (await env.client.get("/autonomy")).json()
-    assert got["level"] == "open" and got["muted_kinds"] == ["curiosity"]
+    assert got["level"] == 3 and got["muted_kinds"] == ["curiosity"]
     assert "start" in got["quiet_hours"] and got["killed"] is False
     await env.client.post("/autonomy/unmute", json={"kind": "curiosity"})
     assert (await env.client.get("/autonomy")).json()["muted_kinds"] == []
     # persisted: read back from the database
     controls.reset_cache()
-    assert (await controls.get_controls(env.db)).level == "open"
+    assert (await controls.get_controls(env.db)).level == 3
     states = [e for e in channel.events_since(0) if e["type"] == "autonomy_state"]
     assert len(states) == 3
     assert len(await _traces(env.db, "controls:level")) == 1
@@ -187,7 +188,7 @@ async def test_goal_engine_gate_blocks_pursuit_when_silent(env, monkeypatch):
 
     monkeypatch.setattr(ge, "_pursue_goal_impl", impl)
     await controls.set_level("silent", env.db)
-    with pytest.raises(ValueError, match="level_silent"):
+    with pytest.raises(ValueError, match="level_0_reactive"):
         await ge.pursue_goal_autonomously("g", 1, None)
     assert ran == []
     ge.active_goals = [Goal(goal_id="g", name="n", description="d", goal_type="maintenance", origin="test", priority=0.9, progress=0.0)]

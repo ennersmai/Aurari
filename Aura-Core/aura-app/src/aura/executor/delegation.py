@@ -125,6 +125,15 @@ class DelegationConfig:
     # mark the requesting turn positive. No experience id exists yet at request time.
     conversation_id: Optional[str] = None
     requested_at: Optional[Any] = None
+    # FU-02: optional goal id to link the delegated task to a goal for test_pass evidence.
+    goal_id: Optional[str] = None
+    # P2-33: "autonomous" when Aura started the delegation herself; the B1-06 kill
+    # switch stops those. Stored on the task so a re-attached runner keeps it.
+    origin: Optional[str] = None
+
+    @property
+    def autonomous(self) -> bool:
+        return self.origin == "autonomous"
 
 
 class DelegationRunner:
@@ -240,6 +249,7 @@ class DelegationRunner:
             success_criteria="",
             tokens=settings.delegation_default_tokens,
             minutes=settings.delegation_default_minutes,
+            origin=getattr(task, "origin", None),
         )
         runner = cls(config)
         runner._task = task
@@ -282,6 +292,12 @@ class DelegationRunner:
         _RUNNERS[task_id] = self
         await self._record_skill_use(task_id)
         await self._merge_task_fields(task_queue, task_id, {"requested_by_role": self.config.requester_role})
+        if self.config.origin:
+            await self._merge_task_fields(task_queue, task_id, {"origin": self.config.origin})
+        # FU-02: store goal_id on the task if provided
+        if self.config.goal_id:
+            from aura.db.query_utils import to_record_id
+            await self._merge_task_fields(task_queue, task_id, {"goal_id": to_record_id(self.config.goal_id)})
         try:
             await self._start_session(task_queue, task_id, brief)
         except BaseException:
@@ -836,7 +852,15 @@ class DelegationRunner:
             })
             logger.info(f"Task {task_id} marked as needs_owner: {reason}")
 
-        if reviewed:
+        # FU-02: store tests_passed based on review outcome (only when goal_id is set)
+        if self.config.goal_id:
+            if reviewed:
+                await self._merge_task_fields(task_queue, task_id, {"reviewed": True, "tests_passed": True})
+            elif outcome == "failed":
+                # Review happened but failed
+                await self._merge_task_fields(task_queue, task_id, {"tests_passed": False})
+        elif reviewed:
+            # Review passed but no goal_id: still mark reviewed but not tests_passed
             await self._merge_task_fields(task_queue, task_id, {"reviewed": True})
         await self._count_skill_outcome(task_id, outcome, reviewed)
         if outcome == "succeeded" and reviewed and self.config.requester_role == "owner":
@@ -1095,8 +1119,14 @@ async def start_delegation(
     skill_ref: Optional[tuple[str, int]] = None,
     requester_role: str = "guest",
     conversation_id: Optional[str] = None,
+    goal_id: Optional[str] = None,
+    origin: Optional[str] = None,
 ) -> str:
-    """Start a delegation in the background and return the task ID."""
+    """Start a delegation in the background and return the task ID.
+
+    ``origin="autonomous"`` (P2-33) marks a self-started delegation; the caller
+    must have passed ``may_initiate("delegation")`` first.
+    """
     config = DelegationConfig(
         goal=goal,
         workspace=workspace,
@@ -1110,6 +1140,8 @@ async def start_delegation(
         requester_role=requester_role,
         conversation_id=conversation_id,
         requested_at=get_clock().now() if conversation_id else None,
+        goal_id=goal_id,
+        origin=origin,
     )
     runner = DelegationRunner(config)
     task_id = await runner.run()

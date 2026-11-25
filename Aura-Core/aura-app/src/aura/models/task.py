@@ -104,6 +104,8 @@ class Task(BaseModel):
     # Who asked for a delegated task, and whether its review passed (G6-01).
     requested_by_role: str | None = Field(default=None, description="owner or guest")
     reviewed: bool | None = Field(default=None, description="Review passed (delegated tasks)")
+    # P2-33: "autonomous" when Aura started the delegation herself (kill switch scope).
+    origin: str | None = Field(default=None, description="autonomous when self-started")
 
     # Memory isolation
     task_memory_namespace: str = Field(

@@ -21,7 +21,8 @@ Read only "Decide" and "Check". Everything under "Reference" is background: deta
 - [ ] Only owner questions feed curiosity, never guests' [yes].
 
 **Behaviour**
-- [ ] Autonomy level [`important`: only decisions and finished tasks] and quiet hours [22:00-08:00].
+- [ ] Autonomy level 0-3 (P2-33; Dashboard buttons or say "autonomy N") [1: only decisions and finished tasks; capped by tier: Lean 1, Core 2, Titan 3] and quiet hours [22:00-08:00].
+- [ ] Daily message budget per level (`AURA_AUTONOMY_BUDGET_*`) [level 1: 3/day]. Approval requests (`needs_decision`) are exempt [yes, FU-08]; finished-task notices count [yes].
 - [ ] Emotion: how long moments colour her [minutes]; show mood in the app? [no]; temperament drift? [off].
 - [ ] Pinned facts on day one [none].
 

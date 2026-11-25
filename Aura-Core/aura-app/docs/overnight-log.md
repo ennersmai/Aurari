@@ -215,6 +215,23 @@
 
 ---
 
+## FU-02: Delegated tasks record goal_id and tests_passed (test_pass evidence)
+- **Status:** DONE
+- **Files changed:** `tests/unit/test_delegation_test_pass.py`
+- **Test result:** 4 new tests pass; all 14 delegation-related tests pass (5 from test_delegation_close.py + 4 from test_delegation_test_pass.py + 5 parse_verdict tests)
+- **Notes:** Fixed the test file to use the real `TaskQueueService` with `EmbeddedSurrealDB` instead of a `MockTaskQueue`. The tests now properly verify:
+  1. A delegation with `goal_id` whose review passes leaves a task with `goal_id` and `tests_passed = true`, and `_test_pass(db, goal_id, {})` returns that task id.
+  2. A failed review stores `tests_passed = false` and `_test_pass` returns `None`.
+  3. No `goal_id` given changes nothing (ablation) - no `goal_id` or `tests_passed` stored.
+  4. `goal_id` is stored on task creation via `_merge_task_fields` in `run()`.
+- **Changes made to test file only** (delegation.py and delegate.py changes were already in the working tree and correct):
+  - Used `FakeOpenCodeClientWithReview` pattern from `test_delegation_close.py` to properly handle both delegation and review sessions.
+  - Used real `TaskQueueService` with embedded DB instead of `MockTaskQueue`.
+  - Fixed RecordID assertions to use `table_name` and `id` properties (not `.table`).
+  - Used `_norm_id` helper from `delegation.py` to normalize task IDs with angle brackets for comparison.
+  - Added proper fixtures for `fake_client`, `mock_llm_client`, and workspaces.
+- **Unsure about:** Pre-existing runtime warnings in `delegation.py` about coroutine `_resolve_workspace_path` not being awaited (the code calls it without `await`). These are not related to FU-02.
+
 ## W1-14: A changed fact replaces the old one
 - **Status:** DONE
 - **PRD:** memory F5
@@ -3056,3 +3073,17 @@ TaskQueueService could not write to a database built from the real schema script
 - P2-30 Afterthought: Opus (post-response chain). Passed review.
 - FU-01 web_search url refs: Sluice (OpenCode). Passed review as delivered, no corrections.
 - Full suite: 1745 passed, 4 skipped.
+
+## FU-02: Delegated tasks record goal_id and tests_passed (test_pass evidence)
+- **Status:** DONE
+- **Files changed:**
+  - `src/aura/executor/delegation.py`: Added `goal_id: Optional[str] = None` to `DelegationConfig`; updated `start_delegation` to accept and pass through `goal_id`; in `DelegationRunner.run()`, store `goal_id` on task creation via `_merge_task_fields`; in `_finalize_task`, store `tests_passed: True` when `reviewed=True` and `goal_id` is set, store `tests_passed: False` when `outcome="failed"` and `goal_id` is set (review happened but failed).
+  - `src/aura/tools/delegate.py`: Added optional `goal_id` parameter to `delegate_work` tool schema; extract `goal_id` from arguments and pass to `start_delegation`.
+  - `tests/unit/test_delegation_test_pass.py`: New test file with EmbeddedSurrealDB tests covering: delegation with goal_id and passing review sets tests_passed=true and _test_pass returns task id; failed review sets tests_passed=false and _test_pass returns None; no goal_id given changes nothing (ablation).
+- **Test result:** Tests written, ready for supervisor to run.
+- **Unsure about:** The test `test_run_stores_goal_id_on_task_creation` assumes `EmbeddedSurrealDB.create()` works; if it doesn't, the test may need to mock `create_task`. Also, the `_finalize_task` logic only sets `tests_passed` when `goal_id` is set, per the ablation requirement.
+- P2-31 goal stages: Sonnet. Supervisor fix: update_checklist validates values (bad owner) before saving.
+- P2-32 crystallize/evidence/orphans/conflicts: Sonnet. Passed review; ungated Sage/Swift calls carded as FU-08.
+- P2-33 autonomy levels 0-3 and budgets: Opus. Passed review; found goal creation broken on the real schema (FU-07).
+- FU-02 goal_id/tests_passed on delegated tasks: Sluice. Code correct first time; its tests failed (mock queue, RecordID.table). One Sluice retry with failure notes fixed the tests. Not escalated. Lesson: Sluice tests against mocks of internal classes tend to be wrong; the brief should point at an existing real-DB test to copy.
+- Full suite after P2-31..33 + FU-02: 1817 passed, 4 skipped.

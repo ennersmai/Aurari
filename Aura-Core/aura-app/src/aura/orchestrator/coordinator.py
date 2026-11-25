@@ -1963,6 +1963,11 @@ Constraints:
 
         # Stage 3: sleep gating + system commands (bypass intent classification).
         reply = await self._pre_intent_reply(user_input, user_id)
+        if reply is None and settings.autonomy_enabled:
+            # P2-33: the owner's "autonomy N" (owner only, app or her DM).
+            from aura.autonomy.command import handle_chat as autonomy_command
+
+            reply = await autonomy_command(user_input, requester_role, venue)
         if reply is not None:
             if stream:
                 for char in reply:

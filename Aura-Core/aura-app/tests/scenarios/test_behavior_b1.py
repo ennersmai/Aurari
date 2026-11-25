@@ -142,12 +142,12 @@ async def test_t5_silent_delivers_and_starts_nothing_but_controls_stay_readable(
 
     # controls stay readable and the owner can still resolve items
     state = (await env.client.get("/autonomy")).json()
-    assert state["level"] == "silent" and state["killed"] is False
+    assert state["level"] == 0 and state["killed"] is False
     listed = (await env.client.get("/agenda")).json()["items"]
     assert {i["id"] for i in listed} == set(ids)
     assert (await env.client.post(f"/agenda/{ids[0]}/dismiss")).json()["state"] == "dismissed"
     traces = extract_rows(await env.db.query("SELECT * FROM autonomy_trace WHERE allowed = false"))
-    assert traces and all(t["why"] == "level_silent" for t in traces)
+    assert traces and all(t["why"] == "level_0_reactive" for t in traces)
 
     # raising the level releases the waiting items through the real notify path
     env.clock.set(_NOON + timedelta(days=1))

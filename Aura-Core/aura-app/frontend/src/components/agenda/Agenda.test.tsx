@@ -4,7 +4,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { AgendaIndicator } from './AgendaIndicator';
 import { AgendaPanel } from './AgendaPanel';
 import { AutonomyControls } from './AutonomyControls';
-import { applyAgendaUpdate, confirmKill, pendingCount, resolveAgendaItem } from './agendaState';
+import { applyAgendaUpdate, budgetSummary, cappedNote, confirmKill, pendingCount, resolveAgendaItem } from './agendaState';
 import { ThumbsView, createThumbsGate, sendThumb } from '@/components/chat/OutcomeThumbs';
 import {
   acceptBatch, acceptEvent, createAuraChannelClient, createPresenceThrottle, helloMessage, pollDelay,
@@ -127,7 +127,7 @@ describe('agenda ack and dismiss', () => {
 
 describe('owner controls', () => {
   const state = (over: Partial<AutonomyState> = {}): AutonomyState =>
-    ({ level: 'important', muted_kinds: [], killed: false, killed_at: null, ...over });
+    ({ level: 1, muted_kinds: [], killed: false, killed_at: null, ...over });
   const noop = () => {};
   const props = { onLevel: noop, onMute: noop, onUnmute: noop, onKill: noop, onResume: noop };
 
@@ -151,9 +151,43 @@ describe('owner controls', () => {
   });
   it('shows level and mute state', () => {
     const html = renderToStaticMarkup(<AutonomyControls state={state({ muted_kinds: ['observation'] })} {...props} />);
-    expect(html).toContain('silent');
+    expect(html).toContain('0 Reactive');
+    expect(html).toContain('3 Autonomous');
     expect(html).toContain('Mute reminder');
     expect(html).toMatch(/checked=""[^>]*\/>Mute observation/);
+  });
+});
+
+describe('autonomy slider (P2-33)', () => {
+  const state = (over: Partial<AutonomyState> = {}): AutonomyState =>
+    ({ level: 1, muted_kinds: [], killed: false, killed_at: null, ...over });
+  const noop = () => {};
+  const props = { onMute: noop, onUnmute: noop, onKill: noop, onResume: noop };
+
+  it('offers levels 0 to 3 and sends the number that was clicked', () => {
+    const onLevel = vi.fn();
+    const tree = AutonomyControls({ state: state(), ...props, onLevel });
+    const buttons = findAll(tree, (e) => String(e?.props?.['data-testid'] ?? '').startsWith('autonomy-level-') && e.type === 'button');
+    expect(buttons.map((b) => b.props['aria-pressed'])).toEqual([false, true, false, false]);
+    buttonByText(tree, '2 Proactive').props.onClick();
+    buttonByText(tree, '0 Reactive').props.onClick();
+    expect(onLevel.mock.calls).toEqual([[2], [0]]);
+  });
+  it('shows what the level allows, the tier cap and the budget of today', () => {
+    const s = state({
+      level: 3, effective_level: 2, tier_cap: 2,
+      budget: { day: '2026-11-25', resources: {
+        messages: { used: 2, limit: 6 }, sage_calls: { used: 0, limit: 5 }, task_graphs: { used: 0, limit: 0 },
+      } },
+    });
+    expect(budgetSummary(s)).toBe('2/6 messages, 0/5 Sage calls');
+    expect(cappedNote(s)).toBe('This tier caps it at 2 (Proactive).');
+    expect(cappedNote(state({ level: 2, effective_level: 2 }))).toBeNull();
+    expect(budgetSummary(state())).toBe('');
+    const html = renderToStaticMarkup(<AutonomyControls state={s} {...props} onLevel={noop} />);
+    expect(html).toContain('also pursues approved goals');
+    expect(html).toContain('This tier caps it at 2 (Proactive).');
+    expect(html).toContain('Today: 2/6 messages, 0/5 Sage calls');
   });
 });
 

@@ -65,6 +65,10 @@ TOOL_DEFINITION = {
                 "type": "string",
                 "description": "Optional skill name to record (skills are G5; this is recorded only).",
             },
+            "goal_id": {
+                "type": "string",
+                "description": "Optional goal ID (format: goal:<id>) to link this delegation for test_pass evidence.",
+            },
         },
         "required": ["goal", "workspace", "agent", "success_criteria"],
     },
@@ -129,6 +133,7 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
     success_criteria = arguments.get("success_criteria", "").strip()
     budget = arguments.get("budget") or {}
     skill = arguments.get("skill", "").strip() or None
+    goal_id = arguments.get("goal_id", "").strip() or None
 
     if not goal:
         return {
@@ -209,6 +214,7 @@ async def run(arguments: Dict[str, Any]) -> Dict[str, Any]:
         skill_ref=skill_ref,
         requester_role=arguments.get("_requester_role") or "guest",
         conversation_id=arguments.get("_conversation_id"),
+        goal_id=goal_id,
     )
 
     logger.info(f"Delegation started: task={task_id}, agent={agent}, workspace={workspace}")

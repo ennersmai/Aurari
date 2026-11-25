@@ -2009,8 +2009,11 @@ class Settings(BaseSettings):
     autonomy_default_level: str = Field(
         default="important",
         validation_alias="AURA_AUTONOMY_DEFAULT_LEVEL",
-        description="Initial autonomy level: silent, important or open.",
-        pattern="^(silent|important|open)$",
+        description=(
+            "Initial autonomy level (P2-33): 0 to 3, or a legacy name "
+            "(silent = 0, important = 1, open = 3)."
+        ),
+        pattern="^(silent|important|open|[0-3])$",
     )
     quiet_hours_start: str = Field(
         default="22:00",
@@ -2027,6 +2030,33 @@ class Settings(BaseSettings):
         default=False,
         validation_alias="AURA_AUTONOMY_ENABLED",
         description="Master flag for any unprompted delivery.",
+    )
+
+    # P2-33: autonomy slider daily budgets (Phase 2 plan, Part 11), per local day in
+    # app_timezone. A level's budget applies at that effective level only.
+    autonomy_budget_messages_level1: int = Field(
+        default=3, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_MESSAGES_LEVEL1",
+        description="Self-started messages per day at autonomy level 1 (Attentive).",
+    )
+    autonomy_budget_messages_level2: int = Field(
+        default=6, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_MESSAGES_LEVEL2",
+        description="Self-started messages per day at autonomy level 2 (Proactive).",
+    )
+    autonomy_budget_messages_level3: int = Field(
+        default=10, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_MESSAGES_LEVEL3",
+        description="Self-started messages per day at autonomy level 3 (Autonomous).",
+    )
+    autonomy_budget_sage_calls_level2: int = Field(
+        default=5, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_SAGE_CALLS_LEVEL2",
+        description="Self-started Sage calls per day at autonomy level 2.",
+    )
+    autonomy_budget_sage_calls_level3: int = Field(
+        default=10, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_SAGE_CALLS_LEVEL3",
+        description="Self-started Sage calls per day at autonomy level 3.",
+    )
+    autonomy_budget_task_graphs_level3: int = Field(
+        default=1, ge=0, validation_alias="AURA_AUTONOMY_BUDGET_TASK_GRAPHS_LEVEL3",
+        description="Self-started task graphs per day at autonomy level 3.",
     )
 
     workspace_enabled: bool = Field(
@@ -2100,6 +2130,46 @@ class Settings(BaseSettings):
         validation_alias="AURA_GOAL_STALL_DAYS",
         description="Days without evidence after which an active goal becomes abandoned (B3-03).",
         ge=1,
+    )
+
+    # --- Goals v3 (P2-32) ---
+    goals_v3_enabled: bool = Field(
+        default=False, validation_alias="AURA_GOALS_V3_ENABLED",
+        description="P2-32: refine_goal, Sage milestone plan at crystal, milestone evidence checks, "
+                    "orphan and conflict flags. Off means goals behave as before.",
+    )
+    goals_v3_orphan_days: int = Field(
+        default=14, ge=1, validation_alias="AURA_GOALS_V3_ORPHAN_DAYS",
+        description="Days without evidence after which a goal with no link to Mai or to an approved "
+                    "Aura goal is flagged on the agenda for pruning (once).",
+    )
+    goals_v3_milestone_max: int = Field(
+        default=6, ge=1, le=20, validation_alias="AURA_GOALS_V3_MILESTONE_MAX",
+        description="Most milestones kept from the Sage plan of one goal.",
+    )
+    goals_v3_plan_retry_hours: float = Field(
+        default=24.0, gt=0.0, validation_alias="AURA_GOALS_V3_PLAN_RETRY_HOURS",
+        description="Hours before a failed Sage milestone plan is tried again (one call per attempt).",
+    )
+    goals_v3_swift_min_hours: float = Field(
+        default=24.0, gt=0.0, validation_alias="AURA_GOALS_V3_SWIFT_MIN_HOURS",
+        description="Least hours between two Swift calls about the same goal (evidence or conflict).",
+    )
+    goals_v3_call_max_tokens: int = Field(
+        default=1200, ge=100, le=8000, validation_alias="AURA_GOALS_V3_CALL_MAX_TOKENS",
+        description="Most tokens of a Sage plan or Swift check answer.",
+    )
+    goals_v3_call_temperature: float = Field(
+        default=0.2, ge=0.0, le=2.0, validation_alias="AURA_GOALS_V3_CALL_TEMPERATURE",
+        description="Sampling temperature of the goal Sage and Swift calls.",
+    )
+    goals_v3_call_timeout_seconds: float = Field(
+        default=90.0, gt=0.0, le=600.0, validation_alias="AURA_GOALS_V3_CALL_TIMEOUT_SECONDS",
+        description="Time limit of one goal Sage or Swift call.",
+    )
+    goals_v3_commit_scan_max: int = Field(
+        default=200, ge=1, le=5000, validation_alias="AURA_GOALS_V3_COMMIT_SCAN_MAX",
+        description="Most recent commits scanned by a commit evidence spec.",
     )
 
     pursuit_max_minutes: int = Field(

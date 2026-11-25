@@ -3404,3 +3404,22 @@ Every item in wave 5 ships behind a flag with an ablation test, and is removed i
 - **Change:** the owner channel already handles `aura_message`. Add handling for `chat_message` (pushed by `orchestrator/afterthought.py`): when its `conversation_id` matches the open conversation and its message id is not already shown, append it as an assistant message. The pure helper decides (`shouldAppendChatMessage(event, conversationId, shownIds) -> boolean`) so it can be unit tested; the component only calls it.
 - **Tests (vitest):** the helper accepts a matching new message; rejects another conversation; rejects an id already shown; rejects malformed events. The test must import and exercise the real helper.
 - **Do not:** change the `/chat/task-reports` polling.
+
+---
+
+**FU-07 Goal creation writes a field the goal table rejects**
+- **Tier:** bulk
+- **Files:** `src/aura/engines/goal/engine.py` (`formulate_goal`, `generate_goal_on_demand`), new `tests/unit/test_goal_create_real_schema.py`
+- **Change:** both functions write `goal_id` into the `goal` record, which the SCHEMAFULL table rejects ("Found field 'goal_id'"), so goal creation fails on the real schema. Drop `goal_id` from the data written (the id is the record id; `_load_active_goals` already derives `goal_id` from it), create the record with an explicit record id (`to_record_id(f"goal:{goal.goal_id}")`) so the in-memory `goal_id` matches the stored record, and keep dropping None values (option fields reject null).
+- **Tests (EmbeddedSurrealDB, real schema):** `formulate_goal` and `generate_goal_on_demand` (with a fake LLM) each create a goal row whose record id matches the returned `goal_id`; a fresh `GoalEngine.initialize()` loads it back with the same `goal_id`.
+
+---
+
+**FU-08 P2-32's self-started model calls go through the gate; approvals are not held by the message budget**
+- **Tier:** frontier (the autonomy gate; Sonnet)
+- **Depends on:** P2-32, P2-33
+- **Files:** `src/aura/engines/goal/crystallize.py`, `src/aura/engines/goal/engine.py` (the v3 tick functions only), `src/aura/autonomy/controls.py`, `src/aura/config.py`, tests in `tests/unit/test_goal_milestones.py` and `tests/unit/test_autonomy_levels.py`
+- **Change:**
+  1. Before the Sage plan call and each Swift call (milestone check, conflict check), call `may_initiate("sage_call", ...)` (spend counted for Sage; Swift with `spend=False` unless a Swift budget exists, state which). Refused: no call, trace row, retry after the existing retry window.
+  2. New setting `AURA_AUTONOMY_BUDGET_EXEMPT_KINDS` (default `["needs_decision"]`): delivered items of these kinds still need the level, but spend no message budget, so approval requests (merges, graphs) are never held to the next day by the budget.
+- **Tests:** gate refused means no Sage or Swift call and a trace row; allowed spends a `sage_calls` unit; a `needs_decision` delivery at level 1 with the message budget exhausted is still delivered; `task_done` with an exhausted budget is held.

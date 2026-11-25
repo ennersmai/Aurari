@@ -74,28 +74,26 @@ class TaskGraphStore:
         budget_minutes: int,
         created_by_turn: str | None = None,
         conversation_id: str | None = None,
+        origin: str | None = None,
     ) -> TaskGraph:
         """Store a planned graph and its nodes; returns the graph with its id."""
         now = get_clock().now()
         graph_rid = RecordID("task_graph", uuid4().hex[:12])
-        await self.db.query(
-            "CREATE $rid CONTENT $data",
-            {
-                "rid": graph_rid,
-                "data": {
-                    "goal": goal,
-                    "status": GraphStatus.PLANNED.value,
-                    "budget_usd": float(budget_usd),
-                    "budget_minutes": int(budget_minutes),
-                    "spent_usd": 0.0,
-                    "created_by_turn": created_by_turn,
-                    "conversation_id": conversation_id,
-                    "final_reported_at": None,
-                    "created_at": now,
-                    "updated_at": now,
-                },
-            },
-        )
+        data: dict[str, Any] = {
+            "goal": goal,
+            "status": GraphStatus.PLANNED.value,
+            "budget_usd": float(budget_usd),
+            "budget_minutes": int(budget_minutes),
+            "spent_usd": 0.0,
+            "created_by_turn": created_by_turn,
+            "conversation_id": conversation_id,
+            "final_reported_at": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+        if origin is not None:  # P2-33: "autonomous" for self-started graphs
+            data["origin"] = origin
+        await self.db.query("CREATE $rid CONTENT $data", {"rid": graph_rid, "data": data})
         for node in nodes:
             await self.db.query(
                 "CREATE $rid CONTENT $data",

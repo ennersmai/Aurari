@@ -57,7 +57,7 @@ async def test_owner_reminder_exception_at_important(db):
 
 
 async def test_default_level_and_bad_level(db, monkeypatch):
-    assert (await controls.get_controls(db)).level == "important"
+    assert (await controls.get_controls(db)).level == 1  # "important" (P2-33 mapping)
     with pytest.raises(ValueError):
         await controls.set_level("loud", db)
 
@@ -100,7 +100,7 @@ async def test_singleton_survives_reread(db):
     await controls.set_killed(True, db)
     controls.reset_cache()
     c = await controls.load_controls(db)
-    assert c.level == "open" and c.muted_kinds == ["curiosity"] and c.killed is True
+    assert c.level == 3 and c.muted_kinds == ["curiosity"] and c.killed is True
     assert c.killed_at == _START and c.updated_at == _START
     controls.reset_cache()
     await controls.set_killed(False, db)
@@ -121,7 +121,7 @@ async def test_trace_rows_for_allowed_and_refused(db):
     a, r = rows
     assert a["source"] == "sched" and a["action"] == "initiate:task_done"
     assert a["allowed"] is True and a["refs"] == ["task_graph:1"]
-    assert a["cost"] == {} and a["at"] == _START and a["why"] == "level_important"
+    assert a["cost"]["level"] == 1 and a["at"] == _START and a["why"] == "level_1"
     assert r["allowed"] is False and r["action"] == "initiate:curiosity"
 
 

@@ -14,7 +14,7 @@ from aura.clock import get_clock
 from aura.config import settings
 from aura.db.client import get_db_client
 from aura.engines.base import BaseEngine
-from aura.models.goal import Goal, GoalContext, Task
+from aura.models.goal import CHECKLIST_FIELDS, STAGE_ORDER, Goal, GoalContext, Task
 from aura.models.messages import EngineMessage, MessagePriority
 
 if TYPE_CHECKING:
@@ -88,6 +88,12 @@ class GoalEngine(BaseEngine):
     async def initialize(self) -> None:
         """Initialize engine resources."""
         self.logger.info("Initializing Goal Engine...")
+
+        # P2-31: every stored goal gets a stage before goals are loaded
+        try:
+            await self.migrate_stages()
+        except Exception as e:
+            self.logger.warning(f"Goal stage migration failed: {e}")
 
         # Load active goals
         await self._load_active_goals()
@@ -208,6 +214,9 @@ class GoalEngine(BaseEngine):
                 if settings.goals_v2_enabled:
                     await self._check_abandonment(goal, now)
 
+        if settings.goals_v3_enabled:  # P2-32: crystal plan, milestone evidence, flags
+            await self.v3_tick()
+
         await asyncio.sleep(30.0)  # Check every 30 seconds
 
     async def _evidence_step(self, goal: Goal) -> None:
@@ -238,6 +247,8 @@ class GoalEngine(BaseEngine):
             ]
             goal.last_evidence_at = now
             new_progress = goal.progress_from_criteria()
+            if settings.goals_v3_enabled and goal.milestones:
+                new_progress = None  # P2-32: progress is done milestones over total
             if new_progress is not None and new_progress != goal.progress:
                 await self.update_goal_progress(
                     goal.goal_id, new_progress, f"criterion met: {met[-1].name}"
@@ -254,9 +265,479 @@ class GoalEngine(BaseEngine):
         from aura.engines.goal.evidence import goal_rid
 
         fields = ("status", "progress", "updated", "completed", "criteria", "evidence",
-                  "last_evidence_at", "abandon_reason")
+                  "last_evidence_at", "abandon_reason", "stage", "stage_changed", "outcome",
+                  "done_criteria", "owner", "horizon", "first_action", "origin_link",
+                  "milestones", "close_reason", "proposed", "outcome_changed_at", "plan_requested_at",
+                  "swift_checked_at", "orphan_flagged_at", "conflict_flags", "conflict_checked")
         data = {k: v for k, v in goal.model_dump().items() if k in fields and v is not None}
         await self.db.query("UPDATE $rid MERGE $data", {"rid": goal_rid(goal.goal_id), "data": data})
+
+    async def migrate_stages(self) -> int:
+        """P2-31 migration, run from ``initialize``: every goal row without a stage becomes
+        "forming". Idempotent (rows that have a stage are untouched) and only sets
+        ``stage`` and ``stage_changed``; no field is removed. Returns rows migrated."""
+        now = get_clock().now()
+        from aura.db.query_utils import extract_rows
+
+        rows = extract_rows(await self.db.query(
+            "UPDATE goal SET stage = 'forming', stage_changed = $now WHERE stage IS NONE RETURN id",
+            {"now": now},
+        ))
+        return len(rows)
+
+    def _find(self, goal_id: str) -> Goal | None:
+        bare = goal_id.partition(":")[2] if goal_id.startswith("goal:") else goal_id
+        return next((g for g in self.active_goals if g.goal_id in (goal_id, bare)), None)
+
+    async def advance_stage(
+        self, goal_id: str, to: str, *, close_reason: str | None = None
+    ) -> tuple[bool, str]:
+        """Move a goal forward. Returns (moved, reason). Never backwards (see
+        ``change_outcome`` for crystal -> forming). Crystal and later need a complete
+        checklist, active needs milestones, closed needs a ``close_reason``."""
+        goal = self._find(goal_id)
+        if goal is None:
+            return False, "unknown goal"
+        if to not in STAGE_ORDER:
+            return False, f"unknown stage {to}"
+        if STAGE_ORDER[to] <= STAGE_ORDER[goal.stage]:
+            return False, f"stage moves only forward ({goal.stage} -> {to})"
+        if to == "closed":
+            if not (close_reason or "").strip():
+                return False, "closing needs a reason"
+            goal.close_reason = close_reason
+        else:
+            if STAGE_ORDER[to] >= STAGE_ORDER["crystal"]:
+                missing = goal.crystallization()["missing"]
+                if missing:
+                    return False, "checklist incomplete: " + ", ".join(missing)
+            if to == "active" and not goal.milestones:
+                return False, "active needs milestones"
+        goal.stage = to
+        goal.stage_changed = goal.updated = get_clock().now()
+        await self._persist_goal(goal)
+        return True, "ok"
+
+    async def update_checklist(self, goal_id: str, **fields: Any) -> Goal | None:
+        """Fill checklist fields (outcome, done_criteria, owner, horizon, first_action,
+        origin_link). A seed with any checklist item moves to forming. Changing the outcome
+        of a crystal goal goes through ``change_outcome``."""
+        goal = self._find(goal_id)
+        if goal is None:
+            return None
+        allowed = (*CHECKLIST_FIELDS, "origin_link")
+        for k, v in fields.items():
+            if k not in allowed:
+                raise ValueError(f"not a checklist field: {k}")
+            if k == "outcome" and goal.stage in ("crystal", "active") and v != goal.outcome:
+                raise ValueError("use change_outcome to change a crystal outcome")
+        # Validate before writing, so a bad value (e.g. owner "bob") never reaches the DB
+        # and breaks the next load (supervisor review, P2-31).
+        checked = Goal.model_validate({**goal.model_dump(), **fields})
+        for k in fields:
+            setattr(goal, k, getattr(checked, k))
+        if goal.stage == "seed" and any(k in CHECKLIST_FIELDS for k in fields):
+            goal.stage = "forming"
+            goal.stage_changed = get_clock().now()
+        goal.updated = get_clock().now()
+        await self._persist_goal(goal)
+        return goal
+
+    async def change_outcome(self, goal_id: str, outcome: str) -> Goal | None:
+        """Mai changes the outcome. The only backward move: crystal -> forming (the
+        checklist must be confirmed again). An active goal keeps its stage."""
+        goal = self._find(goal_id)
+        if goal is None or goal.stage == "closed":
+            return None
+        changed = outcome != goal.outcome
+        goal.outcome = outcome
+        now = get_clock().now()
+        if changed and goal.stage == "crystal":
+            goal.stage = "forming"
+            goal.stage_changed = now
+            goal.outcome_changed_at = now
+        elif goal.stage == "seed":
+            goal.stage = "forming"
+            goal.stage_changed = now
+        goal.updated = now
+        await self._persist_goal(goal)
+        return goal
+
+    async def _close_stage(self, goal: Goal, reason: str) -> None:
+        """Keep ``stage`` truthful when a goal is completed, cancelled or abandoned."""
+        try:
+            await self.advance_stage(goal.goal_id, "closed", close_reason=reason)
+        except Exception as e:
+            self.logger.warning(f"Could not close stage of {goal.goal_id}: {e}")
+
+    # ---- Goals v3 (P2-32) -------------------------------------------------------------
+
+    @staticmethod
+    def _aware(dt: datetime) -> datetime:
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+    @staticmethod
+    def _is_mai_goal(goal: Goal) -> bool:
+        """Mai's goals: owner mai or shared; with no owner, those that came from Mai's words."""
+        if goal.owner is not None:
+            return goal.owner in ("mai", "shared")
+        return (goal.origin_link or {}).get("kind") in ("mai_said", "extraction")
+
+    async def _set_proposed(self, goal: Goal, value: dict[str, Any] | None) -> None:
+        from aura.engines.goal.evidence import goal_rid
+
+        goal.proposed = value or None
+        goal.updated = get_clock().now()
+        await self._persist_goal(goal)
+        if not value:  # _persist_goal skips None values
+            await self.db.query("UPDATE $rid SET proposed = NONE", {"rid": goal_rid(goal.goal_id)})
+
+    async def refine_checklist(
+        self, goal_id: str, fields: dict[str, Any], *, mai_said: bool = False, confirm: bool = False
+    ) -> tuple[bool, str]:
+        """Fill checklist fields from the conversation. Returns (ok, message).
+
+        On Mai's goals the outcome and done criteria need Mai's words (``mai_said``) or her
+        confirmation of a recorded proposal (``confirm``); without either they are recorded
+        in ``goal.proposed`` and change nothing else. Changing the outcome of a crystal goal
+        always needs one of the two, and goes through ``change_outcome``.
+        """
+        goal = self._find(goal_id)
+        if goal is None:
+            return False, "unknown goal"
+        if goal.stage == "closed" or goal.status != "active":
+            return False, "the goal is closed"
+        fields = dict(fields or {})
+        bad = [k for k in fields if k not in CHECKLIST_FIELDS]
+        if bad:
+            return False, "not a checklist field: " + ", ".join(bad)
+        if not fields and not confirm:
+            return False, "nothing to refine"
+        mai_goal = self._is_mai_goal(goal)
+        guarded = ("outcome", "done_criteria")
+        direct: dict[str, Any] = {}
+        proposals: dict[str, Any] = {}
+        if confirm:
+            if any(k in fields for k in guarded):
+                return False, "confirm applies the pending proposal; do not pass outcome or done_criteria with it"
+            if not goal.proposed:
+                return False, "nothing is proposed on this goal"
+            direct.update(goal.proposed)
+        if mai_goal and fields.get("owner") == "aura" and goal.owner != "aura" and not mai_said:
+            return False, "only Mai can hand her goal to Aura"
+        for k, v in fields.items():
+            if k in guarded and mai_goal and not mai_said:
+                proposals[k] = v
+            else:
+                direct[k] = v
+        outcome = None
+        if "outcome" in direct and goal.stage in ("crystal", "active"):
+            if direct["outcome"] == goal.outcome:
+                direct.pop("outcome")
+            elif not (mai_said or confirm):
+                return False, "only Mai changes the outcome of a crystal goal (mai_said or confirm)"
+            else:
+                outcome = direct.pop("outcome")
+        try:
+            if direct:
+                await self.update_checklist(goal.goal_id, **direct)
+            if outcome is not None:
+                await self.change_outcome(goal.goal_id, outcome)
+        except ValueError as e:
+            return False, str(e)
+        except Exception as e:  # pydantic validation of a bad value
+            return False, f"invalid value: {e}"
+        if confirm:
+            await self._set_proposed(goal, None)
+        if proposals:
+            await self._set_proposed(goal, {**(goal.proposed or {}), **proposals})
+        if outcome is None:  # a changed outcome stays forming until Mai's next explicit refine
+            await self._maybe_crystallize(goal)
+        missing = goal.crystallization()["missing"]
+        note = f"recorded as proposed until Mai confirms: {', '.join(proposals)}; " if proposals else ""
+        return True, f"{note}stage {goal.stage}, missing: {', '.join(missing) or 'nothing'}"
+
+    async def confirm_proposal(self, goal_id: str) -> tuple[bool, str]:
+        """Mai (inspector route) confirms the pending proposal."""
+        return await self.refine_checklist(goal_id, {}, confirm=True)
+
+    async def _maybe_crystallize(self, goal: Goal) -> bool:
+        """The code gate: a complete checklist with nothing waiting for Mai becomes crystal."""
+        if goal.stage not in ("seed", "forming") or goal.proposed:
+            return False
+        if not goal.crystallization()["complete"]:
+            return False
+        moved, _ = await self.advance_stage(goal.goal_id, "crystal")
+        return moved
+
+    async def v3_tick(self) -> None:
+        """P2-32, from the goal tick: crystal gate, Sage plan, milestone evidence, flags."""
+        now = get_clock().now()
+        for goal in list(self.active_goals):
+            if goal.status != "active" or goal.stage == "closed":
+                continue
+            try:
+                await self._v3_step(goal, now)
+            except Exception as e:
+                self.logger.warning(f"v3 step failed for {goal.goal_id}: {e}")
+        try:
+            await self._v3_flags(now)
+        except Exception as e:
+            self.logger.warning(f"v3 flags failed: {e}")
+
+    async def _v3_step(self, goal: Goal, now: datetime) -> None:
+        if goal.outcome_changed_at is None:  # a goal demoted by Mai's outcome change is not re-gated here
+            await self._maybe_crystallize(goal)
+        if goal.stage == "crystal" and not goal.milestones:
+            await self._plan_milestones(goal, now)
+        if goal.milestones:
+            await self._milestone_step(goal, now)
+
+    async def _plan_milestones(self, goal: Goal, now: datetime) -> None:
+        """The one Sage call of a goal that reached crystal (retried only after
+        ``goals_v3_plan_retry_hours``; the attempt is stored before the call)."""
+        from datetime import timedelta
+
+        from aura.engines.goal import crystallize
+
+        last = goal.plan_requested_at
+        if last and now - self._aware(last) < timedelta(hours=settings.goals_v3_plan_retry_hours):
+            return
+        goal.plan_requested_at = now
+        await self._persist_goal(goal)
+        try:
+            milestones = await crystallize.sage_plan(goal)
+        except Exception as e:
+            self.logger.warning(f"Sage milestone plan failed for {goal.goal_id}: {e}")
+            return
+        if not milestones:
+            self.logger.warning(f"Sage plan for {goal.goal_id} had no usable milestone")
+            return
+        goal.milestones = milestones
+        moved, why = await self.advance_stage(goal.goal_id, "active")
+        if not moved:
+            goal.milestones = None
+            self.logger.warning(f"Goal {goal.goal_id} not activated: {why}")
+
+    def _swift_due(self, goal: Goal, now: datetime) -> bool:
+        from datetime import timedelta
+
+        last = goal.swift_checked_at
+        return not last or now - self._aware(last) >= timedelta(hours=settings.goals_v3_swift_min_hours)
+
+    async def _milestone_step(self, goal: Goal, now: datetime) -> None:
+        """Milestones turn done only from evidence code found (or Mai's confirmation).
+        Progress is done over total."""
+        from aura.engines.goal import crystallize, evidence
+
+        changed = False
+        for m in await evidence.check_milestones(goal, now, self.db):
+            ms = goal.milestones[m.index]
+            ms["status"] = "done"
+            ms["evidence_refs"] = [*(ms.get("evidence_refs") or []), m.ref]
+            ms["done_at"] = m.at
+            ms.pop("needs_confirmation", None)
+            goal.evidence = [*(goal.evidence or []),
+                             {"milestone": m.name, "kind": m.kind, "ref": m.ref, "at": m.at}]
+            goal.last_evidence_at = now
+            changed = True
+
+        # Specs code cannot check: Swift may only flag them for Mai, once per goal per day.
+        pending = [i for i, ms in enumerate(goal.milestones)
+                   if ms.get("status") != "done" and not ms.get("needs_confirmation")
+                   and evidence.classify(ms.get("evidence_spec") or {}) == "model"]
+        if pending and self._swift_due(goal, now):
+            goal.swift_checked_at = now
+            await self._persist_goal(goal)
+            try:
+                looks = await crystallize.swift_check(goal, pending)
+            except Exception as e:
+                self.logger.warning(f"Swift milestone check failed for {goal.goal_id}: {e}")
+                looks = {}
+            for i, reason in looks.items():
+                goal.milestones[i]["needs_confirmation"] = True
+                goal.milestones[i]["note"] = reason
+                changed = True
+        for ms in goal.milestones:
+            if ms.get("needs_confirmation") and ms.get("status") != "done" and not ms.get("flagged_at"):
+                created = await self._agenda_flag(
+                    f"flag:ms:{goal.goal_id}:{ms.get('name')}", "question_for_you",
+                    f"Milestone '{ms.get('name')}' of goal '{goal.name}' may be done, but I cannot "
+                    f"check it myself. Can you confirm? ({ms.get('note') or 'no note'})",
+                    [goal.goal_id], now,
+                )
+                if created:
+                    ms["flagged_at"] = now
+                    changed = True
+
+        done = sum(1 for ms in goal.milestones if ms.get("status") == "done")
+        progress = done / len(goal.milestones)
+        if changed:
+            await self._persist_goal(goal)
+        if progress != goal.progress:
+            await self.update_goal_progress(
+                goal.goal_id, progress, f"{done} of {len(goal.milestones)} milestones done"
+            )
+
+    async def confirm_milestone(self, goal_id: str, index: int) -> Goal | None:
+        """Mai confirms a milestone (route). Works for mai_confirms specs and for milestones
+        Swift flagged; a milestone with a code-checkable spec is decided by code only."""
+        from aura.engines.goal import evidence
+
+        goal = self._find(goal_id)
+        if goal is None or not goal.milestones or not 0 <= index < len(goal.milestones):
+            return None
+        ms = goal.milestones[index]
+        if ms.get("status") == "done":
+            return goal
+        if evidence.classify(ms.get("evidence_spec") or {}) == "code":
+            raise ValueError("this milestone is decided by evidence code can check")
+        now = get_clock().now()
+        ms["status"] = "done"
+        ms["evidence_refs"] = [*(ms.get("evidence_refs") or []), "owner"]
+        ms["done_at"] = now
+        ms.pop("needs_confirmation", None)
+        goal.evidence = [*(goal.evidence or []),
+                         {"milestone": ms.get("name"), "kind": "mai_confirms", "ref": "owner", "at": now}]
+        goal.last_evidence_at = now
+        await self._persist_goal(goal)
+        done = sum(1 for m in goal.milestones if m.get("status") == "done")
+        await self.update_goal_progress(
+            goal.goal_id, done / len(goal.milestones), f"{done} of {len(goal.milestones)} milestones done"
+        )
+        return goal
+
+    async def _agenda_flag(self, key: str, kind: str, content: str, refs: list[str], now: datetime) -> bool:
+        """Create one agenda item through the autonomy gate. False when the gate refuses; the
+        refusal is not retried before ``goals_v3_swift_min_hours`` (no trace spam)."""
+        from datetime import timedelta
+
+        from aura.autonomy.agenda import AgendaService
+        from aura.autonomy.controls import may_initiate
+
+        backoff = self.__dict__.setdefault("_flag_backoff", {})
+        if backoff.get(key) and now < backoff[key]:
+            return False
+        try:
+            decision = await may_initiate(kind, now=now, source="goal_engine", refs=refs, db=self.db)
+            if not decision.allowed:
+                backoff[key] = now + timedelta(hours=settings.goals_v3_swift_min_hours)
+                return False
+            await AgendaService(self.db).create(
+                kind=kind, content=content, refs=refs, priority=0.5, venue="app", source="goal_engine"
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"Could not create agenda item {key}: {e}")
+            backoff[key] = now + timedelta(hours=settings.goals_v3_swift_min_hours)
+            return False
+
+    def _is_linked(self, goal: Goal, depth: int = 0) -> bool:
+        """Linked to Mai, or to an approved Aura goal (``origin_link.approved``)."""
+        link = goal.origin_link or {}
+        if goal.owner in ("mai", "shared") or link.get("kind") in ("mai_said", "extraction"):
+            return True
+        if link.get("approved") is True:
+            return True
+        if link.get("kind") == "parent" and depth < 5:
+            ref = str(link.get("ref") or "")
+            parent = self._find(ref) if ref else None
+            if parent is not None and parent.status not in ("abandoned", "cancelled"):
+                return self._is_linked(parent, depth + 1)
+        return False
+
+    @staticmethod
+    def _resources(goal: Goal) -> set[str]:
+        """Budget resources a goal draws on, from its milestone evidence specs."""
+        out: set[str] = set()
+        for ms in goal.milestones or []:
+            spec = ms.get("evidence_spec") or {}
+            kind = spec.get("kind")
+            if spec.get("resource") in ("opencode", "titan_budget"):
+                out.add(spec["resource"])
+            elif kind in ("commit", "test_pass"):
+                out.add("opencode")
+            elif kind == "task_node_done":
+                out.add("titan_budget")
+        return out
+
+    def _horizon_open(self, goal: Goal, now: datetime) -> bool:
+        """True while the goal's horizon has not ended (unparseable horizons count as open)."""
+        import re
+        from datetime import timedelta
+
+        text = (goal.horizon or "").strip().lower()
+        base = self._aware(goal.created)
+        days = {"today": 1, "tomorrow": 2, "this week": 7, "this month": 31,
+                "this quarter": 92, "this year": 366}.get(text)
+        m = re.fullmatch(r"(?:in )?(\d+)\s*(day|week|month)s?", text)
+        if m:
+            days = int(m.group(1)) * {"day": 1, "week": 7, "month": 30}[m.group(2)]
+        if days is not None:
+            return now < base + timedelta(days=days)
+        try:
+            return now < self._aware(datetime.fromisoformat(text))
+        except ValueError:
+            return True
+
+    async def _v3_flags(self, now: datetime) -> None:
+        """Orphans and conflicts, each flagged once (the flag is stored on the goal)."""
+        from datetime import timedelta
+
+        live = [g for g in self.active_goals if g.status == "active" and g.stage != "closed"]
+        for g in live:
+            if g.orphan_flagged_at is not None:
+                continue
+            ref = self._aware(g.last_evidence_at or g.created)
+            if now - ref < timedelta(days=settings.goals_v3_orphan_days) or self._is_linked(g):
+                continue
+            if await self._agenda_flag(
+                f"flag:orphan:{g.goal_id}", "observation",
+                f"Goal '{g.name}' has no link to you or to an approved goal of mine and no evidence "
+                f"for {settings.goals_v3_orphan_days} days. Should it be pruned?",
+                [g.goal_id], now,
+            ):
+                g.orphan_flagged_at = now
+                await self._persist_goal(g)
+
+        from aura.engines.goal import crystallize
+
+        swift_used = False
+        for i, a in enumerate(live):
+            for b in live[i + 1:]:
+                if b.goal_id in (a.conflict_flags or []) or a.goal_id in (b.conflict_flags or []):
+                    continue
+                if not (self._horizon_open(a, now) and self._horizon_open(b, now)):
+                    continue
+                shared = self._resources(a) & self._resources(b)
+                reason = f"both draw on {', '.join(sorted(shared))}" if shared else ""
+                both_crystal = all(g.stage in ("crystal", "active") and g.outcome for g in (a, b))
+                if (not reason and both_crystal and not swift_used
+                        and b.goal_id not in (a.conflict_checked or [])
+                        and a.goal_id not in (b.conflict_checked or [])
+                        and self._swift_due(a, now) and self._swift_due(b, now)):
+                    swift_used = True  # one pair check per tick
+                    for g, other in ((a, b), (b, a)):
+                        g.swift_checked_at = now
+                        g.conflict_checked = [*(g.conflict_checked or []), other.goal_id]
+                        await self._persist_goal(g)
+                    try:
+                        contradictory, why = await crystallize.swift_conflict(a, b)
+                    except Exception as e:
+                        self.logger.warning(f"Swift conflict check failed: {e}")
+                        contradictory, why = False, ""
+                    if contradictory:
+                        reason = f"their outcomes seem to contradict: {why}"
+                if not reason:
+                    continue
+                if await self._agenda_flag(
+                    f"flag:conflict:{a.goal_id}:{b.goal_id}", "needs_decision",
+                    f"Goals '{a.name}' and '{b.name}' may conflict: {reason}. Which should come first?",
+                    [a.goal_id, b.goal_id], now,
+                ):
+                    for g, other in ((a, b), (b, a)):
+                        g.conflict_flags = [*(g.conflict_flags or []), other.goal_id]
+                        await self._persist_goal(g)
 
     async def check_evidence(self) -> None:
         """Event-driven check (task node finished, task_result), outside the tick."""
@@ -291,6 +772,7 @@ class GoalEngine(BaseEngine):
 
             try:
                 await self._persist_goal(goal)
+                await self._close_stage(goal, f"abandoned: {goal.abandon_reason}")
                 self.logger.info(f"Goal abandoned: {goal.name} ({goal.abandon_reason})")
                 # Told once: the tick only visits active goals, so this runs at the transition only.
                 await self._create_abandonment_agenda_item(goal, now)
@@ -304,7 +786,8 @@ class GoalEngine(BaseEngine):
 
         # Check if we may initiate (subject to autonomy controls)
         decision = await may_initiate(
-            "observation", now=now, source="goal_engine", refs=[goal.goal_id], db=self.db
+            "observation", now=now, source="goal_engine", refs=[goal.goal_id], db=self.db,
+            spend=False,  # P2-33: the message budget is spent when the deliverer sends it
         )
         if not decision.allowed:
             self.logger.debug(f"Abandonment notification not sent: {decision.reason}")
@@ -351,11 +834,16 @@ class GoalEngine(BaseEngine):
         goal.abandon_reason = None
         goal.last_evidence_at = now
         goal.updated = now
+        if goal.stage == "closed":  # P2-32: reopening is the one way back out of closed
+            goal.stage = ("active" if goal.milestones
+                          else "crystal" if goal.crystallization()["complete"] else "forming")
+            goal.stage_changed = now
+            goal.close_reason = None
         await self._persist_goal(goal)
         from aura.engines.goal.evidence import goal_rid
 
         # _persist_goal skips None values, so clear the reason explicitly.
-        await self.db.query("UPDATE $rid SET abandon_reason = NONE", {"rid": goal_rid(goal.goal_id)})
+        await self.db.query("UPDATE $rid SET abandon_reason = NONE, close_reason = NONE", {"rid": goal_rid(goal.goal_id)})
         self.logger.info(f"Goal reopened: {goal.name}")
         return goal
 
@@ -734,7 +1222,10 @@ Return ONLY a JSON object with:
 
         # Store goal
         try:
-            await self.db.create("goal", goal.model_dump())
+            # option<...> goal fields reject null, so drop the unset ones
+            await self.db.create(
+                "goal", {k: v for k, v in goal.model_dump().items() if v is not None}
+            )
             self.active_goals.append(goal)
 
             self.logger.info(f"New goal formulated: {goal.name} ({trigger})")
@@ -773,16 +1264,18 @@ Return ONLY a JSON object with:
         for goal in self.active_goals:
             if goal.goal_id == goal_id:
                 goal.progress = progress
-                goal.updated = datetime.now(timezone.utc)
+                goal.updated = get_clock().now()
 
                 if progress >= 1.0:
                     goal.status = "completed"
-                    goal.completed = datetime.now(timezone.utc)
+                    goal.completed = get_clock().now()
                     self.logger.info(f"Goal completed: {goal.name}")
 
                 # Persist
                 try:
                     await self._persist_goal(goal)
+                    if goal.status == "completed":
+                        await self._close_stage(goal, f"completed: {notes}" if notes else "completed")
                 except Exception as e:
                     self.logger.error(f"Failed to update goal: {e}")
 
@@ -793,11 +1286,12 @@ Return ONLY a JSON object with:
         for goal in self.active_goals:
             if goal.goal_id == goal_id:
                 goal.status = "cancelled"
-                goal.updated = datetime.now(timezone.utc)
+                goal.updated = get_clock().now()
                 goal.metadata["cancellation_reason"] = reason
 
                 try:
-                    await self.db.update(goal_id, goal.model_dump())
+                    await self._persist_goal(goal)
+                    await self._close_stage(goal, f"cancelled: {reason}" if reason else "cancelled")
                     self.logger.info(f"Goal cancelled: {goal.name} - {reason}")
                 except Exception as e:
                     self.logger.error(f"Failed to cancel goal: {e}")
@@ -823,14 +1317,28 @@ Return ONLY a JSON object with:
         the owner, from an accepted drive proposal, or (at open) from a
         read-only curiosity question. This method returns immediately for
         boredom/idle_exploration/curiosity triggers unless called with
-        accepted_proposal=True. P2-33 will re-add proposals at level 2
-        through may_initiate.
+        accepted_proposal=True.
+
+        P2-33: with ``autonomy_enabled`` every call passes may_initiate
+        ("propose_goal", level 2) first, and a goal Aura creates on her own
+        becomes a proposal (paused until Mai approves it in chat). Flag off:
+        the behaviour above, unchanged.
         """
+        gated = settings.autonomy_enabled
+        if gated:
+            from aura.autonomy.controls import may_initiate
+
+            decision = await may_initiate(
+                "propose_goal", source="goal_engine", refs=[f"trigger:{trigger}"],
+                spend=False, db=self.db,
+            )
+            if not decision.allowed:
+                return
         # B3-06: under goals_v2_enabled, autonomous goal creation from
         # boredom, idle_exploration, curiosity, etc. is disabled.
         # Goals come from the owner, accepted drive proposals, or read-only
         # curiosity questions at open autonomy level.
-        if settings.goals_v2_enabled and not accepted_proposal:
+        elif settings.goals_v2_enabled and not accepted_proposal:
             return
 
         now = datetime.now(timezone.utc)
@@ -875,7 +1383,7 @@ Return ONLY a JSON object with:
                     datetime.now(timezone.utc) - self.last_user_interaction
                 ).total_seconds(),
             }
-            await self.generate_goal_on_demand(trigger, context)
+            goal = await self.generate_goal_on_demand(trigger, context)
         else:
             # Fallback to template-based
             context = {
@@ -884,7 +1392,11 @@ Return ONLY a JSON object with:
                     datetime.now(timezone.utc) - self.last_user_interaction
                 ).total_seconds(),
             }
-            await self.formulate_goal(trigger, context)
+            goal = await self.formulate_goal(trigger, context)
+        if gated and goal is not None and not accepted_proposal:
+            from aura.autonomy.initiative import propose_goal
+
+            await propose_goal(self, goal, db=self.db)
 
     async def _load_active_goals(self) -> None:
         """Load active goals from database."""

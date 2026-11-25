@@ -47,6 +47,7 @@ class GoalResponse(BaseModel):
     success: bool
     goal: Goal | None = None
     message: str = ""
+    checklist: dict[str, Any] | None = None  # P2-31: stage checklist with what is missing
 
 
 class GoalContextResponse(BaseModel):
@@ -257,6 +258,41 @@ async def confirm_goal_criterion(goal_id: str, criterion_id: str) -> GoalRespons
     return GoalResponse(success=True, goal=goal, message="Criterion confirmed")
 
 
+def _require_v3() -> None:
+    if not settings.goals_v3_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Goals v3 is not enabled"
+        )
+
+
+@router.post("/{goal_id}/milestones/{index}/confirm", response_model=GoalResponse)
+async def confirm_goal_milestone(goal_id: str, index: int) -> GoalResponse:
+    """P2-32: Mai confirms a milestone code cannot check (mai_confirms, or one Swift flagged)."""
+    _require_v3()
+    goal_engine = get_goal_engine()
+    _find_goal(goal_engine, goal_id)
+    try:
+        goal = await goal_engine.confirm_milestone(goal_id, index)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    if goal is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Milestone not found")
+    return GoalResponse(success=True, goal=goal, message="Milestone confirmed",
+                        checklist=goal.crystallization())
+
+
+@router.post("/{goal_id}/proposal/confirm", response_model=GoalResponse)
+async def confirm_goal_proposal(goal_id: str) -> GoalResponse:
+    """P2-32: Mai confirms the outcome and done criteria L3 proposed on her goal."""
+    _require_v3()
+    goal_engine = get_goal_engine()
+    goal = _find_goal(goal_engine, goal_id)
+    ok, message = await goal_engine.confirm_proposal(goal_id)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    return GoalResponse(success=True, goal=goal, message=message, checklist=goal.crystallization())
+
+
 @router.get("/{goal_id}", response_model=GoalResponse)
 async def get_goal_by_id(goal_id: str) -> GoalResponse:
     """
@@ -282,7 +318,10 @@ async def get_goal_by_id(goal_id: str) -> GoalResponse:
                 detail=f"Goal {goal_id} not found",
             )
 
-        return GoalResponse(success=True, goal=goal, message="Goal retrieved successfully")
+        return GoalResponse(
+            success=True, goal=goal, message="Goal retrieved successfully",
+            checklist=goal.crystallization(),
+        )
 
     except HTTPException:
         raise

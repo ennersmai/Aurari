@@ -41,3 +41,30 @@ export function confirmKill(
 }
 
 export const mutedKinds = (s: AutonomyState | null) => new Set(s?.muted_kinds ?? []);
+
+/** P2-33 autonomy slider levels (Phase 2 plan, Part 11). */
+export const AUTONOMY_LEVELS: { level: 0 | 1 | 2 | 3; name: string; may: string }[] = [
+  { level: 0, name: 'Reactive', may: 'only replies' },
+  { level: 1, name: 'Attentive', may: 'follows up on her agenda and promised work' },
+  { level: 2, name: 'Proactive', may: 'also starts conversations, shares ideas, proposes goals' },
+  { level: 3, name: 'Autonomous', may: 'also pursues approved goals, task graphs on Titan' },
+];
+
+const BUDGET_LABELS: Record<string, string> = { messages: 'messages', sage_calls: 'Sage calls', task_graphs: 'task graphs' };
+
+/** "2/6 messages, 0/5 Sage calls" for the budgets that are not zero at this level. */
+export function budgetSummary(state: AutonomyState | null): string {
+  const res = state?.budget?.resources;
+  if (!res) return '';
+  return Object.entries(res)
+    .filter(([, b]) => b.limit > 0)
+    .map(([k, b]) => `${b.used}/${b.limit} ${BUDGET_LABELS[k] ?? k}`)
+    .join(', ');
+}
+
+/** Shown when the tier caps the slider: the level Aura really acts at. */
+export function cappedNote(state: AutonomyState | null): string | null {
+  if (!state || state.effective_level === undefined || state.effective_level >= state.level) return null;
+  const name = AUTONOMY_LEVELS[state.effective_level]?.name ?? String(state.effective_level);
+  return `This tier caps it at ${state.effective_level} (${name}).`;
+}
