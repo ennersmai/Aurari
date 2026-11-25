@@ -3341,3 +3341,66 @@ Every item in wave 5 ships behind a flag with an ablation test, and is removed i
 4. Pin an OpenCode version (before wave 3).
 5. Build the avatar asset (needed by V8, useful from V1).
 6. Answer the open items at the end of each PRD.
+
+---
+
+## Follow-up cards (2026-11-25, from supervisor review notes)
+
+**FU-01 web_search makes its result URLs usable as consult `url:` refs**
+- **Tier:** bulk
+- **Files:** `src/aura/tools/web_search.py`, new `tests/unit/test_web_search_url_refs.py`
+- **Change:**
+  1. In `web_search.run`, after the results are formatted, for each result call `aura.tools.consult.note_fetched_url(url, content)` with the result's full `content` (before truncation). Import inside the function. Wrap in `try/except Exception` so search never fails because of it. Only when `settings.consult_enabled` is true.
+  2. Replace the footer's `datetime.datetime.now()` with `aura.clock.get_clock().now()`.
+- **Tests:** with `consult_enabled` on and the HTTP call faked (monkeypatch `aiohttp.ClientSession` or the function that posts), two results make two URLs resolvable through consult's ref resolver in the same turn (`consult.begin_turn()` first); flag off notes nothing (ablation); a failure inside `note_fetched_url` does not change the search output.
+- **Do not:** make any real network call in tests; change the output format apart from the timestamp source.
+
+---
+
+**FU-02 Delegated tasks record goal_id and tests_passed (test_pass evidence)**
+- **Tier:** bulk
+- **Files:** `src/aura/executor/delegation.py`, `src/aura/tools/delegate_work.py` (or wherever the `delegate_work` tool builds `DelegationConfig`; find it with grep), new `tests/unit/test_delegation_test_pass.py`
+- **Change:**
+  1. `DelegationConfig` gets `goal_id: Optional[str] = None`. The `delegate_work` tool accepts an optional `goal_id` argument (a `goal:<id>` string) and passes it through; add it to the tool's parameter schema as optional.
+  2. When the task is created or finalised, if `config.goal_id` is set, store `goal_id` on the task as a record id (`to_record_id`) through the existing `_merge_task_fields`.
+  3. In `_finalize_task`: when `reviewed` is True store `tests_passed: True`; when the outcome is `failed` after a review store `tests_passed: False`. Use `_merge_task_fields`.
+  4. `engines/goal/evidence.py::_test_pass` then finds the task; do not change its query except if the test proves it wrong.
+- **Tests (EmbeddedSurrealDB with the real schema):** a delegation with `goal_id` whose review passes leaves a task with `goal_id` and `tests_passed = true`, and `_test_pass(db, goal_id, {})` returns that task id; a failed review stores `tests_passed = false` and `_test_pass` returns None; no `goal_id` given changes nothing (ablation).
+- **Do not:** change permissions, requester roles or the review logic.
+
+---
+
+**FU-03 Real USD costs for consult helper calls**
+- **Tier:** bulk
+- **Depends on:** P2-27, P2-28, P2-29
+- **Files:** `src/aura/llm/layers.py` (`plain_call`), `src/aura/tools/consult.py`, tests in `tests/unit/test_consult.py`
+- **Change:** `plain_call` also returns the provider usage when the provider gives it (tokens in/out and cost in USD, as the OpenRouter non-streaming path already reads it for tool rounds; reuse that code). Keep the old text-only return for existing callers by adding a new `plain_call_with_usage` and having `plain_call` call it. Consult's trace records carry the real `cost_usd` (None when unknown) and real tokens when known, falling back to the estimates. Add the consult cost of the turn to the tier's per-turn USD budget accounting if the tool loop exposes a hook for it (P2-41); if not, record that as an open point.
+- **Tests:** a fake provider that returns usage gives real tokens and cost on the record; one that does not keeps the estimates and `cost_usd` None.
+
+---
+
+**FU-04 The finding-summary call counts against the curiosity budget**
+- **Tier:** bulk
+- **Depends on:** B4-03, B4-04
+- **Files:** `src/aura/autonomy/findings.py`, `src/aura/autonomy/budget.py` (read), `tests/unit/test_findings_to_agenda.py`
+- **Change:** `_draft_finding_summary` estimates tokens (prompt plus reply length / 4) and records them, with cost 0 unless the client reports a cost, through the budget's existing `record_spend`. If the budget is already exhausted, skip the model call and use the fallback (the first three fact lines joined).
+- **Tests:** the draft call adds its tokens to today's budget row; an exhausted budget skips the call and the item still gets content.
+
+---
+
+**FU-05 Seed the Council and Diverge skills at startup**
+- **Tier:** bulk
+- **Depends on:** P2-28, P2-29
+- **Files:** `src/aura/main.py` (lifespan), new `src/aura/engines/learning/builtin_skills.py`, new `tests/unit/test_builtin_skills_seed.py`
+- **Change:** `builtin_skills.seed_all(store)` calls `aura.tools.council.seed_council_skill(store)` when `settings.council_enabled` is true and `aura.tools.diverge.seed_diverge_skill(store)` when `settings.diverge_enabled` is true; each call in its own `try/except Exception` with a logged warning. In `main.py` lifespan, after the schema scripts are applied and the database is connected, call it once with a `SkillStore()` (import inside the function, wrap in try/except so startup never fails because of it).
+- **Tests (EmbeddedSurrealDB, real schema):** both flags on seeds both skills once; running twice keeps one version each; flags off seeds nothing (ablation); a seeding error in one does not stop the other.
+
+---
+
+**FU-06 Chat page shows pushed `chat_message` events live (Afterthought follow-ups)**
+- **Tier:** bulk
+- **Depends on:** P2-30, B1-04
+- **Files:** `frontend/src/pages/chat.tsx` (the `aura_message` handler near line 856), `frontend/src/services/socketService.ts`, a new pure helper `frontend/src/utils/chatMessageEvent.ts` with `frontend/src/utils/chatMessageEvent.test.ts`
+- **Change:** the owner channel already handles `aura_message`. Add handling for `chat_message` (pushed by `orchestrator/afterthought.py`): when its `conversation_id` matches the open conversation and its message id is not already shown, append it as an assistant message. The pure helper decides (`shouldAppendChatMessage(event, conversationId, shownIds) -> boolean`) so it can be unit tested; the component only calls it.
+- **Tests (vitest):** the helper accepts a matching new message; rejects another conversation; rejects an id already shown; rejects malformed events. The test must import and exercise the real helper.
+- **Do not:** change the `/chat/task-reports` polling.

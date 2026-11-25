@@ -1490,6 +1490,116 @@ class Settings(BaseSettings):
         default=60.0, gt=0.0, le=600.0, validation_alias="AURA_CONSULT_HELPER_TIMEOUT_SECONDS",
         description="Time limit of one helper call.",
     )
+    # P2-30 Afterthought: one background Sage review after hard owner replies.
+    afterthought_enabled: bool = Field(
+        default=False, validation_alias="AURA_AFTERTHOUGHT_ENABLED",
+        description="P2-30: after an owner reply in the app on route think with high stakes, one "
+                    "background Sage call checks the reply and Aura may post one follow-up. Needs "
+                    "tier_profiles_enabled and a profile with afterthought on (Titan). Off means no "
+                    "extra task and an unchanged turn.",
+    )
+    afterthought_sage_max_tokens: int = Field(
+        default=600, ge=50, le=8000, validation_alias="AURA_AFTERTHOUGHT_SAGE_MAX_TOKENS",
+        description="Most tokens the Sage review may answer with.",
+    )
+    afterthought_sage_temperature: float = Field(
+        default=0.2, ge=0.0, le=2.0, validation_alias="AURA_AFTERTHOUGHT_SAGE_TEMPERATURE",
+        description="Sampling temperature of the Sage review.",
+    )
+    afterthought_writer_max_tokens: int = Field(
+        default=400, ge=50, le=4000, validation_alias="AURA_AFTERTHOUGHT_WRITER_MAX_TOKENS",
+        description="Most tokens of the L3 call that writes the follow-up.",
+    )
+    afterthought_writer_temperature: float = Field(
+        default=0.5, ge=0.0, le=2.0, validation_alias="AURA_AFTERTHOUGHT_WRITER_TEMPERATURE",
+        description="Sampling temperature of the L3 call that writes the follow-up.",
+    )
+    afterthought_timeout_seconds: float = Field(
+        default=120.0, gt=0.0, le=900.0, validation_alias="AURA_AFTERTHOUGHT_TIMEOUT_SECONDS",
+        description="Time limit of each Afterthought model call (Sage review, L3 writer).",
+    )
+    afterthought_late_after_user_turns: int = Field(
+        default=3, ge=0, le=100, validation_alias="AURA_AFTERTHOUGHT_LATE_AFTER_USER_TURNS",
+        description="More user turns than this after the question: the follow-up opens with "
+                    "'About your earlier question on X' instead of 'Thinking about it more'.",
+    )
+    afterthought_context_messages: int = Field(
+        default=6, ge=0, le=50, validation_alias="AURA_AFTERTHOUGHT_CONTEXT_MESSAGES",
+        description="Earlier messages put into the context summary given to Sage.",
+    )
+    afterthought_context_chars: int = Field(
+        default=500, ge=50, le=10000, validation_alias="AURA_AFTERTHOUGHT_CONTEXT_CHARS",
+        description="Most characters of one earlier message in the context summary.",
+    )
+    afterthought_input_max_chars: int = Field(
+        default=8000, ge=200, le=100000, validation_alias="AURA_AFTERTHOUGHT_INPUT_MAX_CHARS",
+        description="Most characters of the question and of the reply given to Sage and L3.",
+    )
+    afterthought_topic_max_chars: int = Field(
+        default=60, ge=10, le=300, validation_alias="AURA_AFTERTHOUGHT_TOPIC_MAX_CHARS",
+        description="Most characters of the question shown as X in a late follow-up.",
+    )
+    council_enabled: bool = Field(
+        default=False, validation_alias="AURA_COUNCIL_ENABLED",
+        description="P2-29: offer the council tool (the same question to Sage and two pool models of "
+                    "different families, independently). Needs consult_enabled and tier_profiles_enabled. "
+                    "Off means the tool list is exactly as before.",
+    )
+    council_member_max_tokens: int = Field(
+        default=1000, ge=50, le=8000, validation_alias="AURA_COUNCIL_MEMBER_MAX_TOKENS",
+        description="Most tokens a council member may answer with.",
+    )
+    council_member_temperature: float = Field(
+        default=0.5, ge=0.0, le=2.0, validation_alias="AURA_COUNCIL_MEMBER_TEMPERATURE",
+        description="Sampling temperature of council member calls.",
+    )
+    council_member_timeout_seconds: float = Field(
+        default=90.0, gt=0.0, le=600.0, validation_alias="AURA_COUNCIL_MEMBER_TIMEOUT_SECONDS",
+        description="Time limit of one council member call.",
+    )
+    diverge_enabled: bool = Field(
+        default=False, validation_alias="AURA_DIVERGE_ENABLED",
+        description="P2-28: offer the Diverge tools (record_seed_ideas, diverge, record_final_ideas) "
+                    "for creative requests. Needs consult_enabled and tier_profiles_enabled. Off means "
+                    "the tool list is exactly as before.",
+    )
+    diverge_seed_count: int = Field(
+        default=3, ge=1, le=10, validation_alias="AURA_DIVERGE_SEED_COUNT",
+        description="How many obvious ideas L3 records before the helpers are asked.",
+    )
+    diverge_lens_count: int = Field(
+        default=5, ge=1, le=10, validation_alias="AURA_DIVERGE_LENS_COUNT",
+        description="Parallel Swift calls (one lens each) in one Diverge run.",
+    )
+    diverge_ideas_per_lens: int = Field(
+        default=3, ge=1, le=10, validation_alias="AURA_DIVERGE_IDEAS_PER_LENS",
+        description="Most ideas kept from one helper answer.",
+    )
+    diverge_idea_max_chars: int = Field(
+        default=300, ge=20, le=2000, validation_alias="AURA_DIVERGE_IDEA_MAX_CHARS",
+        description="Longest idea text stored (longer is cut).",
+    )
+    diverge_jaccard: float = Field(
+        default=0.6, gt=0.0, le=1.0, validation_alias="AURA_DIVERGE_JACCARD",
+        description="Word-set Jaccard above this means two ideas are the same idea (dedupe, and "
+                    "overlap of a final idea with L3's own seeds).",
+    )
+    diverge_exploration_rate: float = Field(
+        default=0.2, ge=0.0, le=1.0, validation_alias="AURA_DIVERGE_EXPLORATION_RATE",
+        description="Chance that a lens slot is filled uniformly at random instead of by yield.",
+    )
+    diverge_yield_prior: float = Field(
+        default=1.0, gt=0.0, le=100.0, validation_alias="AURA_DIVERGE_YIELD_PRIOR",
+        description="Smoothing for lens yield: (survived + prior) / (offered + 2 * prior).",
+    )
+    diverge_max_final_ideas: int = Field(
+        default=8, ge=1, le=50, validation_alias="AURA_DIVERGE_MAX_FINAL_IDEAS",
+        description="Most final ideas one run may record.",
+    )
+    diverge_max_sources: int = Field(
+        default=10, ge=1, le=100, validation_alias="AURA_DIVERGE_MAX_SOURCES",
+        description="Most source ideas one final idea may cite.",
+    )
     task_graphs_enabled: bool = Field(
         default=False,
         validation_alias="AURA_TASK_GRAPHS_ENABLED",

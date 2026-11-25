@@ -446,13 +446,18 @@ async def post_outcome(request: OutcomeRequest) -> dict[str, Any]:
 
 @router.get("/task-reports")
 async def get_task_reports(conversation_id: str, since: str | None = None) -> dict[str, Any]:
-    """Task graph report messages of a conversation, oldest first (P2-11).
+    """Task graph reports and Afterthought follow-ups of a conversation, oldest first.
 
-    There is no server push channel to the chat, so the page polls this while
-    ``running`` is true. ``since`` is an exclusive ISO timestamp.
+    Task graph reports (P2-11) carry ``meta.task_graph``; Afterthought follow-ups
+    (P2-30) carry ``meta.afterthought`` and are also pushed as ``chat_message`` on
+    the owner channel. The page polls this while ``running`` is true. ``since`` is
+    an exclusive ISO timestamp.
     """
     db = get_db_client()
-    sql = "SELECT * FROM message WHERE conversation_id = $conv AND meta.task_graph != NONE"
+    sql = (
+        "SELECT * FROM message WHERE conversation_id = $conv"
+        " AND (meta.task_graph != NONE OR meta.afterthought != NONE)"
+    )
     params: dict[str, Any] = {"conv": conversation_id}
     if since:
         sql += " AND timestamp > $since"

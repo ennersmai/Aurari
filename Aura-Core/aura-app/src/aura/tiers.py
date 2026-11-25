@@ -266,6 +266,23 @@ def plan_task_enabled(profile: TierProfile | None = None) -> bool:
     return bool((profile or active_profile()).allow_task_graph)
 
 
+def afterthought_allowed(
+    profile: TierProfile | None, route: str | None, stakes: float | None
+) -> bool:
+    """May this turn get an Afterthought (P2-30)? Needs afterthought_enabled AND
+    tier_profiles_enabled, a profile with ``afterthought`` on (Titan by default),
+    L1 route ``think`` and stakes >= the profile's ``afterthought_min_stakes``.
+    Route and stakes are None unless l1_routes_enabled, which makes this False."""
+    if profile is None or not (settings.afterthought_enabled and settings.tier_profiles_enabled):
+        return False
+    return (
+        profile.afterthought == "think_high_stakes"
+        and route == "think"
+        and stakes is not None
+        and stakes >= profile.afterthought_min_stakes
+    )
+
+
 def gated_tools_denied(profile: TierProfile) -> set[str]:
     """Names of the tier-gated tools this profile may not offer."""
     denied = {name for name in TIER_GATED_TOOLS if not tool_allowed(profile, name)}

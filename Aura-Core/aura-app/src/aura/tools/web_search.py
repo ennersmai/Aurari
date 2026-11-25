@@ -8,7 +8,6 @@ import os
 import logging
 import aiohttp
 import json
-import datetime
 from typing import Dict, Any
 
 # Global tool definition for One-Shot Learning
@@ -127,8 +126,25 @@ async def run(arguments: Dict[str, Any]) -> str:
                     output.append("### No Results Found")
                     output.append("The search did not return any results. Try rephrasing your query.")
                 
+                # Note fetched URLs for consult refs (before truncation)
+                # Only when consult is enabled
+                if results:
+                    try:
+                        from aura.config import settings
+                        if settings.consult_enabled:
+                            from aura.tools.consult import note_fetched_url
+                            for res in results:
+                                url = res.get('url')
+                                content = res.get('content')
+                                if url and content:
+                                    note_fetched_url(url, content)
+                    except Exception:
+                        # Never fail search because of consult integration
+                        pass
+                
                 # 3. Context Footer
-                timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                from aura.clock import get_clock
+                timestamp = get_clock().now().strftime('%Y-%m-%d %H:%M:%S')
                 output.append(f"\n*Search performed at {timestamp}*")
                 
                 return "\n".join(output)

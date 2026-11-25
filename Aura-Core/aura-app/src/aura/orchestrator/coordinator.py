@@ -43,6 +43,7 @@ from aura.orchestrator.tool_loop import NativeCalls, RoundUsage, run_tool_loop
 from aura.tiers import (
     TierProfile,
     active_profile,
+    afterthought_allowed,
     gated_tools_denied,
     l2_analysis_allowed,
     l2_reasoning_allowed,
@@ -1182,6 +1183,68 @@ Constraints:
             ),
         ))
 
+    def _count_user_turn(self, conversation_id: str | None) -> int:
+        """Bump and return this conversation's user turn count (P2-30, in process)."""
+        if not conversation_id:
+            return 0
+        turns = self.__dict__.setdefault("_afterthought_turns", {})
+        turns[conversation_id] = turns.get(conversation_id, 0) + 1
+        return turns[conversation_id]
+
+    def _user_turns(self, conversation_id: str) -> int:
+        return self.__dict__.get("_afterthought_turns", {}).get(conversation_id, 0)
+
+    def _maybe_schedule_afterthought(
+        self,
+        *,
+        profile: TierProfile | None,
+        route: str | None,
+        stakes: float | None,
+        requester_role: str,
+        venue: str,
+        conversation_id: str | None,
+        user_input: str,
+        response: str,
+        conversation_history: list[dict[str, str]] | None,
+        question_turn: int,
+    ) -> "asyncio.Task | None":
+        """Start the Afterthought task when this turn qualifies (P2-30).
+
+        Owner turns in the app with a conversation only (the follow-up is posted into
+        that conversation). The task holds a strong reference until it ends and logs
+        any failure; it never touches the reply.
+        """
+        if requester_role != "owner" or venue != "app" or not conversation_id:
+            return None
+        if not (response or "").strip() or not afterthought_allowed(profile, route, stakes):
+            return None
+        from aura.orchestrator import afterthought
+
+        tasks = self.__dict__.setdefault("_afterthought_tasks", set())
+        task = asyncio.create_task(afterthought.run(
+            layers=self.llm_layers,
+            conversation_id=conversation_id,
+            question=user_input,
+            history=list(conversation_history or []),
+            reply=response,
+            question_turn=question_turn,
+            turns_now=lambda: self._user_turns(conversation_id),
+        ))
+        tasks.add(task)
+
+        def _done(t: "asyncio.Task") -> None:
+            tasks.discard(t)
+            if t.cancelled():
+                return
+            if t.exception() is not None:
+                self.logger.warning(f"Afterthought task failed: {t.exception()}")
+            else:
+                self._publish_trace("AFTERTHOUGHT", "finished", {"outcome": t.result()})
+
+        task.add_done_callback(_done)
+        self._publish_trace("AFTERTHOUGHT", "scheduled", {"route": route, "stakes": stakes})
+        return task
+
     def _parallel_appraisal_active(self) -> bool:
         return bool(
             settings.appraisal_parallel_enabled
@@ -1884,6 +1947,8 @@ Constraints:
         ])
         # Stage 1: set the LLM router context mode.
         self.llm_layers.context_mode = context_mode  # type: ignore[assignment]
+        # P2-30: count user turns per conversation (the Afterthought late wording).
+        question_turn = self._count_user_turn(conversation_id) if settings.afterthought_enabled else 0
 
         # Emit message_received event for avatar state machine
         try:
@@ -2070,6 +2135,20 @@ Constraints:
         )
         if appraisal is not None:
             appraisal.handed_off = True
+        # Stage 9b: Afterthought (P2-30), a background Sage review; never awaited here.
+        if settings.afterthought_enabled:
+            self._maybe_schedule_afterthought(
+                profile=profile,
+                route=route,
+                stakes=stakes,
+                requester_role=requester_role,
+                venue=ctx.venue,
+                conversation_id=conversation_id,
+                user_input=user_input,
+                response=response,
+                conversation_history=conversation_history,
+                question_turn=question_turn,
+            )
 
         # Stage 10: yield the final done event with the accumulated response.
         yield TurnEvent("done", response, meta={

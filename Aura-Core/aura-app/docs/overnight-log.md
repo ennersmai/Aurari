@@ -3039,3 +3039,20 @@ TaskQueueService could not write to a database built from the real schema script
 - Acknowledgement: chose the "owner's next message" route. If the next owner message overlaps an item offered earlier, a background task moves it pending -> acknowledged with `delivered_at` set, counts delivery and `record_outcome(kind, "acknowledged")`. Untouched items stay pending. This is the only reply hook; nothing is awaited on the reply path beyond the one bounded query.
 - Config: `agenda_offer_limit`, `agenda_offer_timeout_ms`, `agenda_offer_scan`, `recall_share_working_set`. No schema change.
 - Tests: `tests/unit/test_agenda_offer.py` (8 pass) plus recall/agenda/learning unit tests pass.
+
+## FU-01: web_search makes its result URLs usable as consult `url:` refs
+- **Status:** DONE
+- **Files changed:** `src/aura/tools/web_search.py`, `tests/unit/test_web_search_url_refs.py` (new)
+- **Test result:** 4 new tests pass; existing consult (31) and clock (10) tests pass
+- **Notes:** 
+  1. In `web_search.run`, after formatting results, for each result calls `aura.tools.consult.note_fetched_url(url, content)` with the result's full `content` (before truncation). Import is inside the function. Wrapped in `try/except Exception` so search never fails because of it. Only when `settings.consult_enabled` is true.
+  2. Replaced the footer's `datetime.datetime.now()` with `aura.clock.get_clock().now()`.
+- **Tests:** with `consult_enabled` on and the HTTP call faked (monkeypatch `aiohttp.ClientSession`), two results make two URLs resolvable through consult's ref resolver in the same turn (`consult.begin_turn()` first); flag off notes nothing (ablation); a failure inside `note_fetched_url` does not change the search output; timestamp uses the clock provider.
+- **Unsure about:** Nothing. The change is scoped to the two modifications described in the card; no other behaviour changed.
+
+## Session 2026-11-25 (supervisor)
+- P2-28 Diverge: Sonnet. Passed review as delivered.
+- P2-29 Council: Sonnet. Passed review; registry count reconciled with P2-28.
+- P2-30 Afterthought: Opus (post-response chain). Passed review.
+- FU-01 web_search url refs: Sluice (OpenCode). Passed review as delivered, no corrections.
+- Full suite: 1745 passed, 4 skipped.

@@ -93,9 +93,13 @@ BUILTIN_RISK: dict[str, Risk] = {
     "plan_task": "write",
     "request_pursuit": "read",
     "consult": "read",
+    "council": "read",
+    "record_seed_ideas": "read",
+    "diverge": "read",
+    "record_final_ideas": "read",
 }
 
-BUILTIN_MODULES = ("chartjs", "code_executor", "consult", "delegate", "filesystem", "plan_task", "recall_tools", "request_pursuit", "terminal", "web_search")
+BUILTIN_MODULES = ("chartjs", "code_executor", "consult", "council", "delegate", "diverge", "filesystem", "plan_task", "recall_tools", "record_final_ideas", "record_seed_ideas", "request_pursuit", "terminal", "web_search")
 
 
 def _deep_copy(value: Any) -> Any:
@@ -280,6 +284,14 @@ class ToolRegistry:
             hidden.add("plan_task")
         if not consult_enabled():  # P2-27: consult flag, tier profiles, and a non-Lean tier
             hidden.add("consult")
+        from aura.tools.council import council_enabled  # P2-29: also needs consult
+
+        if not council_enabled():
+            hidden.add("council")
+        from aura.engines.creativity import diverge_enabled  # P2-28: also needs consult
+
+        if not diverge_enabled():
+            hidden.update(("record_seed_ideas", "diverge", "record_final_ideas"))
         if not request_pursuit_enabled():  # B3-05: goals_v2 only
             hidden.add("request_pursuit")
         return sorted(

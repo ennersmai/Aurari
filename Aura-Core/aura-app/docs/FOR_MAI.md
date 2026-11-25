@@ -11,7 +11,7 @@ Read only "Decide" and "Check". Everything under "Reference" is background: deta
 **Money and models**
 - [ ] Curiosity daily spend cap `AURA_CURIOSITY_DAILY_SPEND_USD` [0 = she never investigates on her own; e.g. 0.50 to turn it on].
 - [ ] Memory extraction model `memory_extraction_model` [your L2 model].
-- [ ] Swift/Sage helper models for consult [your L4/L2 models].
+- [ ] Swift/Sage helper models for consult [your L4/L2 models]. Council (P2-29) needs `AURA_SWIFT_POOL` (and POOL1/POOL2) to hold models from at least two families other than Sage's, or it refuses to run.
 - [ ] Embedding model: keep local nomic-embed-text-v1.5? [keep].
 
 **Identity and people**
@@ -145,3 +145,5 @@ Read only "Decide" and "Check". Everything under "Reference" is background: deta
 - [ ] **P2-38 browser for OpenCode (decision for you):** see docs/opencode/browser.md. Recommendation: wait. v2.4.0 (2026-11-23) has a built-in browser but it looks desktop-app only; the 2.3.2 pin has none. The option today is Playwright MCP (needs Node and a browser), coder agent only. Aura's own web_search already covers research. Say "enable Playwright MCP" or "upgrade the pin" if you want either.
 
 - **P2-27 consult (2026-11-24):** behind `AURA_CONSULT_ENABLED` (off). Swift/Sage models default to your stack's L4/L2 models (D11); set `AURA_SWIFT_MODEL`, `AURA_SAGE_MODEL`, `AURA_SWIFT_POOL` if you want others. Follow-ups I will card: helper costs are estimated tokens only (no real USD yet, and not counted in the turn's USD budget); `url:` refs need a hook in web_search; inspector display is P2-39.
+
+- **2026-11-25 P2-28/29/30:** Diverge (`AURA_DIVERGE_ENABLED`), Council (`AURA_COUNCIL_ENABLED`) and Afterthought (`AURA_AFTERTHOUGHT_ENABLED`, Titan, route think, stakes >= 0.8, owner in the app only) are in, all off. Afterthought follow-ups show on the next poll until FU-06 adds the live display.
